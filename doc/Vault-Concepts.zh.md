@@ -258,9 +258,119 @@
 - 在 `redeem` 检查里错误地用 `totalSupply` 代替 `balanceOf(msg.sender)`
 - burn 了底层资产数量，而不是 burn shares
 - 用 price 单位去期待 token 输出数量
+
+## 10. Uniswap V2 基础概念
+
+### Pair
+- `pair` 是池子本体合约。
+- 它持有 `token0` 和 `token1` 的储备。
+- 它也是 LP token 的发行者。
+- 在 V2 里，真正装着资产、维护池子状态的是 `pair`，不是 `router`。
+- 因为 `pair` 会 mint LP token，所以它本身也带有 ERC20 风格的能力，例如：
+  - `balanceOf(address)`
+  - `totalSupply()`
+- 但在当前项目里，更适合把它理解成：
+  - 一个池子合约
+  - 同时也暴露出 LP token 相关函数
+
+### Router
+- `router` 是操作入口。
+- 它帮助用户或 adapter 添加和移除流动性。
+- `router` 不是池子本体，也不是最终持有储备的地方。
+- 对 adapter 来说，`router` 主要解决的是“怎么执行 add/remove liquidity”。
+
+### Reserve
+- `reserve0` 和 `reserve1` 表示 `pair` 当前记录的两种 token 储备量。
+- 可以先把它理解成：池子当前装着多少 `token0` 和多少 `token1`。
+- 在 adapter 里，`reserve` 最重要的用途是把 LP 份额换算成底层 token 数量。
+
+### LP Token
+- LP token 是对 `pair` 的份额凭证。
+- 持有多少 LP token，就代表拥有这条池子的相应比例。
+- 例如，如果 adapter 持有总 LP 供应量的 10%，那么它就拥有池子储备的 10%。
+
+### V2 Position Value
+- 在当前项目里，`getPositionValue()` 这个名字虽然叫 value，但当前返回的是底层 `amount0` 和 `amount1`。
+- 它不是价格换算后的标准化资产价值。
+- 在职责上：
+  - adapter 负责返回底层 token 数量
+  - vault 再负责结合价格把它们并入 `totalAssets()`
+
+### 为什么 adapter 同时需要 router 和 pair
+- `router` 用来执行：
+  - `addLiquidity`
+  - `removeLiquidity`
+- `pair` 用来读取状态：
+  - reserves
+  - LP 总供应量
+  - 当前 LP 持仓对应的底层 token 数量
+- 一句话：
+  - `router` 负责操作
+  - `pair` 负责池子状态和份额关系
+
+### 为什么当前阶段不先引入 factory
+- `factory` 的主要作用是：
+  - 创建 pair
+  - 根据 token 对查找 pair 地址
+- 但在当前最小 adapter 阶段，我们已经把目标 pair 当作已知配置传入 constructor。
+- 也就是说，现在我们只需要：
+  - 对一个已知 pair 执行 add/remove liquidity
+  - 读取这个已知 pair 的 reserves 和 LP 信息
+- 当前阶段不需要：
+  - 动态创建池子
+  - 动态按 token 对查 pair
+  - 管理多条 pair
+- 所以先不引入 `factory`，是为了减少复杂度，而不是因为它不重要。
 - 在 Solidity 里把命名返回值又声明成了局部变量
 
-## 10. 我当前的心智模型
+## 11. ERC20、IERC20、SafeERC20 的区别
+
+### ERC20
+- `ERC20` 是代币的实现。
+- 当你想自己发行一个 token，或者自己实现一个 share token 时，用 `ERC20`。
+- 例如：
+  - `AdaptiveLPVault is ERC20`
+  - `MockERC20 is ERC20`
+
+### IERC20
+- `IERC20` 是代币接口。
+- 当你只是想和一个外部已有 token 交互时，用 `IERC20`。
+- 它只声明函数，不实现逻辑。
+- 例如：
+  - `IERC20 token0`
+  - `IERC20 token1`
+
+### SafeERC20
+- `SafeERC20` 是安全调用 ERC20 的工具库。
+- 它不是 token，也不是接口。
+- 它的作用是更稳地调用：
+  - `transfer`
+  - `transferFrom`
+  - `approve`
+- 典型搭配是：
+  - `using SafeERC20 for IERC20`
+
+### 在当前项目里怎么理解
+- `ERC20`：我自己要发 token
+- `IERC20`：我要调用外部已有 token
+- `SafeERC20`：我要安全地转外部 token
+
+### 为什么 `IUniswapV2Pair` 不需要 import `ERC20`
+- 因为 `IUniswapV2Pair` 是接口，不是实现。
+- 它只需要声明外部合约有哪些函数可以调用。
+- 即使 pair 本身会 mint LP token，也不代表接口文件要继承 `ERC20` 实现。
+
+### 为什么 `IUniswapV2Pair` 里可以直接写 `balanceOf` 和 `totalSupply`
+- 因为 pair 本身也是 LP token 的发行者，所以它确实具有 ERC20 风格的函数。
+- 在当前项目里，把这些函数直接写进 `IUniswapV2Pair` 更符合 adapter 的使用方式。
+- 这样后面可以直接写：
+  - `pair.balanceOf(address(this))`
+  - `pair.totalSupply()`
+- 不需要在 adapter 里反复做：
+  - `IERC20(address(pair)).balanceOf(...)`
+  - `IERC20(address(pair)).totalSupply()`
+
+## 12. 我当前的心智模型
 
 - `amount` = token 数量
 - `assets` = 标准化后的统一价值
