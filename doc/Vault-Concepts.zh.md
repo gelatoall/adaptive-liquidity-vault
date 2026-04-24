@@ -22,6 +22,47 @@
 - `assets` 的作用是把不同 token 的余额转换到同一个单位里进行比较。
 - `assets` 是“价值单位”，不是 token 数量单位。
 
+### 最基础的价值换算公式
+- 单个 token 的 base value 计算公式是：
+  - `valueInBase = amount * price / 10**decimals`
+- 含义是：
+  - `amount` 是最小单位下的原始数量
+  - `price` 是 1 个完整 token 的价格
+  - `10**decimals` 用来把原始数量还原成“多少个完整 token”
+
+### 例子
+- 在 Solidity 里：
+  - `1 ether` 只是一个语法糖，等于 `1e18`
+  - 它表示的是一个 `uint256` 数值，不代表这个 token 一定是 ETH
+- 所以如果某个 18 decimals 的 token 数量写成：
+  - `2 ether`
+  - 它的真实含义是：
+  - `2e18`
+  - 也就是“2 个完整 token”
+
+- 如果：
+  - `amount = 2e18`
+  - `decimals = 18`
+  - `price = 3e18`
+- 那么：
+  - `valueInBase = 2e18 * 3e18 / 1e18 = 6e18`
+- 也就是：
+  - 2 个 token
+  - 每个值 3 个 base asset
+  - 总价值是 6 个 base asset
+
+再比如：
+- 如果一个 6 decimals 的 token 数量是：
+  - `20e6`
+- 它的含义不是“二千万个 token”
+- 而是：
+  - `20 * 10**6`
+  - 也就是“20 个完整 token”
+- 如果它的价格是：
+  - `1e18`
+- 那它的 base value 就是：
+  - `20e6 * 1e18 / 1e6 = 20e18`
+
 ### 关键规则
 - `amount` = 有多少个 token
 - `assets` = 值多少钱
@@ -39,12 +80,22 @@
 
 ### totalAssets
 - `totalAssets()` 表示 vault 当前持有资产的总价值。
-- 在当前最小实现里，它主要由 idle 资产计算得到：
-  - vault 当前持有的 token0 数量
-  - vault 当前持有的 token1 数量
-  - 当前价格
-- 如果以后 vault 开始把资产部署到 adapter，那么概念上的 `totalAssets` 应该把 deployed position 也算进去。
-- 但“当前合约实现”和“长期目标概念”不要混为一谈。
+- 在当前实现里，它已经包含两部分：
+  - vault 当前持有的 idle `token0/token1`
+  - adapter 当前 deployed position 对应的底层 `amount0/amount1`
+- 然后 vault 再用统一价格把这两部分一起估值。
+
+### `totalAssets()` 的当前公式
+- 当前实现的心智模型是：
+  - `total0 = idle0 + deployed0`
+  - `total1 = idle1 + deployed1`
+- 然后：
+  - `value0 = total0 * price0 / 10**decimals0`
+  - `value1 = total1 * price1 / 10**decimals1`
+  - `totalAssets = value0 + value1`
+
+更紧凑地写就是：
+- `totalAssets = valueInBase(idle0 + deployed0, price0, decimals0) + valueInBase(idle1 + deployed1, price1, decimals1)`
 
 ### 关键规则
 - `shares` = 所有权单位
@@ -65,6 +116,12 @@
 - 对首次存款：
   - `sharesToMint = assetsToDeposit`
 
+### Deposit 里的 `assetsToDeposit` 怎么算
+- 当前实现里：
+  - `value0 = amount0 * price0 / 10**decimals0`
+  - `value1 = amount1 * price1 / 10**decimals1`
+  - `assetsToDeposit = value0 + value1`
+
 ### 重要细节
 - `deposit` 必须使用转账前的 `totalAssets`。
 - 否则用户自己的存款会先被算进 vault，总价值分母变大，导致新用户拿到的 shares 偏少。
@@ -73,13 +130,35 @@
 - `redeem` 的流程是：
   - `shares -> ownership ratio -> amount0Out/amount1Out`
 - `redeem` 会按 shares 占比返还底层 token。
+- 在当前最小集成里，`redeem` 还有一个额外前置条件：
+  - 如果 adapter 里还有 active position
+  - 就不能直接 `redeem`
+  - 必须先把 deployed position withdraw 回 vault
 
 ### Redeem 的输出公式
 - `amount0Out = vaultBalance0 * shares / totalSupplyBefore`
 - `amount1Out = vaultBalance1 * shares / totalSupplyBefore`
 
+### 当前 `redeem()` 要特别注意什么
+- 当前实现里，`redeem()` 不是先把 shares 换算成一个统一的 `assets`，再去买回 token。
+- 它当前做的是：
+  - 按 shares 占总 shares 的比例
+  - 直接拿走 vault 当前 idle token 余额中的同样比例
+- 所以当前实现更准确地说是：
+  - `amount0Out = vaultIdle0 * shares / totalSupplyBefore`
+  - `amount1Out = vaultIdle1 * shares / totalSupplyBefore`
+- 这也是为什么当前版本要求：
+  - 如果 adapter 里还有 active position
+  - 就要先 `withdrawFromVenue()`
+  - 再 `redeem()`
+
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
+- 当前版本下，如果资金仍然部署在 adapter 里，`redeem()` 会直接 revert `ActivePositionExists`。
+- 所以当前真实流程是：
+  - `deployToVenue(...)`
+  - `withdrawFromVenue(...)`
+  - `redeem(...)`
 
 ## 4. 约束与 Revert
 
@@ -289,6 +368,95 @@
   - vault 的“身份”用地址表达
   - adapter 的“职责”用接口表达
 
+### 为什么 vault 里更适合存 `IVenueAdapter`，而不是 `UniswapV2Adapter`
+- 如果 vault 里存的是：
+  - `IVenueAdapter public adapter`
+  - 含义是：vault 依赖的是 adapter 的统一能力
+- 这些统一能力就是：
+  - `addLiquidity`
+  - `removeLiquidity`
+  - `getPositionValue`
+  - `hasPosition`
+- 如果 vault 里存的是：
+  - `UniswapV2Adapter public adapter`
+  - 含义就变成：vault 依赖的是某个具体实现本身
+
+更准确地说：
+- `IVenueAdapter` 表达的是“只要你实现了这组行为，我就能和你协作”
+- `UniswapV2Adapter` 表达的是“我认的是这个具体类型”
+
+在当前架构里，vault 作为上层协调者，更应该关心：
+- adapter 能不能部署资产
+- 能不能撤回资产
+- 能不能报告 deployed amounts
+
+而不是关心：
+- 它底层是不是 Uniswap V2
+- 有没有 `pair`
+- 有没有 `router`
+- 内部实现细节是什么
+
+这样设计的好处是：
+- 以后如果换成 `UniswapV3Adapter`、`CurveAdapter` 或 mock adapter
+- 只要它们实现同一个 `IVenueAdapter`
+- vault 主体逻辑就不需要跟着改
+
+你可以用一句话记住：
+- 只需要“地址身份”时，用 `address`
+- 只需要“统一行为”时，用 `interface`
+- 只有真的依赖“具体实现细节”时，才用具体合约类型
+
+所以在最小集成阶段：
+- adapter 里把 `vault` 存成 `address`
+- vault 里把 `adapter` 存成 `IVenueAdapter`
+- 这是当前这套分层里最合理、也最稳定的依赖方向
+
+### 为什么 `setAdapter(address _adapter)` 里会写 `adapter = IVenueAdapter(_adapter)`
+- `address _adapter` 本身只是一个地址值。
+- 单独的 `address` 类型只表示“某个链上地址”，不表示这个地址上有什么函数可以调用。
+- 所以如果只是拿到一个 `address`，编译器并不知道你能不能对它调用：
+  - `addLiquidity`
+  - `removeLiquidity`
+  - `getPositionValue`
+
+当代码写成：
+- `adapter = IVenueAdapter(_adapter);`
+
+它的含义不是：
+- 部署了一个新合约
+- 创建了一个新对象
+- 把地址“变成”了合约
+
+它真正的含义是：
+- 告诉 Solidity：请把这个地址当成一个“实现了 `IVenueAdapter` 接口的外部合约引用”来使用
+
+这样后面才可以写：
+- `adapter.addLiquidity(...)`
+- `adapter.removeLiquidity(...)`
+- `adapter.getPositionValue()`
+
+更准确地说，这是：
+- 一种“类型视角转换”
+- 不是部署行为
+- 也不是运行时自动校验
+
+这一点很重要：
+- `IVenueAdapter(_adapter)` 本身通常不会保证这个地址真的合法
+- 如果这个地址不是正确的 adapter 合约
+- 那么真正出问题的时间点，往往是在后续调用函数时
+
+你可以把这三层区分清楚：
+- `address _adapter`
+  - 只是原始地址值
+- `IVenueAdapter(_adapter)`
+  - 把这个地址解释成一个可按接口调用的合约引用
+- `IVenueAdapter public adapter`
+  - 把这个接口引用保存到 vault 状态里，供后续调用
+
+一句话记住：
+- `address` 解决“它在哪”
+- `interface` 解决“我能怎么调它”
+
 ### 现在这个版本的权限边界
 - `addLiquidity()` 和 `removeLiquidity()` 是 `onlyVault`
 - `getPositionValue()` 是公开 `view`
@@ -331,6 +499,116 @@
   - vault 是资金来源和资金回收地
   - adapter 是 venue interaction executor
   - adapter 不是最终资产归属地
+
+### 为什么 deploy 再 withdraw 不一定回到最初存入数量
+- 当前最小集成阶段，重点是先验证两件事：
+  - 钱是不是按预期从 vault 走到 adapter，又从 adapter 回到 vault
+  - `totalAssets()` 的 idle + deployed 口径是不是一致
+- 这不等于在验证：
+  - 真实 AMM 价格变化
+  - 滑点
+  - 手续费收益
+  - 无常损失
+- 所以在当前 mock/integration tests 里：
+  - withdraw 后拿回来的 `amount0Out/amount1Out`
+  - 是由 mock router 预先设定的测试输出
+  - 不是“必须等于最初存入数量”的协议承诺
+- 更准确地说：
+  - 当前阶段验证的是资金流闭环和 accounting 主干
+  - 不是策略收益或真实市场结果
+
+### 为什么 `deposit` 前用户要 `approve`，而 `deployToVenue` 里是 vault 自己 `approve adapter`
+- 最简单的记法是：
+  - 谁的钱，谁 `approve`
+
+`deposit()` 时：
+- token 还在用户手里
+- vault 想把用户的 token 拉进 vault
+- 但 vault 不能直接动用户的钱
+- 所以必须先由用户自己点头：
+  - `token.approve(vault, amount)`
+- 然后 vault 才能在 `deposit()` 里执行：
+  - `transferFrom(user, vault, amount)`
+
+所以测试里在 `deposit()` 之前会先写：
+- `token0.approve(address(vault), amount0)`
+- `token1.approve(address(vault), amount1)`
+
+这里不能把 `approve` 写进 `deposit()` 里自动完成，原因也很直接：
+- `approve` 只能由 token 当前持有人来做
+- `deposit()` 之前，token 的持有人是用户，不是 vault
+- vault 没资格替用户授权自己花用户的钱
+
+`deployToVenue()` 时：
+- token 已经不在用户手里了
+- token 已经在 vault 手里
+- 接下来是 adapter 想从 vault 这里把 token 拉走去做加池
+- 这时 token 的持有人是 vault
+- 所以 vault 就可以自己授权 adapter：
+  - `token.forceApprove(adapter, amount)`
+
+然后 adapter 才能执行：
+- `transferFrom(vault, adapter, amount)`
+
+一句话对比：
+- `deposit()`：用户的钱进 vault，所以用户先 `approve vault`
+- `deployToVenue()`：vault 的钱进 adapter，所以 vault 自己 `approve adapter`
+
+### `balanceOf`、`contract.function()`、`owner`、`msg.sender` 分别是什么意思
+- 这几个词很容易被混在一起，但它们不是一回事。
+
+最短记法：
+- `xxx.balanceOf(yyy)`：问 `yyy` 持有多少 `xxx`
+- `contract.function()`：调用这个合约
+- `owner`：只有合约里专门定义了 `owner` 才有这个概念
+- `msg.sender`：这次是谁在调用
+
+#### 1. `xxx.balanceOf(yyy)` 在问什么
+- 例如：
+  - `pair.balanceOf(address(adapter))`
+- 它的意思是：
+  - 去问 `pair` 这个合约
+  - `adapter` 这个地址现在持有多少 LP token
+- 这里：
+  - `pair` 是被查询的合约
+  - `adapter` 是被查询余额的地址
+- 它不是在说：
+  - `pair` 是 owner
+  - `adapter` 是 owner
+
+#### 2. `contract.function()` 在表示什么
+- 例如：
+  - `adapter.addLiquidity(...)`
+- 它的意思是：
+  - 调用 `adapter` 这个合约上的函数
+- 但真正决定权限是否通过的，不是“函数写在谁身上”，而是：
+  - 这次调用的 `msg.sender` 是谁
+
+#### 3. `owner` 不是每个合约天然都有
+- `owner` 只有在合约自己专门定义了 owner 语义时才存在。
+- 例如：
+  - `AdaptiveLPVault` 继承了 `Ownable`
+  - 所以它有 `owner()`
+- 但像：
+  - `pair.balanceOf(...)`
+  - `adapter.addLiquidity(...)`
+- 这些场景本身并不自动带有 “owner” 的概念
+
+#### 4. `msg.sender` 才是这次真正的调用者
+- 例如：
+  - vault 调 `adapter.addLiquidity(...)`
+- 对 adapter 来说：
+  - `msg.sender = vault`
+- 所以 adapter 的 `onlyVault` 检查才会通过
+- 这时：
+  - adapter 是被调用的合约
+  - vault 才是这次调用的发起者
+
+一句话区分：
+- `balanceOf` 看的是“谁持有 token”
+- `owner` 看的是“合约权限归谁管”
+- `msg.sender` 看的是“这次是谁在调用”
+- `contract.function()` 只是表示“函数写在哪个合约上”
 
 ### 为什么当前实现会把 approval 清零
 - `addLiquidity()` 执行完后，会把 `token0/token1` 对 router 的 approval 清回 0
@@ -396,6 +674,20 @@
   - 但 pair 报告的 `totalSupply()` 却是 0
   - 这属于非法状态，应当显式 revert
 - 这是 adapter 层的状态一致性检查，不是 vault 层的份额检查
+
+### 当前 vault-adapter 最小集成已经做到什么
+- vault 当前已经能：
+  - 通过 `setAdapter(...)` 挂接一个 `IVenueAdapter`
+  - 通过 `deployToVenue(...)` 把 idle 资金部署出去
+  - 通过 `withdrawFromVenue(...)` 把 deployed 资金撤回
+  - 通过 `totalAssets()` 把 idle balances 和 adapter reported amounts 一起估值
+- 当前这版还没有做到：
+  - 自动根据价格决定什么时候 deploy
+  - 自动在 `redeem()` 里帮用户拆仓
+  - 自动 rebalance
+- 所以更准确地说：
+  - 现在已经接通了 vault 和 adapter 的资产流主干
+  - 但策略层和 oracle 层还没有接上
 
 ## 10. 我已经发现的常见错误
 

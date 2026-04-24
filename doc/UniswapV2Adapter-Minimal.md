@@ -90,6 +90,11 @@ Current code status:
 - `hasPosition()` remains publicly readable
 - `collectFees()` is implemented as `pure` and always reverts with `UnsupportedOperation`
 - add/remove events exist for observability, but current tests treat them as secondary to state and asset-flow verification
+- `AdaptiveLPVault` is now minimally integrated with the adapter through:
+  - `setAdapter(...)`
+  - `deployToVenue(...)`
+  - `withdrawFromVenue(...)`
+  - `totalAssets()` including both idle balances and adapter-reported deployed underlying amounts
 
 ## Public Functions
 
@@ -195,6 +200,7 @@ These conditions should always hold:
 - `getPositionValue()` reflects the adapter's proportional share of pair reserves
 - withdrawn assets return to the vault, not to arbitrary callers
 - public read methods do not grant any additional ability to move funds
+- if the adapter still has an active position, the current vault implementation blocks direct user redemption until funds are withdrawn back to idle balances
 
 ## Test Plan
 
@@ -217,5 +223,51 @@ Notes on testing priorities:
 - In the current stage, event-specific assertions are optional rather than core.
 - The more important tests are the ones that verify balances, LP ownership, permissions, and position valuation.
 - Event tests become more valuable only when downstream systems rely on exact event schemas.
+
+## Current Vault Integration
+
+The current repository now goes beyond an isolated standalone adapter unit.
+
+`AdaptiveLPVault` is minimally wired to the adapter as follows:
+- the vault stores the configured adapter as `IVenueAdapter`
+- the owner can call `deployToVenue(amount0, amount1, params)`
+- the owner can call `withdrawFromVenue(liquidity)`
+- `totalAssets()` adds:
+  - idle token balances held by the vault
+  - deployed underlying token amounts reported by `adapter.getPositionValue()`
+- direct user redemption is intentionally blocked while the adapter still reports an active position
+
+This means the current implementation already validates:
+- vault-to-adapter capital movement
+- adapter-to-vault withdrawal flow
+- total asset accounting across idle and deployed balances
+
+It does not yet implement:
+- automatic withdrawal during redemption
+- oracle-driven deployment decisions
+- rebalance logic
+
+## Current Integration Test Coverage
+
+The current integration tests for `AdaptiveLPVault + UniswapV2Adapter` cover:
+- adapter wiring via `setAdapter(...)`
+- owner-only deployment and withdrawal
+- revert when deployment or withdrawal is attempted before the adapter is configured
+- successful deployment moving idle vault funds into an adapter-held LP position
+- unused dust remaining in the vault after deployment
+- successful withdrawal returning underlying token balances back to the vault
+- redemption reverting while the adapter still has an active position
+- redemption succeeding again after the owner withdraws liquidity back to the vault
+
+These tests are intentionally focused on:
+- permissions
+- asset flow correctness
+- adapter position ownership
+- accounting continuity
+
+They are not yet focused on:
+- oracle price quality
+- real AMM execution outcomes
+- strategy policy
 
 This test plan is intentionally high-level. Concrete tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.
