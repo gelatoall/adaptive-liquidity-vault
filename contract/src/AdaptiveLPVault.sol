@@ -6,10 +6,11 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./libraries/VaultMath.sol";
+import "./interfaces/IVenueAdapter.sol";
 
 /// @title AdaptiveLPVault
 /// @notice Minimal idle two-asset vault that mints ERC20 shares against deposited assets.
-contract AdaptiveLPVault is ERC20 {
+contract AdaptiveLPVault is ERC20, Ownable {
     using SafeERC20 for IERC20;
 
     IERC20 public immutable token0;
@@ -21,11 +22,14 @@ contract AdaptiveLPVault is ERC20 {
     uint256 public price0;
     uint256 public price1;
 
+    IVenueAdapter public adapter;
+
     // ============================================
     // Events
     // ============================================
     event Deposit(address indexed user, uint256 amount0, uint256 amount1);
     event Redeem(address indexed user, uint256 shares);
+    event DeployToVenue();
 
     // ============================================
     // Custom Errors
@@ -36,6 +40,8 @@ contract AdaptiveLPVault is ERC20 {
     error ZeroAmounts();
     error ZeroShares();
     error InsufficientShares();
+    error AdapterNotSet();
+    error ActivePositionExists();
 
     // ============================================
     // Constructor
@@ -53,7 +59,7 @@ contract AdaptiveLPVault is ERC20 {
         address _token1, 
         uint8 _decimals0, 
         uint8 _decimals1
-    ) ERC20(_name, _symbol) {
+    ) ERC20(_name, _symbol) Ownable(msg.sender) {
         if (_token0 == address(0) || _token1 == address(0)) {
             revert ZeroAddress();
         }
@@ -164,5 +170,39 @@ contract AdaptiveLPVault is ERC20 {
             balance0, price0, decimals0, 
             balance1, price1, decimals1
         );
+    }
+
+    // ============================================
+    // Admin Functions
+    // ============================================
+    function setAdapter(address _adapter) external onlyOwner {
+        if (_adapter == address(0)) {
+            revert ZeroAddress();
+        }
+        adapter = IVenueAdapter(_adapter);
+    }
+
+    function deployToVenue(
+        uint256 amount0, 
+        uint256 amount1
+        bytes calldata params
+        ) external onlyOwner returns (uint256 liquidity) {
+        if (address(adapter) == address(0)) {
+            revert AdapterNotSet();
+        }
+
+        token0.forceApprove(address(adapter), amount0);
+        token1.forceApprove(address(adapter), amount1);
+
+        liquidity = adapter.addLiquidity(amount0, amount1, params);
+
+        token0.forceApprove(address(adapter), 0);
+        token1.forceApprove(address(adapter), 0);
+
+        emit DeployToVenue();
+    }
+
+    function withdrawFromVenue(uint256 liquidity) external onlyOwner returns (uint256 amount0, uint256 amount1) {
+        
     }
 }

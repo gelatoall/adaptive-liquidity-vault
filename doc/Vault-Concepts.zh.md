@@ -289,6 +289,95 @@
   - vault 的“身份”用地址表达
   - adapter 的“职责”用接口表达
 
+### 为什么 vault 里更适合存 `IVenueAdapter`，而不是 `UniswapV2Adapter`
+- 如果 vault 里存的是：
+  - `IVenueAdapter public adapter`
+  - 含义是：vault 依赖的是 adapter 的统一能力
+- 这些统一能力就是：
+  - `addLiquidity`
+  - `removeLiquidity`
+  - `getPositionValue`
+  - `hasPosition`
+- 如果 vault 里存的是：
+  - `UniswapV2Adapter public adapter`
+  - 含义就变成：vault 依赖的是某个具体实现本身
+
+更准确地说：
+- `IVenueAdapter` 表达的是“只要你实现了这组行为，我就能和你协作”
+- `UniswapV2Adapter` 表达的是“我认的是这个具体类型”
+
+在当前架构里，vault 作为上层协调者，更应该关心：
+- adapter 能不能部署资产
+- 能不能撤回资产
+- 能不能报告 deployed amounts
+
+而不是关心：
+- 它底层是不是 Uniswap V2
+- 有没有 `pair`
+- 有没有 `router`
+- 内部实现细节是什么
+
+这样设计的好处是：
+- 以后如果换成 `UniswapV3Adapter`、`CurveAdapter` 或 mock adapter
+- 只要它们实现同一个 `IVenueAdapter`
+- vault 主体逻辑就不需要跟着改
+
+你可以用一句话记住：
+- 只需要“地址身份”时，用 `address`
+- 只需要“统一行为”时，用 `interface`
+- 只有真的依赖“具体实现细节”时，才用具体合约类型
+
+所以在最小集成阶段：
+- adapter 里把 `vault` 存成 `address`
+- vault 里把 `adapter` 存成 `IVenueAdapter`
+- 这是当前这套分层里最合理、也最稳定的依赖方向
+
+### 为什么 `setAdapter(address _adapter)` 里会写 `adapter = IVenueAdapter(_adapter)`
+- `address _adapter` 本身只是一个地址值。
+- 单独的 `address` 类型只表示“某个链上地址”，不表示这个地址上有什么函数可以调用。
+- 所以如果只是拿到一个 `address`，编译器并不知道你能不能对它调用：
+  - `addLiquidity`
+  - `removeLiquidity`
+  - `getPositionValue`
+
+当代码写成：
+- `adapter = IVenueAdapter(_adapter);`
+
+它的含义不是：
+- 部署了一个新合约
+- 创建了一个新对象
+- 把地址“变成”了合约
+
+它真正的含义是：
+- 告诉 Solidity：请把这个地址当成一个“实现了 `IVenueAdapter` 接口的外部合约引用”来使用
+
+这样后面才可以写：
+- `adapter.addLiquidity(...)`
+- `adapter.removeLiquidity(...)`
+- `adapter.getPositionValue()`
+
+更准确地说，这是：
+- 一种“类型视角转换”
+- 不是部署行为
+- 也不是运行时自动校验
+
+这一点很重要：
+- `IVenueAdapter(_adapter)` 本身通常不会保证这个地址真的合法
+- 如果这个地址不是正确的 adapter 合约
+- 那么真正出问题的时间点，往往是在后续调用函数时
+
+你可以把这三层区分清楚：
+- `address _adapter`
+  - 只是原始地址值
+- `IVenueAdapter(_adapter)`
+  - 把这个地址解释成一个可按接口调用的合约引用
+- `IVenueAdapter public adapter`
+  - 把这个接口引用保存到 vault 状态里，供后续调用
+
+一句话记住：
+- `address` 解决“它在哪”
+- `interface` 解决“我能怎么调它”
+
 ### 现在这个版本的权限边界
 - `addLiquidity()` 和 `removeLiquidity()` 是 `onlyVault`
 - `getPositionValue()` 是公开 `view`
