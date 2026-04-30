@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "./mocks/MockPriceOracle.sol";
 
 /// @title MockERC20
 /// @dev Minimal ERC20 mock with configurable decimals and unrestricted minting for tests.
@@ -203,6 +204,7 @@ contract VaultV2IntegrationTest is Test {
     uint8 public decimals1 = 6;
     AdaptiveLPVault public vault;
     
+    MockPriceOracle public oracle;
     MockUniswapV2Pair public pair;
     MockUniswapV2Router public router;
     UniswapV2Adapter public adapter;
@@ -223,6 +225,10 @@ contract VaultV2IntegrationTest is Test {
             decimals0, decimals1
         );
 
+        oracle = new MockPriceOracle();
+        vault.setOracle(address(oracle));
+        oracle.setPrices(1e18, 1e18);
+
         // deploy pair/router/adapter
         pair = new MockUniswapV2Pair(address(token0), address(token1));
         router = new MockUniswapV2Router(pair);
@@ -236,8 +242,6 @@ contract VaultV2IntegrationTest is Test {
 
         // set adapter into vault
         vault.setAdapter(address(adapter));
-        // set mock prices
-        vault.setPrice(1e18, 1e18);
     }
     
     /// @notice Verifies the default fixture wires the vault to the configured adapter.
@@ -266,7 +270,6 @@ contract VaultV2IntegrationTest is Test {
             address(token0), address(token1), 
             decimals0, decimals1
         );
-        freshVault.setPrice(1e18, 1e18);
         vm.expectRevert(AdaptiveLPVault.AdapterNotSet.selector);
         freshVault.deployToVenue(1 ether, 1e6, "");
     }
@@ -285,7 +288,6 @@ contract VaultV2IntegrationTest is Test {
         uint256 amount0Used = 8 ether;
         uint256 amount1Used = 15e6;
         uint256 liquidityMinted = 5 ether;
-        vault.setPrice(1e18, 1e18);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -323,7 +325,6 @@ contract VaultV2IntegrationTest is Test {
             address(token0), address(token1), 
             decimals0, decimals1
         );
-        freshVault.setPrice(1e18, 1e18);
         vm.expectRevert(AdaptiveLPVault.AdapterNotSet.selector);
         freshVault.withdrawFromVenue(1 ether);
     }
@@ -346,7 +347,6 @@ contract VaultV2IntegrationTest is Test {
         uint256 amount0Out = 3 ether;
         uint256 amount1Out = 7e6;
 
-        vault.setPrice(1e18, 1e18);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -386,7 +386,6 @@ contract VaultV2IntegrationTest is Test {
         uint256 amount0Used = 8 ether;
         uint256 amount1Used = 15e6;
         uint256 liquidityMinted = 5 ether;
-        vault.setPrice(1e18, 1e18);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 

@@ -6,7 +6,7 @@ Build a minimal idle two-asset vault that:
 - accepts deposits of `token0` and `token1`
 - mints vault shares based on the deposit value
 - allows users to redeem shares for the underlying tokens
-- tracks total vault assets using internal balances and mock prices
+- tracks total vault assets using internal balances and an external price oracle
 
 ## Scope
 
@@ -15,19 +15,20 @@ This version includes:
 - `redeem`
 - `totalAssets`
 - share minting and burning
-- mock price updates for testing
+- oracle-based price reads for testing
 
 This version does not include:
 - Uniswap V2 or V3 adapters
 - rebalancing
 - fees
-- oracle integration
 - the full ERC4626 interface
 - deposit ratio optimization
 
 Notes:
-- `setPrice(...)` is intentionally permissionless in this minimal prototype.
-- A production version should replace mock pricing with access control or an external oracle.
+- the vault depends on `IPriceOracle` for prices.
+- `MockPriceOracle` is a test helper that exposes `setPrices(...)`.
+- `IPriceOracle` itself is read-only and only defines `getPrices()`.
+- A production version should replace the mock oracle with a real oracle implementation.
 
 ## State
 
@@ -36,8 +37,7 @@ The vault stores:
 - `token1` address
 - `token0` decimals
 - `token1` decimals
-- current mock price for `token0`
-- current mock price for `token1`
+- oracle address, which provides `token0` and `token1` prices
 - ERC20 share supply and balances
 
 Notes:
@@ -49,8 +49,8 @@ Notes:
 - `constructor(token0, token1, decimals0, decimals1)`
   - purpose: initialize token addresses and decimals
 
-- `setPrice(price0, price1)`
-  - purpose: set mock prices for `token0` and `token1`
+- `setOracle(oracle)`
+  - purpose: set the oracle used to read `token0` and `token1` prices
 
 - `totalAssets()`
   - purpose: return the combined value of the vault's current token balances
@@ -90,14 +90,15 @@ Notes:
 
 1. Read the current `token0` balance held by the vault.
 2. Read the current `token1` balance held by the vault.
-3. Convert both balances into base-denominated values using the current prices.
-4. Return the combined vault value.
+3. Read `price0` and `price1` from the configured oracle.
+4. Convert both balances into base-denominated values using the oracle prices.
+5. Return the combined vault value.
 
 ## Failure Cases
 
 The vault should revert when:
 - both deposit amounts are zero
-- either mock price is zero when calling `setPrice`
+- the oracle is not configured
 - a non-zero deposit asset has a zero price
 - the vault is in an invalid state for share calculation
 - a non-zero deposit would mint zero shares
@@ -109,7 +110,7 @@ The vault should revert when:
 These conditions should always hold:
 - the initial deposit mints shares equal to the deposit value
 - non-zero deposits must not mint zero shares
-- `totalAssets()` reflects the vault's current token balances and prices
+- `totalAssets()` reflects the vault's current token balances and oracle prices
 - redeeming shares reduces the user's share balance and the total share supply
 
 ## Test Plan

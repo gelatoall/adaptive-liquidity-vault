@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
+import "./mocks/MockPriceOracle.sol";
 
 /// @dev Minimal ERC20 mock with configurable decimals and unrestricted minting for tests.
 contract MockERC20 is ERC20 {
@@ -31,6 +32,7 @@ contract VaultTest is Test {
     MockERC20 public token1;
     uint8 public decimals0 = 18; 
     uint8 public decimals1 = 6;
+    MockPriceOracle public oracle;
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
@@ -44,6 +46,9 @@ contract VaultTest is Test {
             address(token0), address(token1), 
             decimals0, decimals1
         );
+
+        oracle = new MockPriceOracle();
+        vault.setOracle(address(oracle));
     }
 
     // constructor
@@ -90,33 +95,6 @@ contract VaultTest is Test {
         );
     }
 
-    // setPrice
-    function test_SetPrice_SetsPricesCorrectly() public {
-        uint256 newPrice0 = 1e18;
-        uint256 newPrice1 = 5e14;
-
-        vault.setPrice(newPrice0, newPrice1);
-
-        assertEq(vault.price0(), newPrice0);
-        assertEq(vault.price1(), newPrice1);
-    }
-
-    function test_SetPrice_RevertsWhenPrice1IsZero() public {
-        uint256 newPrice0 = 1e18;
-        uint256 newPrice1 = 0;
-
-        vm.expectRevert(AdaptiveLPVault.ZeroPrice.selector);
-        vault.setPrice(newPrice0, newPrice1);
-    }
-
-    function test_SetPrice_RevertsWhenPrice0IsZero() public {
-        uint256 newPrice0 = 0;
-        uint256 newPrice1 = 5e14;
-
-        vm.expectRevert(AdaptiveLPVault.ZeroPrice.selector);
-        vault.setPrice(newPrice0, newPrice1);
-    }
-
     // totalAssets
     function test_TotalAssets_ReturnsZeroWhenVaultHasNoBalances() public {
         assertEq(vault.totalAssets(), 0);
@@ -127,7 +105,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -166,7 +144,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -185,7 +163,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -198,7 +176,7 @@ contract VaultTest is Test {
 
         price0 = 2e18;
         price1 = 5e14;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         
         token0.mint(bob, amount0);
         vm.startPrank(bob);
@@ -220,7 +198,7 @@ contract VaultTest is Test {
         uint256 price1 = 1e18;
         uint256 amount0 = 1e18;
         uint256 amount1 = 0;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
 
@@ -233,7 +211,7 @@ contract VaultTest is Test {
         assertEq(vault.totalSupply(), 1e18);
 
         price0 = 1e36;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         assertEq(vault.totalAssets(), 1e36);
         assertEq(vault.totalSupply(), 1e18);
 
@@ -254,7 +232,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
         token0.mint(bob, amount0);
@@ -296,7 +274,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
         
@@ -317,7 +295,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
         token0.mint(bob, amount0);
@@ -355,7 +333,7 @@ contract VaultTest is Test {
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
-        vault.setPrice(price0, price1);
+        oracle.setPrices(price0, price1);
         token0.mint(alice, amount0);
         token1.mint(alice, amount1);
         

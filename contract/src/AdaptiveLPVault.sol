@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./libraries/VaultMath.sol";
 import "./interfaces/IVenueAdapter.sol";
+import "./interfaces/IPriceOracle.sol";
 
 /// @title AdaptiveLPVault
 /// @notice Minimal two-asset vault that mints ERC20 shares against deposited assets.
@@ -24,10 +25,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Decimals used to interpret raw token1 amounts.
     uint8 public immutable decimals1;
 
-    /// @notice Mock price of one whole token0, scaled by 1e18.
-    uint256 public price0;
-    /// @notice Mock price of one whole token1, scaled by 1e18.
-    uint256 public price1;
+    /// @notice Price oracle used to calculate the value of underlying holdings.
+    /// @dev The vault depends on the IPriceOracle interface for price discovery.
+    IPriceOracle public oracle;
 
     /// @notice Venue adapter used to deploy and withdraw liquidity.
     /// @dev The vault depends on the adapter interface, not a concrete adapter implementation.
@@ -68,9 +68,6 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Thrown when either configured token decimals value is zero.
     error ZeroDecimals();
 
-    /// @notice Thrown when either mock price input is zero.
-    error ZeroPrice();
-
     /// @notice Thrown when both token deposit amounts are zero.
     error ZeroAmounts();
 
@@ -79,6 +76,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Thrown when a caller tries to redeem more shares than they own.
     error InsufficientShares();
+
+    /// @notice Thrown when a valuation or price-dependent operation is requested before an oracle is configured.
+    error OracleNotSet();
 
     /// @notice Thrown when a venue operation is requested before an adapter is configured.
     error AdapterNotSet();
@@ -117,18 +117,6 @@ contract AdaptiveLPVault is ERC20, Ownable {
         decimals1 = _decimals1;
     }
 
-    /// @notice Sets mock prices for token0 and token1.
-    /// @dev Prices are denominated in the base asset and use 1e18 precision.
-    /// @param _price0 Price of one whole token0.
-    /// @param _price1 Price of one whole token1.
-    function setPrice(uint256 _price0, uint256 _price1) external {
-        if (_price0 == 0 || _price1 == 0) {
-            revert ZeroPrice();
-        }
-        price0 = _price0;
-        price1 = _price1;
-    }
-
     /// @notice Deposits token0 and token1 and mints vault shares to the caller.
     /// @dev Deposit flow is token amounts -> normalized asset value -> shares.
     /// @param amount0 Raw token0 amount in token0's smallest unit.
@@ -139,6 +127,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
         if (amount0 == 0 && amount1 == 0) {
             revert ZeroAmounts();
         }
+
+        // Reject if oracle is not configured.
+        if (address(oracle) == address(0)) {
+            revert OracleNotSet();
+        }
+        (uint256 price0, uint256 price1) = oracle.getPrices();
 
         // Read totalAssets() before the deposit.
         // Read totalSupply() before the deposit.
@@ -215,6 +209,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// The returned value is denominated in the base asset and uses 1e18 precision.
     /// @return Total vault asset value using the currently configured mock prices.
     function totalAssets() public view returns (uint256) {
+        // Reject if oracle is not configured.
+        if (address(oracle) == address(0)) {
+            revert OracleNotSet();
+        }
+        (uint256 price0, uint256 price1) = oracle.getPrices();
+
         uint256 idle0 = IERC20(token0).balanceOf(address(this));
         uint256 idle1 = IERC20(token1).balanceOf(address(this));
         
@@ -236,6 +236,16 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     // Admin Functions
     // ============================================
+    /// @notice Sets the price oracle used by the vault for asset valuation.
+    /// @dev The input address is stored as an `IPriceOracle` interface reference.
+    /// @param _oracle Address of the price oracle contract.
+    function setOracle(address _oracle) external onlyOwner {
+        if (_oracle == address(0)) {
+            revert ZeroAddress();
+        }
+        oracle = IPriceOracle(_oracle);
+    }
+
     /// @notice Sets the venue adapter used by the vault.
     /// @dev The input address is stored as an `IVenueAdapter` interface reference.
     /// @param _adapter Address of the adapter contract.

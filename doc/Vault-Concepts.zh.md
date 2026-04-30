@@ -83,7 +83,7 @@
 - 在当前实现里，它已经包含两部分：
   - vault 当前持有的 idle `token0/token1`
   - adapter 当前 deployed position 对应的底层 `amount0/amount1`
-- 然后 vault 再用统一价格把这两部分一起估值。
+- 然后 vault 再通过 `IPriceOracle` 提供的价格把这两部分一起估值。
 
 ### `totalAssets()` 的当前公式
 - 当前实现的心智模型是：
@@ -93,6 +93,7 @@
   - `value0 = total0 * price0 / 10**decimals0`
   - `value1 = total1 * price1 / 10**decimals1`
   - `totalAssets = value0 + value1`
+- 这里的 `price0` 和 `price1` 不是 vault 自己存的状态变量，而是通过 `oracle.getPrices()` 读出来的。
 
 更紧凑地写就是：
 - `totalAssets = valueInBase(idle0 + deployed0, price0, decimals0) + valueInBase(idle1 + deployed1, price1, decimals1)`
@@ -243,8 +244,7 @@
 - 它来自：
   - `token0.balanceOf(address(vault))`
   - `token1.balanceOf(address(vault))`
-  - `price0`
-  - `price1`
+  - `oracle.getPrices()`
   - `VaultMath.getAssetsTotalValue(...)`
 - 它是 vault 总价值，不是 shares。
 
@@ -456,6 +456,19 @@
 一句话记住：
 - `address` 解决“它在哪”
 - `interface` 解决“我能怎么调它”
+
+### 为什么 `IPriceOracle` 里不写 `setPrices`
+- `IPriceOracle` 的职责是定义“vault 怎么取价”，不是定义“oracle 怎么更新价格”。
+- 所以这个接口只需要暴露：
+  - `getPrices()`
+- `setPrices()` 属于具体实现的可变状态接口，不属于所有 oracle 都必须具备的统一能力。
+- 例如：
+  - `MockPriceOracle` 需要 `setPrices()`，因为测试里要手动控制价格
+  - `TWAP` 实现不应该有 `setPrices()`，因为它的价格来自链上历史数据和时间窗口，不是手工写入
+- 也就是说：
+  - `IPriceOracle` 负责“消费端统一读价”
+  - `MockPriceOracle` 负责“测试时可写价”
+  - `TWAP` 负责“生产环境自动出价”
 
 ### 现在这个版本的权限边界
 - `addLiquidity()` 和 `removeLiquidity()` 是 `onlyVault`
