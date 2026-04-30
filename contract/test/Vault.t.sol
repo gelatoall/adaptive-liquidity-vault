@@ -3,28 +3,8 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
+import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
-
-/// @dev Minimal ERC20 mock with configurable decimals and unrestricted minting for tests.
-contract MockERC20 is ERC20 {
-    uint8 private immutable _customDecimals;
-
-    constructor(
-        string memory name, 
-        string memory symbol,
-        uint8 _decimals
-    ) ERC20(name, symbol) {
-        _customDecimals = _decimals;
-    }
-
-    function decimals() public view override returns (uint8) {
-        return _customDecimals;
-    }
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
 
 contract VaultTest is Test {
     AdaptiveLPVault public vault;
