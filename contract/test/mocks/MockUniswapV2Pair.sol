@@ -14,6 +14,9 @@ contract MockUniswapV2Pair is ERC20, IUniswapV2Pair {
     uint112 public reserve1;
     uint32 public blockTimeStampLast;
 
+    uint256 public price0CumulativeLast;
+    uint256 public price1CumulativeLast;
+
     /// @param _token0 Address exposed as pair token0.
     /// @param _token1 Address exposed as pair token1.
     constructor(address _token0, address _token1) ERC20("Mock V2 LP", "MV2LP"){
@@ -44,6 +47,11 @@ contract MockUniswapV2Pair is ERC20, IUniswapV2Pair {
     /// @notice Returns the mocked pair reserves and last update timestamp.
     function getReserves() external view returns (uint112, uint112, uint32) {
         return (reserve0, reserve1, blockTimeStampLast);
+    }
+
+    function setCumulativePrices(uint256 _price0CumulativeLast, uint256 _price1CumulativeLast) external {
+        price0CumulativeLast = _price0CumulativeLast;
+        price1CumulativeLast = _price1CumulativeLast;
     }
 
     /// @notice Mints LP tokens to the target account.

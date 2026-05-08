@@ -17,6 +17,9 @@ contract BrokenUniswapV2Pair is IUniswapV2Pair {
     uint112 public reserve1;
     uint32 public blockTimeStampLast;
 
+    uint256 public price0CumulativeLast;
+    uint256 public price1CumulativeLast;  
+
     mapping(address => uint256) internal _balances;
 
     /// @param _token0 Address exposed as pair token0.
@@ -68,7 +71,7 @@ contract V2AdapterTest is Test {
     MockUniswapV2Pair pair;
     MockUniswapV2Router router;
 
-    address vault = address(0xBEEF); // 这里怎么来的？
+    address vault = address(0xBEEF);
 
     /// @notice Deploys the mock tokens, pair, router, and adapter used by each test.
     function setUp() public {

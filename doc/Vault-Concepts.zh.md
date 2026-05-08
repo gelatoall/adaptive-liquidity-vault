@@ -872,3 +872,103 @@
 - `pair LP` = 对某条流动性池子的份额
 - `vault shares` = 对整个 vault 的份额
 - 这两种“份额”都叫份额，但属于完全不同的系统，不能混用
+
+## 14. TWAP Oracle（当前实现）
+
+### 这一层负责什么
+- `TWAPOracle` 负责“价格形成”，不负责“资产执行”。
+- 更准确地说：
+  - adapter 负责把钱部署/撤回
+  - oracle 负责给出 `price0/price1`
+  - vault 负责把价格用于 `totalAssets()` 和份额相关计算
+
+### 核心输入和输出
+- 输入来自 Uniswap V2 pair：
+  - `price0CumulativeLast`
+  - `price1CumulativeLast`
+  - `blockTimestampLast`（通过 `getReserves()` 读取）
+- 输出给 vault：
+  - `getPrices() -> (price0, price1)`
+  - 两个价格都用 `1e18` 精度
+  - 输出顺序按 oracle 配置的 `token0/token1` 语义，不按 pair 内部顺序
+
+### 核心公式
+- 时间加权平均：
+  - `avgX112 = (cumNow - cumLast) / timeElapsed`
+- 精度转换（UQ112x112 -> 1e18）：
+  - `price1e18 = avgX112 * 1e18 / 2^112`
+
+### 为什么不是直接读 reserve
+- 直接读 reserve 得到的是 spot 语义，容易受短时波动影响。
+- TWAP 使用 cumulative 差分/时间差，目的是用时间窗口平滑价格。
+
+### 更新窗口约束
+- `update()` 需要满足：
+  - `timeElapsed > 0`
+  - `timeElapsed >= minUpdateInterval`
+- `minUpdateInterval` 的意义是避免更新过于频繁，导致 TWAP 退化成接近 spot。
+
+### 初始化语义
+- constructor 只做“初始快照”，不代表已经有有效 TWAP。
+- 只有至少成功 `update()` 一次后，`getPrices()` 才可读。
+- 在首次有效更新前，`getPrices()` 应该 revert `NotInitialized`。
+
+### 顺序映射语义（最容易错）
+- pair 可能是 `(token1, token0)`，但 vault 仍然希望拿到 `(price0, price1)`。
+- 所以 oracle 返回前要做映射：
+  - 若 `pair.token0 == configured token0`，直接返回
+  - 否则交换返回顺序
+
+伪代码可以记成：
+- `if pair.token0 == token0: return (pairPrice0, pairPrice1)`
+- `else: return (pairPrice1, pairPrice0)`
+- 其中 `pairPrice0/pairPrice1` 是按 pair 内部顺序算出来的平均价
+
+为什么必须这样做：
+- vault 下游逻辑按“配置顺序”消费价格，而不是按 pair 内部排序消费。
+- 如果不做映射，就会把 `price0` 和 `price1` 对错对象，导致 `totalAssets()` 估值偏差。
+
+### UQ112x112 是什么
+- `UQ112x112` 是 DeFi 常见的定点数格式（Unsigned Q-format）。
+- 含义是：
+  - 前 112 位表示整数部分
+  - 后 112 位表示小数部分
+- 真实值解释方式是：
+  - `realValue = storedValue / 2^112`
+- 在 Uniswap V2 里，价格比例和累计价格都围绕这个精度体系工作。
+- 所以在 oracle 里必须做一次：
+  - `UQ112x112 -> 1e18`
+  才能和 vault 里的统一估值精度对齐。
+
+### 为什么 UQ112x112 -> 1e18 转换要用 `mulDiv`
+- 转换公式本质是：
+  - `price1e18 = avgX112 * 1e18 / 2^112`
+- 直接写 `avgX112 * 1e18 / 2^112` 在极端输入下有中间乘法溢出风险。
+- `Math.mulDiv(a, b, d)` 的优势是：
+  - 先做高精度乘除流程，避免中间乘法溢出
+  - 结果语义仍然等价于 `a*b/d`
+- 所以当前实现里用 `mulDiv(avgX112, 1e18, 2^112)`，更稳健。
+
+具体为什么会有风险：
+- 参与运算的三个数字量级如下：
+  - `avgX112`（UQ112x112）：最大值约为 `2^224`
+  - `PRECISION`（`1e18`）：约等于 `10^18`，二进制量级约为 `2^60`
+  - `uint256` 容器最大容量：`2^256 - 1`
+- 运算过程：
+  - 当直接做 `avgX112 * 1e18` 时，中间乘积量级约为：
+  - `2^224 * 2^60 = 2^284`
+- 结论：
+  - `2^284` 远大于 `2^256`，中间乘法会先溢出
+  - 即使后面还要除以 `2^112`，也来不及，因为错误已经在乘法阶段发生
+- `mulDiv` 的价值就在于避免这种“中间步骤先溢出”的问题。
+
+### 与当前测试覆盖的对应关系
+- 当前 `Oracle.t.sol` 已覆盖：
+  - constructor 参数校验
+  - token 集合校验
+  - 初始快照正确性
+  - 未初始化读价 revert
+  - interval 过短/零时间 revert
+  - TWAP 计算与 `1e18` 转换
+  - 多窗口快照前移
+  - reversed pair 顺序映射

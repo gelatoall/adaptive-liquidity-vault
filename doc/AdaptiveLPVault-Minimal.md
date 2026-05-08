@@ -29,6 +29,7 @@ Notes:
 - `MockPriceOracle` is a test helper that exposes `setPrices(...)`.
 - `IPriceOracle` itself is read-only and only defines `getPrices()`.
 - A production version should replace the mock oracle with a real oracle implementation.
+- TWAP implementation details are documented in `doc/TWAPOracle-Minimal.md`.
 
 ## State
 
