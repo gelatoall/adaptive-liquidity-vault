@@ -128,4 +128,9 @@ The first test set should cover:
 - redeem reverts when the user has insufficient shares
 - redeem returns `token0` and `token1` in proportion to the redeemed shares
 
+TWAP integration coverage currently includes:
+- deposit reverts before TWAP oracle has a first valid update
+- deposit works after TWAP update and uses TWAP prices for share minting
+- `totalAssets()` works after TWAP update and reflects TWAP-based valuation
+
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

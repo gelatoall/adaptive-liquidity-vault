@@ -159,3 +159,9 @@ Core tests should cover:
 - successful update average computation and 1e18 scaling
 - rolling-window snapshot advancement across multiple updates
 - reversed pair-order price alignment
+
+Current integration validation in this repository also covers:
+- vault deposit failure before oracle initialization (`NotInitialized`)
+- vault deposit success after TWAP update
+- vault `totalAssets()` valuation after TWAP update
+- vault + V2 adapter path where `totalAssets()` remains consistent across idle-to-deployed movement under TWAP pricing

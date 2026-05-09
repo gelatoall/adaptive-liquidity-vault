@@ -5,8 +5,9 @@ import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
+import "./helpers/TwapTestHelper.sol";
 
-contract VaultTest is Test {
+contract VaultTest is Test, TwapTestHelper {
     AdaptiveLPVault public vault;
     MockERC20 public token0;
     MockERC20 public token1;
@@ -31,6 +32,9 @@ contract VaultTest is Test {
         vault.setOracle(address(oracle));
     }
 
+    // ============================================
+    // Unit Tests
+    // ============================================
     // constructor
     function test_Constructor_SetsTokensAndDecimalsCorrectly() public {
         assertEq(address(vault.token0()), address(token0));
@@ -329,5 +333,95 @@ contract VaultTest is Test {
 
         assertEq(amount0Out, 0.5e18);
         assertEq(amount1Out, 1000e6);
+    }
+
+
+    // ============================================
+    // Integration Tests
+    // ============================================
+    function test_Integration_Deposit_RevertsBeforeTwapIsInitialized() public {
+        uint32 interval = 300;
+        (, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+            address(token0),
+            address(token1),
+            vault,
+            interval
+        );
+        
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 2000e6;
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+
+        vm.expectRevert(TWAPOracle.NotInitialized.selector);
+        vault.deposit(amount0, amount1);
+        vm.stopPrank();
+    }
+
+    function test_Integration_Deposit_WorksAfterTwapUpdate() public {
+        uint32 interval = 300;
+        uint256 q112 = 2 ** 112;
+        uint256 avg0X112 = 2 * q112; // expect 2e18
+        uint256 avg1X112 = 3 * q112; // expect 3e18
+
+        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+            address(token0),
+            address(token1),
+            vault,
+            interval
+        );
+        _primeTwap(twapPair, twap, interval, avg0X112, avg1X112);
+        assertTrue(twap.initialized());
+        
+        (uint256 price0, uint256 price1) = twap.getPrices();
+        assertEq(price0, 2e18, "twap price0");
+        assertEq(price1, 3e18, "twap price1");
+
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 1e6;
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+        uint256 mintShares = vault.deposit(amount0, amount1);
+        vm.stopPrank();
+
+        uint256 expectedAssets = 5e18;
+        assertEq(mintShares, expectedAssets);
+        assertEq(vault.balanceOf(alice), expectedAssets, "shares minted from twap-priced assets");
+    }
+
+    function test_Integration_TotalAssets_WorksWithTwapOracleAfterUpdate() public {
+        uint32 interval = 300;
+        uint256 q112 = 2 ** 112;
+        uint256 avg0X112 = 2 * q112; // expect 2e18
+        uint256 avg1X112 = 3 * q112; // expect 3e18
+
+        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+            address(token0),
+            address(token1),
+            vault,
+            interval
+        );
+        _primeTwap(twapPair, twap, interval, avg0X112, avg1X112);
+        
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 1e6;
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+        vault.deposit(amount0, amount1);
+        vm.stopPrank();
+        
+        assertEq(vault.totalAssets(), 5e18);
     }
 }

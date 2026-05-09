@@ -8,10 +8,11 @@ import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
+import "./helpers/TwapTestHelper.sol";
 
 /// @title VaultV2IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV2Adapter`.
-contract VaultV2IntegrationTest is Test {
+contract VaultV2IntegrationTest is Test, TwapTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -57,7 +58,10 @@ contract VaultV2IntegrationTest is Test {
         // set adapter into vault
         vault.setAdapter(address(adapter));
     }
-    
+
+    // ============================================
+    // Integration Tests for User & vault & V2 adapter
+    // ============================================
     /// @notice Verifies the default fixture wires the vault to the configured adapter.
     function test_SetAdapter_SetsAdapterCorrectly() public {
         assertEq(address(vault.adapter()), address(adapter));
@@ -259,5 +263,52 @@ contract VaultV2IntegrationTest is Test {
         assertEq(redeemAmount1, amount1 - amount1Used + amount1OutFromWithdraw);
         assertEq(vault.balanceOf(alice), 0);    // Alice doesn't have shares in the vault
         assertEq(vault.totalSupply(), 0);       // No shares in the vault
+    }
+
+    // ============================================
+    // Integration Tests for User & vault & V2 adapter & TWAP Oracle
+    // ============================================
+    function test_TotalAssets_IncludesDeployedPositionWithTwapOracle() public {
+        uint32 interval = 300;
+        uint256 q112 = 2 ** 112;
+        uint256 avg0X112 = 2 * q112; // expect 2e18
+        uint256 avg1X112 = 3 * q112; // expect 3e18
+
+        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+            address(token0),
+            address(token1),
+            vault,
+            interval
+        );
+        _primeTwap(twapPair, twap, interval, avg0X112, avg1X112);
+        
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 1e6;
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+        vault.deposit(amount0, amount1);
+        vm.stopPrank();
+        
+        uint256 totalAssetsBeforeDeploy = vault.totalAssets();
+        assertEq(totalAssetsBeforeDeploy, 5e18);
+
+        uint256 liquidityMinted = 1e18;
+        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
+        vault.deployToVenue(amount0, amount1, "");
+        pair.setReserves(uint112(amount0), uint112(amount1));
+
+        uint256 totalAssetsAfterDeploy = vault.totalAssets();
+
+        assertEq(totalAssetsBeforeDeploy, totalAssetsAfterDeploy);
+        assertEq(pair.balanceOf(address(adapter)), liquidityMinted);
+        
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pair)), amount0);
+        assertEq(token1.balanceOf(address(pair)), amount1);
     }
 }
