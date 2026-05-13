@@ -7,6 +7,7 @@ Build a minimal idle two-asset vault that:
 - mints vault shares based on the deposit value
 - allows users to redeem shares for the underlying tokens
 - tracks total vault assets using internal balances and an external price oracle
+- supports a single V2 venue adapter and a minimal owner-only rebalance wrapper
 
 ## Scope
 
@@ -16,10 +17,12 @@ This version includes:
 - `totalAssets`
 - share minting and burning
 - oracle-based price reads for testing
+- a single V2 adapter integration path
+- a minimal rebalance wrapper over the existing deploy and withdraw flows
 
 This version does not include:
-- Uniswap V2 or V3 adapters
-- rebalancing
+- V3 adapters
+- multi-venue routing
 - fees
 - the full ERC4626 interface
 - deposit ratio optimization
@@ -30,6 +33,7 @@ Notes:
 - `IPriceOracle` itself is read-only and only defines `getPrices()`.
 - A production version should replace the mock oracle with a real oracle implementation.
 - TWAP implementation details are documented in `doc/TWAPOracle-Minimal.md`.
+- V2 rebalance strategy details are documented in `doc/Rebalance-Minimal.md`.
 
 ## State
 
@@ -39,6 +43,7 @@ The vault stores:
 - `token0` decimals
 - `token1` decimals
 - oracle address, which provides `token0` and `token1` prices
+- a single venue adapter used for V2 deployment and withdrawal
 - ERC20 share supply and balances
 
 Notes:
@@ -64,6 +69,17 @@ Notes:
 - `redeem(shares)`
   - purpose: burn shares and return the proportional underlying token amounts
   - returns: `uint256 amount0Out, uint256 amount1Out`
+
+- `deployToVenue(amount0, amount1, params)`
+  - purpose: deploy idle funds into the configured V2 adapter
+  - returns: `uint256 liquidity`
+
+- `withdrawFromVenue(liquidity)`
+  - purpose: withdraw deployed V2 liquidity back into idle balances
+  - returns: `uint256 amount0Out, uint256 amount1Out`
+
+- `rebalance(targetVenue)`
+  - purpose: move the vault between idle and the supported V2 deployment state
 
 ## Core Flows
 
@@ -95,6 +111,12 @@ Notes:
 4. Convert both balances into base-denominated values using the oracle prices.
 5. Return the combined vault value.
 
+### rebalance
+
+1. If the target is V2, read the current idle token balances and deploy them through the adapter.
+2. If the target is idle, read the tracked deployed liquidity and withdraw it through the adapter.
+3. Revert if there are no funds to move.
+
 ## Failure Cases
 
 The vault should revert when:
@@ -105,6 +127,10 @@ The vault should revert when:
 - a non-zero deposit would mint zero shares
 - `redeem` is called with zero shares
 - `redeem` is called with more shares than the user owns
+- `rebalance` is called by a non-owner
+- `rebalance` cannot move any funds
+- the adapter is not configured for venue operations
+- the adapter is changed while deployed liquidity is still active
 
 ## Invariants
 
@@ -113,6 +139,8 @@ These conditions should always hold:
 - non-zero deposits must not mint zero shares
 - `totalAssets()` reflects the vault's current token balances and oracle prices
 - redeeming shares reduces the user's share balance and the total share supply
+- rebalance only wraps the existing deploy and withdraw helpers
+- deployed liquidity is tracked as a single venue position for the minimal version
 
 ## Test Plan
 
@@ -132,5 +160,12 @@ TWAP integration coverage currently includes:
 - deposit reverts before TWAP oracle has a first valid update
 - deposit works after TWAP update and uses TWAP prices for share minting
 - `totalAssets()` works after TWAP update and reflects TWAP-based valuation
+
+V2 rebalance coverage currently includes:
+- rebalance remains owner-only
+- idle-to-V2 rebalance deploys all idle balances
+- V2-to-idle rebalance withdraws all deployed liquidity
+- rebalance reverts when there is no liquidity to move
+- adapter switching is blocked while liquidity is deployed
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

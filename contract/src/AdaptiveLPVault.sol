@@ -33,6 +33,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @dev The vault depends on the adapter interface, not a concrete adapter implementation.
     IVenueAdapter public adapter;
 
+    /// @notice Total LP liquidity currently tracked as deployed in the single supported venue.
+    uint256 public totalLiquidity;
+
+    /// @notice Minimal venue state used by the rebalance entrypoint.
+    enum Venue {IDLE, DEPLOYED_V2}
+
     // ============================================
     // Events
     // ============================================
@@ -85,6 +91,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Thrown when redemption is attempted while funds remain deployed in the adapter.
     error ActivePositionExists();
+
+    /// @notice Thrown when a rebalance request would not move any funds.
+    error NoRebalanceNeeded();
 
     // ============================================
     // Constructor
@@ -234,6 +243,44 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     // ============================================
+    // Internal Functions
+    // ============================================
+    /// @notice Internal deploy helper shared by manual venue actions and rebalance.
+    /// @dev The vault temporarily approves the adapter to pull the requested token amounts.
+    function _deployToVenue(
+        uint256 amount0, 
+        uint256 amount1,
+        bytes memory params
+    ) internal returns (uint256 liquidity) {
+        if (address(adapter) == address(0)) {
+            revert AdapterNotSet();
+        }
+
+        token0.forceApprove(address(adapter), amount0);
+        token1.forceApprove(address(adapter), amount1);
+
+        liquidity = adapter.addLiquidity(amount0, amount1, params);
+        totalLiquidity += liquidity;
+
+        token0.forceApprove(address(adapter), 0);
+        token1.forceApprove(address(adapter), 0);
+
+        emit DeployToVenue(amount0, amount1, liquidity);
+    }
+
+    /// @notice Internal withdraw helper shared by manual venue actions and rebalance.
+    function _withdrawFromVenue(uint256 liquidity) internal returns (uint256 amount0Out, uint256 amount1Out) {
+        if (address(adapter) == address(0)) {
+            revert AdapterNotSet();
+        }
+
+        (amount0Out, amount1Out) = adapter.removeLiquidity(liquidity);
+        totalLiquidity -= liquidity;
+        
+        emit WithdrawFromVenue(liquidity, amount0Out, amount1Out);
+    }
+
+    // ============================================
     // Admin Functions
     // ============================================
     /// @notice Sets the price oracle used by the vault for asset valuation.
@@ -248,16 +295,20 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Sets the venue adapter used by the vault.
     /// @dev The input address is stored as an `IVenueAdapter` interface reference.
+    /// @dev Reverts if the vault already has deployed liquidity, because changing the adapter would desynchronize accounting.
     /// @param _adapter Address of the adapter contract.
     function setAdapter(address _adapter) external onlyOwner {
         if (_adapter == address(0)) {
             revert ZeroAddress();
         }
+        if (totalLiquidity != 0) {
+            revert ActivePositionExists();
+        }
         adapter = IVenueAdapter(_adapter);
     }
 
     /// @notice Deploys idle vault funds into the configured venue adapter.
-    /// @dev The vault temporarily approves the adapter to pull the requested token amounts.
+    /// @dev This is the public owner-only venue entrypoint and delegates to the shared internal helper.
     /// @param amount0 Raw token0 amount the vault attempts to deploy.
     /// @param amount1 Raw token1 amount the vault attempts to deploy.
     /// @param params Venue-specific encoded parameters forwarded to the adapter.
@@ -267,32 +318,33 @@ contract AdaptiveLPVault is ERC20, Ownable {
         uint256 amount1,
         bytes calldata params
     ) external onlyOwner returns (uint256 liquidity) {
-        if (address(adapter) == address(0)) {
-            revert AdapterNotSet();
-        }
-
-        token0.forceApprove(address(adapter), amount0);
-        token1.forceApprove(address(adapter), amount1);
-
-        liquidity = adapter.addLiquidity(amount0, amount1, params);
-
-        token0.forceApprove(address(adapter), 0);
-        token1.forceApprove(address(adapter), 0);
-
-        emit DeployToVenue(amount0, amount1, liquidity);
+        return _deployToVenue(amount0, amount1, params);
     }
 
     /// @notice Withdraws deployed liquidity from the configured venue adapter back into the vault.
+    /// @dev This is the public owner-only venue entrypoint and delegates to the shared internal helper.
     /// @param liquidity Raw venue liquidity amount to remove.
     /// @return amount0Out Raw token0 amount returned to the vault.
     /// @return amount1Out Raw token1 amount returned to the vault.
     function withdrawFromVenue(uint256 liquidity) external onlyOwner returns (uint256 amount0Out, uint256 amount1Out) {
-        if (address(adapter) == address(0)) {
-            revert AdapterNotSet();
-        }
-
-        (amount0Out, amount1Out) = adapter.removeLiquidity(liquidity);
-        
-        emit WithdrawFromVenue(liquidity, amount0Out, amount1Out);
+        return _withdrawFromVenue(liquidity);
     }
+
+    /// @notice Moves the vault between idle balances and the single supported V2 venue.
+    /// @dev This is a thin owner-only wrapper over the existing deploy and withdraw flows.
+    /// @param targetVenue Desired vault state after the rebalance completes.
+    function rebalance(Venue targetVenue) external onlyOwner {
+        if (targetVenue == Venue.DEPLOYED_V2) {
+            uint256 amount0 = token0.balanceOf(address(this));
+            uint256 amount1 = token1.balanceOf(address(this));
+            if (amount0 == 0 && amount1 == 0) {
+                revert NoRebalanceNeeded();
+            }
+            _deployToVenue(amount0, amount1, "");
+        } else {
+            if (totalLiquidity == 0) revert NoRebalanceNeeded();
+            _withdrawFromVenue(totalLiquidity);
+        }
+    }
+
 }

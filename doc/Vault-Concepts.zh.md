@@ -972,3 +972,62 @@
   - TWAP 计算与 `1e18` 转换
   - 多窗口快照前移
   - reversed pair 顺序映射
+
+## 15. V2 Rebalance（当前实现）
+
+### 这一层负责什么
+- `rebalance` 负责“状态切换”，不是重新发明一套资金流。
+- 更准确地说：
+  - `deployToVenue(...)` 负责把 idle 资金送进 V2 adapter
+  - `withdrawFromVenue(...)` 负责把 V2 仓位撤回成 idle balances
+  - `rebalance(...)` 只是把这两个现有动作包成一个 owner-only 策略入口
+
+### 当前最小状态机
+- 当前 rebalance 只支持两个状态：
+  - `IDLE`
+  - `DEPLOYED_V2`
+- 在这版实现里，状态真相由 `totalLiquidity` 表示：
+  - `totalLiquidity == 0` -> 视为 `IDLE`
+  - `totalLiquidity > 0` -> 视为 `DEPLOYED_V2`
+- 这样做的好处是：
+  - 不需要再维护一套容易漂移的 `currentVenue` 语义
+  - 直接读取 deployed LP 记录，就能判断当前是否有 active position
+
+### rebalance to V2
+- 如果目标是 `DEPLOYED_V2`：
+  1. 读取 vault 当前 idle 的 `token0` 和 `token1` 余额
+  2. 如果两边余额都为 0，就 `revert NoRebalanceNeeded()`
+  3. 调用现有的 deploy helper，把全部 idle 余额部署进 V2
+  4. helper 成功后更新 `totalLiquidity`
+- 这表示 rebalance 不是“猜一个金额再部署”，而是“把当前 idle 余额直接搬进 V2”
+
+### rebalance to IDLE
+- 如果目标是 `IDLE`：
+  1. 读取当前 tracked `totalLiquidity`
+  2. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
+  3. 调用现有的 withdraw helper，把全部 LP 从 V2 撤回
+  4. helper 成功后把 `totalLiquidity` 减回 0
+- 这表示 rebalance 不是“部分撤仓后留下一部分状态”，而是最小版本的全量回退
+
+### 权限和边界
+- `rebalance()` 是 owner-only 策略入口
+- `setAdapter()` 在仍有 deployed liquidity 时会 revert
+- 这样可以避免：
+  - adapter 切换后，vault 里的部署会计和真实仓位脱节
+  - rebalance 读到的状态和实际资产流不一致
+
+### 为什么这里先不做 V3
+- 当前阶段只支持一个 venue：V2
+- 所以 rebalance 的语义应该尽量简单：
+  - 只看 idle balances
+  - 只看 tracked LP liquidity
+  - 只调用现有 deploy / withdraw helper
+- 等以后加 V3 后，再把 rebalance 扩展成多 venue 策略层
+
+### 当前测试覆盖的对应关系
+- 当前 `Rebalance.t.sol` 已覆盖：
+  - rebalance 只能由 owner 调用
+  - `IDLE -> DEPLOYED_V2` 会把全部 idle 余额部署出去
+  - `DEPLOYED_V2 -> IDLE` 会把全部 LP 撤回成 idle balances
+  - 没有可移动资金时会 revert `NoRebalanceNeeded`
+  - deployed liquidity 存在时禁止切换 adapter
