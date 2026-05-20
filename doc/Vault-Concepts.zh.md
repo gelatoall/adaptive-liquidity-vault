@@ -1031,3 +1031,285 @@
   - `DEPLOYED_V2 -> IDLE` 会把全部 LP 撤回成 idle balances
   - 没有可移动资金时会 revert `NoRebalanceNeeded`
   - deployed liquidity 存在时禁止切换 adapter
+
+## 16. Uniswap V3 Adapter
+
+### 当前阶段的目标
+- 当前 V3 adapter 的目标不是一次性实现多 fee tier 策略。
+- 当前最小目标是：
+  - 一个 adapter 只绑定一个 V3 pool
+  - 一个 pool 自然对应一个 fee tier
+  - 一个 adapter 只管理一个 V3 position NFT
+  - 先跑通 `deploy / withdraw / collectFees / totalAssets` 这条链路
+
+更准确地说：
+- 现在先验证 vault 的 `IVenueAdapter` 抽象能不能无痛替换成 V3 venue。
+- 不要先把 adapter 做成多 position / 多 fee tier manager。
+- 多 fee tier 更像后续 strategy manager 或 venue manager 的职责。
+
+### 为什么现在不改 `IVenueAdapter`
+- 当前 `IVenueAdapter` 已经有：
+  - `addLiquidity(amount0, amount1, params)`
+  - `removeLiquidity(liquidity)`
+  - `collectFees()`
+  - `getPositionValue()`
+  - `hasPosition()`
+- 对最小 V3 adapter 来说，这组接口暂时够用。
+- 关键原因是：
+  - V3 的 `tokenId` 可以由 adapter 内部保存
+  - vault 不需要知道具体 NFT 编号
+  - `params` 可以承载 V3 特有的 `amountMin/deadline`
+  - `liquidity` 可以表示当前 V3 position 的 liquidity 数量
+  - `getPositionValue()` 返回的是 vault 语义的 token0/token1 估值，而不是 pool 语义
+
+什么时候才需要改接口：
+- 如果一个 adapter 要同时管理多个 V3 NFT position
+- 如果 vault 或策略层需要显式指定撤哪一个 `tokenId`
+- 如果一个 adapter 要同时管理 `0.05% / 0.30% / 1.00%` 多个 fee tier
+- 这时才应该把 position identity 暴露到接口层，或者新增更高层的 strategy manager。
+
+### V3 里的 position 是什么
+- `positionManager` 不是 position 本身。
+- `positionManager` 是管理 V3 position NFT 的合约。
+- `tokenId` 是某一个 V3 position NFT 的编号。
+- `position` 是通过：
+  - `positionManager.positions(tokenId)`
+  查出来的那条仓位记录。
+
+可以这样记：
+- `positionManager` = 仓位登记处和操作入口
+- `tokenId` = 仓位 NFT 编号
+- `position` = `positions(tokenId)` 返回的仓位数据
+
+所以 adapter 的生命周期是：
+1. constructor 阶段没有 `tokenId`
+2. 第一次 `addLiquidity()` 调 `mint(...)`
+3. `mint(...)` 返回 `tokenId`
+4. adapter 保存这个 `tokenId`
+5. 之后 `increaseLiquidity / decreaseLiquidity / collect / burn` 都围绕这个 `tokenId` 操作
+
+### constructor 应该做什么
+- constructor 只负责静态配置校验，不负责创建仓位。
+- 它应该检查：
+  - `vault/token0/token1/positionManager/pool` 都不是零地址
+  - `tickLower < tickUpper`
+  - `pool.token0/token1` 与 vault 配置的 `token0/token1` 是同一组 token
+- 它应该保存：
+  - `vault`
+  - `token0`
+  - `token1`
+  - `positionManager`
+  - `pool`
+  - `tickLower`
+  - `tickUpper`
+
+为什么 constructor 不校验 `tokenId`：
+- `tokenId` 是第一次 `mint()` 之后才产生的运行时状态。
+- constructor 运行时还没有 V3 position NFT。
+- 所以 `tokenId == 0` 应该表示“当前还没有 position”。
+
+### addLiquidity 的 params 语义
+- 当前最小 V3 版本建议 `params` 只放执行参数：
+  - `amount0Min`
+  - `amount1Min`
+  - `deadline`
+- `amount0/amount1` 本身已经由函数参数传入：
+  - `addLiquidity(amount0, amount1, params)`
+- 所以不要再在 `params` 里重复放 `amount0Desired/amount1Desired`。
+
+最小 ABI 编码可以是：
+- `abi.encode(amount0Min, amount1Min, deadline)`
+
+如果用 struct，也可以在 adapter 内部定义：
+- `AddLiquidityParams { amount0Min, amount1Min, deadline }`
+
+两种方式都可以：
+- struct 更清楚
+- tuple decode 更短
+- 关键是编码顺序和解码顺序必须一致
+
+### addLiquidity 最小流程
+- `addLiquidity()` 负责把 vault 的 idle token 部署进 V3 position。
+- 它不负责选 fee tier，不负责选 tick，不负责策略判断。
+
+流程是：
+1. 如果 `amount0 == 0 && amount1 == 0`，revert
+2. 解码 `params`
+3. 调 `_addLiquidity(amount0, amount1, params)`
+4. `_addLiquidity()` 拉币、建上下文、授权、执行、退 dust、清授权
+5. emit `LiquidityAdded`
+
+关键规则：
+- 函数入参 `amount0/amount1` 是 vault 语义。
+- `MintParams.amount0Desired/amount1Desired` 是 pool 语义。
+- position manager 的授权也必须按 pool 语义的 token 地址和数量来设置。
+- `mint/increaseLiquidity` 返回的 used amounts 也是 pool 语义。
+- 退 dust 时必须映射回 vault 语义。
+
+### removeLiquidity 最小流程
+- `removeLiquidity(liquidity)` 负责从当前 V3 position 里撤出指定 liquidity。
+
+流程是：
+1. 如果 `liquidity == 0`，revert
+2. 如果 `tokenId == 0`，revert
+3. 读取 `positions(tokenId)` 的当前 liquidity
+4. 如果请求撤出的 liquidity 超过当前 liquidity，revert
+5. 调用 `decreaseLiquidity(...)`
+6. 调用 `collect(...)` 把撤仓本金和任何可领取 token 收到 adapter
+7. 把 collected amounts 从 pool 语义映射回 vault 语义
+8. 转回 vault
+9. 再读一次 position 状态
+10. 如果 liquidity 和 owed tokens 都为 0，调用 `burn(tokenId)`
+11. 清空 adapter 里的 `tokenId`
+12. emit `LiquidityRemoved`
+
+为什么 `decreaseLiquidity()` 后还要 `collect()`：
+- V3 的 `decreaseLiquidity()` 只是减少 position 的 liquidity。
+- 真正把 token 拿出来，需要再调用 `collect()`。
+
+### collectFees 最小流程
+- V3 和 V2 不同，V3 有显式 fee collection。
+- 所以 `collectFees()` 在 V3 adapter 里应该真实执行，而不是像 V2 adapter 那样 revert。
+
+流程是：
+1. 如果没有 active position，revert
+2. 调用 `positionManager.collect(...)`
+3. `amount0Max/amount1Max` 使用 `type(uint128).max`
+4. 把 collected amounts 从 pool 顺序映射回 vault 顺序
+5. 转回 vault
+6. 如果 position 已经完全空了，burn NFT 并清空 `tokenId`
+7. emit `FeesCollected`
+
+注意：
+- V3 的 `collect()` 可能收回 position manager 当前记录的所有可领取 token。
+- 它不一定只代表狭义的 swap fee。
+- 如果刚刚执行过 `decreaseLiquidity()`，`collect()` 也可能收回撤仓产生的 principal。
+
+### getPositionValue 最小语义
+- `getPositionValue()` 应该返回当前 V3 position 对应的底层 token 数量。
+- 返回顺序必须是 vault 的 `token0/token1` 顺序。
+
+当前实现的最小口径是：
+- active liquidity 对应的 principal
+- `tokensOwed0/tokensOwed1`
+
+流程是：
+1. 如果 `tokenId == 0`，返回 `(0, 0)`
+2. 读取 `positions(tokenId)`
+3. 先把 `tokensOwed0/tokensOwed1` 作为 owed component
+4. 如果 liquidity 非零：
+   - 读取 `pool.slot0()` 的 `sqrtPriceX96`
+   - 用 `TickMath.getSqrtRatioAtTick(tickLower/tickUpper)` 得到区间边界
+   - 用 `LiquidityAmounts.getAmountsForLiquidity(...)` 算 principal
+5. principal + owed 得到 pool 语义 amount
+6. 映射回 vault 语义
+
+补充说明：
+- 如果 position 只有 owed、没有 liquidity，`getPositionValue()` 仍应返回非零值。
+
+重要限制：
+- 这版估值是“position-manager-tracked 值 + 当前本金”，能覆盖已记账的 owed amounts。
+- 它不会重建尚未写入 `tokensOwed0/1` 的最新 fee growth，所以不是完整会计意义上的精确净值。
+- 如果后面要做份额定价或审计级估值，需要再补 V3 fee growth accounting。
+
+### hasPosition 最小语义
+- `hasPosition()` 不只是判断 `tokenId != 0`。
+- 更稳的语义是：
+  - `tokenId == 0` -> false
+  - 否则读取 `positions(tokenId)`
+  - 如果 `liquidity > 0` 或 `tokensOwed0 > 0` 或 `tokensOwed1 > 0` -> true
+  - 否则 false
+
+为什么不能只看 `tokenId != 0`：
+- 如果 position 已经全撤、fees 也收完，但没有清理 `tokenId`，就会出现 stale tokenId。
+- 所以 `removeLiquidity()` 和 `collectFees()` 在完全空仓后应该：
+  - `burn(tokenId)`
+  - `tokenId = 0`
+
+### 当前的 helper 拆分
+当前实现已经把职责拆清楚了：
+
+- `_mapVaultToPool(...)`
+  - 把 vault 语义的 token / amount / min 映射到 pool 语义
+- `_mapTokenAmounts(...)`
+  - 通用的 token 顺序金额映射 helper
+- `_getPositionMetadata(...)`
+  - 仅读取 `positions(tokenId)` 中需要的字段
+- `_hasActivePosition(...)`
+  - 判断 position 是否还“活着”
+- `_collectAndTransfer(...)`
+  - `collect()` 到 adapter，再转给 vault
+- `_cleanupEmptyPosition()`
+  - 位置彻底空了就 burn + 清 `tokenId`
+- `_buildAddLiquidityContext(...)`
+  - 构造 add-liquidity 执行上下文
+- `_executeAddLiquidity(...)`
+  - 分派 mint / increase 并返回 used amounts
+- `_mintPosition(...)`
+  - 真正调用 `positionManager.mint(...)`
+- `_increasePosition(...)`
+  - 真正调用 `positionManager.increaseLiquidity(...)`
+- `_refundDust(...)`
+  - 把没用完的 vault token 退回 vault
+
+### V3 测试需要哪些 mock
+- 第一批测试不建议直接接真实 Uniswap V3。
+- 先用 mock 验证 adapter 自己的资金流、权限、token 顺序映射和 tokenId 生命周期。
+
+最少需要：
+- `MockERC20`
+- `MockUniswapV3Pool`
+- `MockNonfungiblePositionManager`
+
+`MockUniswapV3Pool` 最少需要：
+- `token0()`
+- `token1()`
+- `fee()`
+- `slot0()`
+- 测试辅助函数：
+  - `setSlot0FromTick(...)`
+  - `setSlot0(...)`
+
+`MockNonfungiblePositionManager` 最少需要：
+- `mint(...)`
+- `increaseLiquidity(...)`
+- `decreaseLiquidity(...)`
+- `collect(...)`
+- `positions(tokenId)`
+- `burn(tokenId)`
+- 测试辅助函数：
+  - `setNextMintResult(...)`
+  - `setNextIncreaseResult(...)`
+  - `setNextDecreaseResult(...)`
+  - `setTokensOwed(...)`
+
+第一版不一定需要单独 mock ERC721：
+- 因为当前重点是 adapter 的资金流和 position state
+- 不需要先完整复刻 V3 NFT 行为
+
+第一版也不一定需要 mock vault：
+- adapter 只检查 `msg.sender == vault`
+- 测试里可以用 `vm.prank(vault)` 模拟 vault 调用
+
+### V3 测试优先级
+- constructor 保存配置
+- constructor 拒绝零地址
+- constructor 拒绝非法 tick
+- constructor 拒绝 token 集合不匹配的 pool
+- `hasPosition()` 在没有 tokenId 时返回 false
+- `addLiquidity()` 在零金额时 revert
+- `addLiquidity()` 首次 mint 后保存 `tokenId`
+- `addLiquidity()` 有已有 position 时走 `increaseLiquidity`
+- `addLiquidity()` 能退回 dust
+- `removeLiquidity()` 能撤出 token 并转回 vault
+- `removeLiquidity()` 在完全空仓后清掉 `tokenId`
+- `collectFees()` 能把 collected token 转回 vault
+- `getPositionValue()` 返回 zeroes without a position
+- `getPositionValue()` 包含 principal 和 position-manager-tracked owed tokens
+- `getPositionValue()` 在只有 owed、没有 liquidity 时仍应返回非零值
+- 非 vault 调用状态变更函数会 revert
+
+`getPositionValue()` 的完整数学测试可以放在第二批：
+- 需要先引入或本地化 `TickMath`
+- 需要先引入或本地化 `LiquidityAmounts`
+- 再测价格在区间内、区间左侧、区间右侧三种情况

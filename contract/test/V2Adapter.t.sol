@@ -357,8 +357,8 @@ contract V2AdapterTest is Test {
         adapter.addLiquidity(amount0, amount1, "");
         vm.stopPrank();
 
-        assertEq(token0.balanceOf(address(vault)), amount0 - amount0Used);
-        assertEq(token1.balanceOf(address(vault)), amount1 - amount1Used);
+        assertEq(token0.balanceOf(vault), amount0 - amount0Used);
+        assertEq(token1.balanceOf(vault), amount1 - amount1Used);
     }
 
 
