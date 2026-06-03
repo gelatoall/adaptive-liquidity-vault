@@ -10,10 +10,11 @@ import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockNonfungiblePositionManager.sol";
 import "../src/libraries/v3/TickMath.sol";
 import "../src/libraries/v3/LiquidityAmounts.sol";
+import "../test/helpers/VaultTestHelper.sol";
 
 /// @title VaultV3IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV3Adapter`.
-contract VaultV3IntegrationTest is Test {
+contract VaultV3IntegrationTest is Test, VaultTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     AdaptiveLPVault public vault;
@@ -71,21 +72,6 @@ contract VaultV3IntegrationTest is Test {
         vault.setAdapter(address(adapter));
     }
 
-    /// @notice Seeds the vault with a user deposit.
-    /// @param user Address that performs the deposit.
-    /// @param amount0 Raw token0 amount to deposit.
-    /// @param amount1 Raw token1 amount to deposit.
-    function _setupIdleVault(address user, uint256 amount0, uint256 amount1) internal returns (uint256 shares){
-        token0.mint(user, amount0);
-        token1.mint(user, amount1);
-
-        vm.startPrank(user);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        shares = vault.deposit(amount0, amount1);
-        vm.stopPrank();
-    }
-
     /// @notice Deploys idle vault funds into the configured V3 adapter.
     function _deployIdleVaultToV3(uint256 amount0, uint256 amount1) internal returns (uint256 liquidity) {
         (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(amount0, amount1);
@@ -138,7 +124,7 @@ contract VaultV3IntegrationTest is Test {
         uint256 amount1 = 2000e6;
         
         // user -> vault
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
 
@@ -162,7 +148,7 @@ contract VaultV3IntegrationTest is Test {
         uint256 amount1 = 2000e6;
         
         // user -> vault
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         // vault -> pool
         uint256 deployedLiquidity = _deployIdleVaultToV3(amount0, amount1);
@@ -193,7 +179,7 @@ contract VaultV3IntegrationTest is Test {
         uint256 amount1 = 2000e6;
         
         // user -> vault
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
        
         // vault -> pool
         _deployIdleVaultToV3(amount0, amount1);
@@ -214,7 +200,7 @@ contract VaultV3IntegrationTest is Test {
         uint256 amount1 = 2000e6;
         
         // user -> vault
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
        uint256 aliceShares = vault.balanceOf(alice);
 
         // vault -> pool
@@ -247,7 +233,7 @@ contract VaultV3IntegrationTest is Test {
         uint256 amount1 = 2000e6;
         
         // user -> vault
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         // vault -> pool
         _deployIdleVaultToV3(amount0, amount1);

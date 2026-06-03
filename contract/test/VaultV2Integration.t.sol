@@ -9,10 +9,11 @@ import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
 import "./helpers/TwapTestHelper.sol";
+import "./helpers/VaultTestHelper.sol";
 
 /// @title VaultV2IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV2Adapter`.
-contract VaultV2IntegrationTest is Test, TwapTestHelper {
+contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -106,14 +107,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         uint256 amount0Used = 8 ether;
         uint256 amount1Used = 15e6;
         uint256 liquidityMinted = 5 ether;
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
 
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         uint256 totalAssetsBefore = vault.totalAssets();
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
@@ -165,14 +160,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         uint256 amount0Out = 3 ether;
         uint256 amount1Out = 7e6;
 
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
         vault.deployToVenue(amount0, amount1, "");
@@ -204,14 +192,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         uint256 amount0Used = 8 ether;
         uint256 amount1Used = 15e6;
         uint256 liquidityMinted = 5 ether;
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
         vault.deployToVenue(amount0, amount1, "");
@@ -234,14 +216,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         uint256 amount0OutFromWithdraw = 3 ether;
         uint256 amount1OutFromWithdraw = 7e6;
 
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         uint256 aliceShares = vault.balanceOf(alice);
         assertEq(aliceShares, 30 ether);
@@ -275,8 +250,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
         (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
-            address(token0),
-            address(token1),
+            token0,
+            token1,
             vault,
             interval
         );
@@ -284,14 +259,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper {
         
         uint256 amount0 = 1e18;
         uint256 amount1 = 1e6;
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         
         uint256 totalAssetsBeforeDeploy = vault.totalAssets();
         assertEq(totalAssetsBeforeDeploy, 5e18);

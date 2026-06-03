@@ -6,8 +6,9 @@ import "../src/AdaptiveLPVault.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./helpers/TwapTestHelper.sol";
+import "./helpers/VaultTestHelper.sol";
 
-contract VaultTest is Test, TwapTestHelper {
+contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     AdaptiveLPVault public vault;
     MockERC20 public token0;
     MockERC20 public token1;
@@ -90,14 +91,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         assertEq(vault.totalAssets(), 2e18);
     }
@@ -129,14 +124,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
 
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        uint256 shares = vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         assertEq(shares, 2e18);
         assertEq(vault.balanceOf(alice), 2e18);
@@ -148,14 +137,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(vault.totalAssets(), 2e18);
 
         price0 = 2e18;
@@ -183,14 +166,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 0;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        
         assertEq(vault.totalAssets(), 1e18);
         assertEq(vault.totalSupply(), 1e18);
 
@@ -217,26 +194,11 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-        token0.mint(bob, amount0);
-        token1.mint(bob, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(vault.balanceOf(alice), 2e18);
-        vm.stopPrank();
 
-        token0.mint(bob, amount0);
-        token1.mint(bob, amount1);
-        vm.startPrank(bob);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
         assertEq(vault.balanceOf(bob), 2e18);
-        vm.stopPrank();
 
         assertEq(vault.totalSupply(), 4e18);
 
@@ -259,19 +221,13 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-        
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(vault.balanceOf(alice), 2e18);
 
         uint256 shares = 1e18;
+        vm.prank(alice);
         vault.redeem(shares);
         assertEq(vault.balanceOf(alice), 1e18);
-        vm.stopPrank();
     }
 
     function test_Redeem_ReducesTotalSupply() public {
@@ -280,33 +236,18 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-        token0.mint(bob, amount0);
-        token1.mint(bob, amount1);
 
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(vault.balanceOf(alice), 2e18);
-        vm.stopPrank();
 
-        token0.mint(bob, amount0);
-        token1.mint(bob, amount1);
-        vm.startPrank(bob);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
         assertEq(vault.balanceOf(bob), 2e18);
-        vm.stopPrank();
-
+    
         assertEq(vault.totalSupply(), 4e18);
 
-        vm.startPrank(alice);
         uint256 shares = 1e18;
+        vm.prank(alice);
         vault.redeem(shares);
-        vm.stopPrank();
 
         assertEq(vault.balanceOf(alice), 1e18);
         assertEq(vault.totalSupply(), 3e18);
@@ -318,18 +259,13 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
         
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         assertEq(vault.balanceOf(alice), 2e18);
-
+        
         uint256 shares = 1e18;
+        vm.prank(alice);
         (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares);
-        vm.stopPrank();
 
         assertEq(amount0Out, 0.5e18);
         assertEq(amount1Out, 1000e6);
@@ -342,8 +278,8 @@ contract VaultTest is Test, TwapTestHelper {
     function test_Integration_Deposit_RevertsBeforeTwapIsInitialized() public {
         uint32 interval = 300;
         (, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
-            address(token0),
-            address(token1),
+            token0,
+            token1,
             vault,
             interval
         );
@@ -369,8 +305,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
         (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
-            address(token0),
-            address(token1),
+            token0,
+            token1,
             vault,
             interval
         );
@@ -383,14 +319,7 @@ contract VaultTest is Test, TwapTestHelper {
 
         uint256 amount0 = 1e18;
         uint256 amount1 = 1e6;
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
-
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        uint256 mintShares = vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        uint256 mintShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         uint256 expectedAssets = 5e18;
         assertEq(mintShares, expectedAssets);
@@ -404,8 +333,8 @@ contract VaultTest is Test, TwapTestHelper {
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
         (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
-            address(token0),
-            address(token1),
+            token0,
+            token1,
             vault,
             interval
         );
@@ -413,14 +342,8 @@ contract VaultTest is Test, TwapTestHelper {
         
         uint256 amount0 = 1e18;
         uint256 amount1 = 1e6;
-        token0.mint(alice, amount0);
-        token1.mint(alice, amount1);
 
-        vm.startPrank(alice);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         
         assertEq(vault.totalAssets(), 5e18);
     }

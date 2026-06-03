@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "../mocks/MockERC20.sol";
 import "../mocks/MockUniswapV2Pair.sol";
 import "../../src/TWAPOracle.sol";
 import "../../src/AdaptiveLPVault.sol";
@@ -9,8 +10,8 @@ import "../../src/AdaptiveLPVault.sol";
 abstract contract TwapTestHelper is Test {
     /** @dev Deploys pair/oracle baseline & links to vault. Oracle remains uninitialized until first update. */
     function _deployTwapOracleButNotUpdate(
-        address token0,
-        address token1,
+        MockERC20 token0,
+        MockERC20 token1,
         AdaptiveLPVault vault,
         uint32 interval
     ) internal returns (MockUniswapV2Pair twapPair, TWAPOracle twapOracle) {

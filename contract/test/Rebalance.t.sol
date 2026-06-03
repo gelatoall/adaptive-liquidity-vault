@@ -8,10 +8,11 @@ import "./mocks/MockUniswapV2Router.sol";
 import "./mocks/MockPriceOracle.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "./helpers/VaultTestHelper.sol";
 
 /// @title RebalanceTest
 /// @notice Rebalance-focused tests for the minimal single-venue vault strategy.
-contract RebalanceTest is Test {
+contract RebalanceTest is Test, VaultTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -58,21 +59,6 @@ contract RebalanceTest is Test {
         vault.setAdapter(address(adapter));
     }
 
-    /// @notice Seeds the vault with a user deposit so rebalance tests can start from an idle position.
-    /// @param user Address that performs the deposit.
-    /// @param amount0 Raw token0 amount to deposit.
-    /// @param amount1 Raw token1 amount to deposit.
-    function _setupIdleVault(address user, uint256 amount0, uint256 amount1) internal {
-        token0.mint(user, amount0);
-        token1.mint(user, amount1);
-
-        vm.startPrank(user);
-        token0.approve(address(vault), amount0);
-        token1.approve(address(vault), amount1);
-        vault.deposit(amount0, amount1);
-        vm.stopPrank();
-    }
-
     /// @notice Verifies rebalance remains owner-only.
     function test_Rebalance_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
@@ -85,7 +71,7 @@ contract RebalanceTest is Test {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 liquidityMinted = 5 ether;
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
@@ -107,7 +93,7 @@ contract RebalanceTest is Test {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 liquidityMinted = 5 ether;
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
@@ -124,7 +110,7 @@ contract RebalanceTest is Test {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 liquidityMinted = 5 ether;
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
@@ -151,7 +137,7 @@ contract RebalanceTest is Test {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 liquidityMinted = 5 ether;
-        _setupIdleVault(alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
