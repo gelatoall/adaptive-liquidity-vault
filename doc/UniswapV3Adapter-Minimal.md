@@ -342,6 +342,19 @@ Notes on testing priorities:
 - Exact V3 math tests should be added once `TickMath` and `LiquidityAmounts` are included.
 - Fork tests against real V3 pools should come after local unit tests are stable.
 
+### Vault-Level Integration
+
+After the adapter unit tests are stable, add a separate vault integration file for the V3 path, for example:
+- `VaultV3Integration.t.sol`
+
+That integration layer should verify:
+- `setAdapter()` wires the vault to the V3 adapter
+- `deposit -> deployToVenue -> withdrawFromVenue -> redeem` works as a closed loop
+- `totalAssets()` includes `adapter.getPositionValue()`
+- redemption is blocked while `adapter.hasPosition()` is true
+
+Keep `collectFees()` coverage in the adapter unit tests for now, since the vault does not yet expose a dedicated public fee-harvest entrypoint for V3.
+
 ## Current Vault Integration
 
 The current vault can integrate this adapter without changing `IVenueAdapter`:

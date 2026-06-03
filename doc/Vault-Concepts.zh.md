@@ -1313,3 +1313,17 @@
 - 需要先引入或本地化 `TickMath`
 - 需要先引入或本地化 `LiquidityAmounts`
 - 再测价格在区间内、区间左侧、区间右侧三种情况
+
+### V3 集成测试
+- 在 adapter 单测稳定后，再新增一组 vault 级集成测试，例如 `VaultV3Integration.t.sol`
+- 这组测试的目标不是重复 adapter 的内部细节，而是验证 vault 到 V3 的完整闭环
+- 最小闭环建议覆盖：
+  - `setAdapter()` 正确接入 V3 adapter
+  - `deposit -> deployToVenue -> withdrawFromVenue -> redeem` 可以完整跑通
+  - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
+  - 当 `adapter.hasPosition()` 为 true 时，redeem 仍会被阻止
+- 当前 vault 还没有公开的 V3 `collectFees()` 入口，所以 fee harvest 先留在 adapter 单测里覆盖
+
+### V3 集成测试边界
+- 当前 mock 版本里，token 余额最终会落在 `MockNonfungiblePositionManager`，这是简化实现，不是链上真实 V3 的最终托管位置
+- 如果后面要做真实 V3 对照，再补 fork test 或更贴近真实池子资金流的 mock
