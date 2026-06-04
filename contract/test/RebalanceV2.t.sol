@@ -10,9 +10,9 @@ import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "./helpers/VaultTestHelper.sol";
 
-/// @title RebalanceTest
-/// @notice Rebalance-focused tests for the minimal single-venue vault strategy.
-contract RebalanceTest is Test, VaultTestHelper {
+/// @title RebalanceV2Test
+/// @notice Rebalance-focused tests for the minimal single-venue V2 vault strategy.
+contract RebalanceV2Test is Test, VaultTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -105,7 +105,7 @@ contract RebalanceTest is Test, VaultTestHelper {
         vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
     }
 
-    /// @notice Verifies rebalance to IDLE withdraws all deployed liquidity from the adapter.
+    /// @notice Verifies rebalance to IDLE withdraws all DEPLOYED_V2 liquidity from the adapter.
     function test_Rebalance_V2ToIdle_WithdrawsAllLiquidity() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
@@ -126,13 +126,13 @@ contract RebalanceTest is Test, VaultTestHelper {
         assertFalse(adapter.hasPosition());
     }
 
-    /// @notice Verifies rebalance to IDLE reverts when there is no deployed liquidity to withdraw.
+    /// @notice Verifies rebalance to IDLE reverts when there is no DEPLOYED_V2 liquidity to withdraw.
     function test_Rebalance_Idle_RevertsWhenNoLiquidity() public {
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
         vault.rebalance(AdaptiveLPVault.Venue.IDLE);
     }
 
-    /// @notice Verifies adapter changes are blocked while deployed liquidity is still active.
+    /// @notice Verifies adapter changes are blocked while DEPLOYED_V2 liquidity is still active.
     function test_SetAdapter_RevertsWhenThereIsActiveLiquidity() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;

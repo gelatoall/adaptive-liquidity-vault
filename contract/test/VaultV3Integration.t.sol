@@ -11,10 +11,11 @@ import "./mocks/MockNonfungiblePositionManager.sol";
 import "../src/libraries/v3/TickMath.sol";
 import "../src/libraries/v3/LiquidityAmounts.sol";
 import "../test/helpers/VaultTestHelper.sol";
+import "../test/helpers/V3TestHelper.sol";
 
 /// @title VaultV3IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV3Adapter`.
-contract VaultV3IntegrationTest is Test, VaultTestHelper {
+contract VaultV3IntegrationTest is Test, VaultTestHelper, V3TestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     AdaptiveLPVault public vault;
@@ -74,7 +75,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper {
 
     /// @notice Deploys idle vault funds into the configured V3 adapter.
     function _deployIdleVaultToV3(uint256 amount0, uint256 amount1) internal returns (uint256 liquidity) {
-        (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(amount0, amount1);
+        (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(token0, token1, amount0, amount1);
 
         (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
         uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(tickLower);
@@ -99,19 +100,6 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper {
         assertEq(liquidity, liquidityMinted);
         assertEq(vault.totalLiquidity(), liquidityMinted);
     }
-
-
-    /// @notice Maps vault-ordered amounts to pool-ordered amounts.
-    function _mapPoolAmounts(uint256 vaultAmount0, uint256 vaultAmount1) internal view 
-        returns (uint256 poolAmount0, uint256 poolAmount1) 
-    {
-        if (address(token0) < address(token1)) {
-            return (vaultAmount0, vaultAmount1);
-        } else {
-            return (vaultAmount1, vaultAmount0);
-        }
-    }
-
 
     /// @notice Verifies the vault is wired to the configured V3 adapter.
     function test_SetAdapter_SetsV3AdapterCorrectly() public {
@@ -160,7 +148,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper {
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
 
-        (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(amount0, amount1);
+        (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Desired, poolAmount1Desired);
         (uint256 amount0Out, uint256 amount1Out) =vault.withdrawFromVenue(deployedLiquidity);
 
@@ -213,7 +201,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper {
         vm.prank(alice);
         vault.redeem(aliceShares);
 
-        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(amount0, amount1);
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
         vault.withdrawFromVenue(liquidityMinted);
         assertFalse(adapter.hasPosition());
@@ -266,7 +254,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper {
         // vault -> pool
         uint256 liquidity = _deployIdleVaultToV3(amount0, amount1);
 
-        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(fee0, fee1);
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
 
         uint256 vault0Before = token0.balanceOf(address(vault));

@@ -8,8 +8,9 @@ import "../src/libraries/v3/LiquidityAmounts.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockNonfungiblePositionManager.sol";
+import "./helpers/V3TestHelper.sol";
 
-contract V3AdapterTest is Test {
+contract V3AdapterTest is Test, V3TestHelper {
     UniswapV3Adapter public adapter;
     MockERC20 public token0;
     MockERC20 public token1;
@@ -42,17 +43,6 @@ contract V3AdapterTest is Test {
         );
     }
 
-    /// @notice Maps vault-ordered amounts to pool-ordered amounts.
-    function _mapPoolAmounts(uint256 vaultAmount0, uint256 vaultAmount1) internal view 
-        returns (uint256 poolAmount0, uint256 poolAmount1) 
-    {
-        if (address(token0) < address(token1)) {
-            return (vaultAmount0, vaultAmount1);
-        } else {
-            return (vaultAmount1, vaultAmount0);
-        }
-    }
-
     /// @notice Mints vault funds and initializes a position through the adapter.
     function _initializePosition(
         uint256 mintAmount0,
@@ -66,6 +56,8 @@ contract V3AdapterTest is Test {
         token1.mint(vault, mintAmount1);
 
         (uint256 mintPoolAmount0Used, uint256 mintPoolAmount1Used) = _mapPoolAmounts(
+            token0,
+            token1,
             mintAmount0Used, 
             mintAmount1Used
         );
@@ -138,7 +130,7 @@ contract V3AdapterTest is Test {
         uint256 vault0Before = token0.balanceOf(vault);
         uint256 vault1Before = token1.balanceOf(vault);
 
-        (uint256 poolAmount0Used, uint256 poolAmount1Used) = _mapPoolAmounts(amount0Used, amount1Used);
+        (uint256 poolAmount0Used, uint256 poolAmount1Used) = _mapPoolAmounts(token0, token1, amount0Used, amount1Used);
 
         vm.startPrank(vault);
         token0.approve(address(adapter), amount0);
@@ -176,10 +168,14 @@ contract V3AdapterTest is Test {
         token1.mint(vault, mintAmount1 + increaseAmount1);
 
         (uint256 mintPoolAmount0Used, uint256 mintPoolAmount1Used) = _mapPoolAmounts(
+            token0, 
+            token1, 
             mintAmount0Used, 
             mintAmount1Used
         );
         (uint256 increasePoolAmount0Used, uint256 increasePoolAmount1Used) = _mapPoolAmounts(
+            token0, 
+            token1, 
             increaseAmount0Used, 
             increaseAmount1Used
         );
@@ -235,6 +231,8 @@ contract V3AdapterTest is Test {
         uint256 vault1BeforeDecrease = token1.balanceOf(vault);
 
         (uint256 decreasePoolAmount0Out, uint256 decreasePoolAmount1Out) = _mapPoolAmounts(
+            token0, 
+            token1, 
             expectedVaultAmount0Out,
             expectedVaultAmount1Out
         );
@@ -267,6 +265,8 @@ contract V3AdapterTest is Test {
         uint256 vault1BeforeDecrease = token1.balanceOf(vault);
 
         (uint256 decreasePoolAmount0Out, uint256 decreasePoolAmount1Out) = _mapPoolAmounts(
+            token0, 
+            token1, 
             expectedVaultAmount0Out,
             expectedVaultAmount1Out
         );
@@ -296,7 +296,7 @@ contract V3AdapterTest is Test {
         uint256 vault0BeforeCollect = token0.balanceOf(vault);
         uint256 vault1BeforeCollect = token1.balanceOf(vault);
 
-        (uint256 feePoolAmount0, uint256 feePoolAmount1) = _mapPoolAmounts(fee0, fee1);
+        (uint256 feePoolAmount0, uint256 feePoolAmount1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePoolAmount0), uint128(feePoolAmount1));
         
         vm.prank(vault);
@@ -321,7 +321,7 @@ contract V3AdapterTest is Test {
         _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
         assertFalse(adapter.hasPosition());
 
-        (uint256 feePoolAmount0, uint256 feePoolAmount1) = _mapPoolAmounts(fee0, fee1);
+        (uint256 feePoolAmount0, uint256 feePoolAmount1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePoolAmount0), uint128(feePoolAmount1));
         assertTrue(adapter.hasPosition());
 
@@ -351,6 +351,8 @@ contract V3AdapterTest is Test {
         uint256 expectedVaultAmount1Out = 500e6;
 
         (uint256 decreasePoolAmount0Out, uint256 decreasePoolAmount1Out) = _mapPoolAmounts(
+            token0, 
+            token1, 
             expectedVaultAmount0Out,
             expectedVaultAmount1Out
         );
@@ -392,7 +394,7 @@ contract V3AdapterTest is Test {
             positionLiquidity
         );
 
-        (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(poolAmount0, poolAmount1);
+        (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(token0, token1, poolAmount0, poolAmount1);
 
         (uint256 amount0, uint256 amount1) = adapter.getPositionValue();
 
@@ -425,12 +427,12 @@ contract V3AdapterTest is Test {
             positionLiquidity
         );
 
-        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(fee0, fee1);
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
 
         uint256 expectedPool0 = principalPool0 + feePool0;
         uint256 expectedPool1 = principalPool1 + feePool1;
-        (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(expectedPool0, expectedPool1);
+        (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(token0, token1, expectedPool0, expectedPool1);
 
         (uint256 amount0, uint256 amount1) = adapter.getPositionValue();
 
@@ -450,7 +452,7 @@ contract V3AdapterTest is Test {
         _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
         assertFalse(adapter.hasPosition());
 
-        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(fee0, fee1);
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
 
         assertTrue(adapter.hasPosition());

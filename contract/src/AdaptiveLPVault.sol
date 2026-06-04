@@ -37,7 +37,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     uint256 public totalLiquidity;
 
     /// @notice Minimal venue state used by the rebalance entrypoint.
-    enum Venue {IDLE, DEPLOYED_V2}
+    enum Venue {IDLE, DEPLOYED_V2, DEPLOYED_V3}
 
     // ============================================
     // Events
@@ -334,17 +334,22 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @dev This is a thin owner-only wrapper over the existing deploy and withdraw flows.
     /// @param targetVenue Desired vault state after the rebalance completes.
     function rebalance(Venue targetVenue) external onlyOwner {
-        if (targetVenue == Venue.DEPLOYED_V2) {
-            uint256 amount0 = token0.balanceOf(address(this));
-            uint256 amount1 = token1.balanceOf(address(this));
-            if (amount0 == 0 && amount1 == 0) {
-                revert NoRebalanceNeeded();
-            }
-            _deployToVenue(amount0, amount1, "");
-        } else {
+        if (targetVenue == Venue.IDLE) {
             if (totalLiquidity == 0) revert NoRebalanceNeeded();
             _withdrawFromVenue(totalLiquidity);
+            return;
         }
+        
+        uint256 amount0 = token0.balanceOf(address(this));
+        uint256 amount1 = token1.balanceOf(address(this));
+        if (amount0 == 0 && amount1 == 0) {
+            revert NoRebalanceNeeded();
+        }
+
+        bytes memory params = (targetVenue == Venue.DEPLOYED_V3) 
+            ? abi.encode(0, 0, block.timestamp + 1) : bytes("");
+
+        _deployToVenue(amount0, amount1, params);
     }
 
 }
