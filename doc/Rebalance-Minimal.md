@@ -2,126 +2,197 @@
 
 ## Goal
 
-Build a minimal rebalance layer for the vault that:
-- reuses the existing deploy and withdraw flows
-- supports a single active venue label set: `IDLE`, `DEPLOYED_V2`, or `DEPLOYED_V3`
-- moves from idle balances into the configured V2 or V3 adapter when requested
-- withdraws all deployed liquidity back to idle balances when requested
-- keeps rebalance as a thin owner-only strategy wrapper, not a new funds-flow implementation
+Build a minimal rebalance executor for the vault that:
+- reuses the existing venue deploy and withdraw flows
+- supports multiple registered venue adapters
+- accepts an owner-supplied target plan
+- can move capital from idle balances into one or more venues
+- can withdraw all venue liquidity back to idle balances
+- stays as an execution layer, not an autonomous strategy engine
 
 ## Scope
 
 This version includes:
-- a single venue state machine with V2 and V3 deployed labels
 - owner-only rebalance entrypoint
-- idle-to-V2 or idle-to-V3 deployment using the vault's current token balances
-- deployed-to-idle withdrawal using the tracked deployed liquidity
+- `RebalanceTarget[]` plan input
+- duplicate venue target validation
+- unset and disabled venue validation
+- full withdrawal of all tracked venue liquidity before redeployment
+- deployment into one or more venues after withdrawal
 - no-op or revert semantics when no funds can be moved
-- adapter switch protection while deployed liquidity is active
 
 This version does not include:
-- multi-venue routing
-- partial rebalance
-- threshold-based autonomous triggering
+- automatic venue recommendation
+- TWAP-driven target weighting
+- volatility thresholds
+- cooldown checks
+- max gas price checks
 - keeper automation
-- slippage optimization
-- price-driven target weighting
+- partial in-place rebalancing
+- slippage optimization beyond adapter-level params
 
 Notes:
-- rebalance is built on top of the existing `deployToVenue(...)` and `withdrawFromVenue(...)` flows.
-- the minimal implementation treats `totalLiquidity == 0` as idle and `totalLiquidity > 0` as deployed.
-- V3 is handled as a second deployed label in the same minimal state machine; multi-venue routing is still out of scope.
+- rebalance is built on top of `_withdrawFromVenue(...)` and `_deployToVenue(...)`.
+- `totalLiquidity` is used only as bookkeeping to know whether any tracked liquidity exists.
+- per-venue liquidity is tracked in `venueLiquidity[venueId]`.
+- strategy and quote logic should live outside this minimal executor.
 
-## State
+## Data Model
 
-The rebalance layer relies on:
-- vault idle `token0` balance
-- vault idle `token1` balance
-- tracked deployed LP liquidity
-- configured adapter
+The rebalance entrypoint accepts:
 
-State interpretation:
-- `totalLiquidity == 0` means the vault is effectively idle
-- `totalLiquidity > 0` means the vault has an active deployed position
-- the rebalance target label distinguishes whether the deploy path should use V2-style empty params or V3-style encoded params
+```solidity
+struct RebalanceTarget {
+    uint256 venueId;
+    uint256 amount0;
+    uint256 amount1;
+    bytes params;
+}
+```
+
+Field meanings:
+- `venueId`: registered venue receiving capital
+- `amount0`: raw token0 amount to deploy into that venue
+- `amount1`: raw token1 amount to deploy into that venue
+- `params`: venue-specific adapter params, for example V3 mint limits and deadline
+
+Zero-amount targets are skipped during deployment. They are still checked for duplicate venue ids.
+
+## Venue Id Convention
+
+The current tests and examples use this convention:
+- `1`: Uniswap V2
+- `2`: Uniswap V3 0.05%
+- `3`: Uniswap V3 0.30%
+- `4`: Uniswap V3 1.00%
+
+These ids are caller-defined and are not hardcoded protocol semantics. They become meaningful only after the owner registers adapters through `setVenue(...)`.
+
+`IDLE` is not a venue id. To rebalance back to idle, pass an empty target array.
 
 ## Public Functions
 
-- `rebalance(targetVenue)`
-  - purpose: move the vault between idle and deployed V2/V3 states
+- `rebalance(targets)`
+  - purpose: execute an owner-supplied target allocation
+  - behavior: withdraw all venues first, then deploy non-zero targets
 
-- `setAdapter(adapter)`
-  - purpose: configure the single active venue adapter
-  - behavior: revert if deployed liquidity already exists
+- `setVenue(venueId, adapter, label, enabled)`
+  - purpose: register or update a venue adapter
+  - behavior: updating an active venue is blocked
 
-- `deployToVenue(amount0, amount1, params)`
-  - purpose: manually deploy idle funds into the configured adapter
+- `deployToVenue(venueId, amount0, amount1, params)`
+  - purpose: manually deploy idle funds into a specific venue
 
-- `withdrawFromVenue(liquidity)`
-  - purpose: manually withdraw deployed liquidity back into idle balances
+- `withdrawFromVenue(venueId, liquidity)`
+  - purpose: manually withdraw liquidity from a specific venue
 
-## Core Flows
+## Core Flow
 
-### rebalance to V2
+### rebalance to idle
 
-1. Read the vault's current idle `token0` balance.
-2. Read the vault's current idle `token1` balance.
-3. Revert if both balances are zero.
-4. Call the existing internal deploy flow with the full idle balances and empty params.
-5. Update tracked deployed liquidity through the shared deploy path.
+Call `rebalance` with an empty target array:
 
-### rebalance to V3
+```solidity
+AdaptiveLPVault.RebalanceTarget[] memory targets = new AdaptiveLPVault.RebalanceTarget[](0);
+vault.rebalance(targets);
+```
 
-1. Read the vault's current idle `token0` balance.
-2. Read the vault's current idle `token1` balance.
-3. Revert if both balances are zero.
-4. Call the existing internal deploy flow with the full idle balances and V3-encoded params.
-5. Update tracked deployed liquidity through the shared deploy path.
+Flow:
+1. Validate the empty plan.
+2. Revert with `NoRebalanceNeeded` if `totalLiquidity == 0`.
+3. Withdraw all tracked liquidity from every registered venue.
+4. Leave all returned token balances idle in the vault.
 
-### rebalance to IDLE
+### rebalance to one venue
 
-1. Read tracked deployed liquidity.
-2. Revert if tracked liquidity is zero.
-3. Call the existing internal withdraw flow with the full deployed liquidity.
-4. Idle balances increase by the withdrawn token amounts.
-5. Tracked deployed liquidity returns to zero.
+Call `rebalance` with one target:
 
-### adapter switch protection
+```solidity
+targets[0] = AdaptiveLPVault.RebalanceTarget({
+    venueId: 1,
+    amount0: amount0,
+    amount1: amount1,
+    params: bytes("")
+});
+```
 
-1. Read tracked deployed liquidity.
-2. Revert if liquidity is non-zero.
-3. Allow the adapter to be changed only when the vault is truly idle.
+Flow:
+1. Validate the venue id.
+2. Sum required token amounts.
+3. Withdraw all existing venue liquidity first.
+4. Check idle balances after withdrawal.
+5. Deploy the requested amounts into the target venue.
+
+### rebalance to multiple venues
+
+Call `rebalance` with multiple targets:
+
+```solidity
+targets[0] = AdaptiveLPVault.RebalanceTarget({
+    venueId: 1,
+    amount0: v2Amount0,
+    amount1: v2Amount1,
+    params: bytes("")
+});
+
+targets[1] = AdaptiveLPVault.RebalanceTarget({
+    venueId: 2,
+    amount0: v3Amount0,
+    amount1: v3Amount1,
+    params: abi.encode(amount0Min, amount1Min, deadline)
+});
+```
+
+Flow:
+1. Reject duplicate venue ids.
+2. Validate every non-zero target.
+3. Sum total required `amount0` and `amount1`.
+4. Withdraw all current venues back to idle balances.
+5. Check the idle balances can cover the full plan.
+6. Deploy each non-zero target.
+
+## Why Withdraw All First
+
+The current implementation uses a simple two-phase model:
+- phase 1: pull all tracked venue liquidity back to idle
+- phase 2: deploy the desired target plan
+
+This avoids complex in-place delta accounting between venues. It is less gas efficient, but easier to reason about and test. A later strategy layer can optimize by calculating deltas and only moving the changed capital.
 
 ## Failure Cases
 
 The rebalance layer should revert when:
 - a non-owner calls `rebalance`
-- a rebalance request would not move any funds
-- the vault tries to change adapters while deployed liquidity is active
-- the vault tries to deploy without a configured adapter
-- the vault tries to withdraw without a configured adapter
+- the vault is already idle and the target plan requires no funds
+- a target venue id is duplicated
+- a non-zero target points to an unset venue
+- a non-zero target points to a disabled venue
+- the target plan requires more `token0` or `token1` than available after withdrawals
+- a venue withdrawal fails inside its adapter
+- a venue deployment fails inside its adapter
 
 ## Invariants
 
 These conditions should always hold:
 - rebalance does not implement a separate funds-flow path
-- rebalance only wraps the existing deploy and withdraw helpers
-- tracked deployed liquidity stays in sync with the adapter position
-- the vault can only have one active venue label in this minimal version
-- `IDLE` is represented by zero tracked deployed liquidity
+- rebalance only wraps existing deploy and withdraw helpers
+- per-venue liquidity is updated through the same path as manual venue operations
+- total tracked liquidity equals the sum of tracked liquidity changes applied by venue operations
+- direct user redemption remains blocked while any venue has active liquidity
+- venue ids are caller-defined identifiers, not enum states
 
-## Test Plan
+## Current Test Coverage
 
 Core tests should cover:
-- rebalance remains owner-only
-- idle-to-V2 rebalance deploys all idle balances
-- idle-to-V3 rebalance deploys all idle balances
-- idle-to-V2 rebalance reverts when there is nothing to deploy
-- idle-to-V3 rebalance reverts when there is nothing to deploy
-- V2-to-idle rebalance withdraws all deployed liquidity
-- V3-to-idle rebalance withdraws all deployed liquidity
-- V2-to-idle rebalance reverts when there is nothing to withdraw
-- V3-to-idle rebalance reverts when there is nothing to withdraw
-- adapter switching is blocked while liquidity is deployed
+- owner-only rebalance
+- idle-to-V2 deployment
+- idle-to-V3 deployment
+- deployment to multiple venues in one plan
+- withdrawal of multiple venues back to idle
+- duplicate venue target rejection
+- unset venue target rejection
+- disabled venue target rejection
+- insufficient balance rejection
+- no-liquidity idle rebalance rejection
 
-This list is intentionally minimal and should remain focused on the single-venue rebalance state machine. Future multi-venue or strategy-layer work should add a separate extension of these tests rather than widening the first pass.
+This list is intentionally focused on the minimal executor. Future strategy-layer tests should cover how target plans are produced, not repeat the executor's asset-flow coverage.

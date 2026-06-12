@@ -20,7 +20,7 @@ This version includes:
 
 This version does not include:
 - automatic rebalancing
-- multi-venue routing
+- venue routing inside the adapter
 - fee collection logic beyond normal V2 LP behavior
 - production-grade policy controls beyond vault-only capital movement
 - slippage optimization
@@ -92,10 +92,10 @@ Current code status:
 - `collectFees()` is implemented as `pure` and always reverts with `UnsupportedOperation`
 - add/remove events exist for observability, but current tests treat them as secondary to state and asset-flow verification
 - `AdaptiveLPVault` is now minimally integrated with the adapter through:
-  - `setAdapter(...)`
-  - `deployToVenue(...)`
-  - `withdrawFromVenue(...)`
-  - `totalAssets()` including both idle balances and adapter-reported deployed underlying amounts
+  - `setVenue(venueId, adapter, label, enabled)`
+  - `deployToVenue(venueId, amount0, amount1, params)`
+  - `withdrawFromVenue(venueId, liquidity)`
+  - `totalAssets()` including idle balances and adapter-reported deployed underlying amounts across registered venues
 
 ## Public Functions
 
@@ -230,35 +230,38 @@ Notes on testing priorities:
 The current repository now goes beyond an isolated standalone adapter unit.
 
 `AdaptiveLPVault` is minimally wired to the adapter as follows:
-- the vault stores the configured adapter as `IVenueAdapter`
-- the owner can call `deployToVenue(amount0, amount1, params)`
-- the owner can call `withdrawFromVenue(liquidity)`
+- the vault stores registered venue adapters as `IVenueAdapter`
+- the owner can register the V2 adapter with `setVenue(venueId, adapter, label, enabled)`
+- the owner can call `deployToVenue(venueId, amount0, amount1, params)`
+- the owner can call `withdrawFromVenue(venueId, liquidity)`
 - `totalAssets()` adds:
   - idle token balances held by the vault
-  - deployed underlying token amounts reported by `adapter.getPositionValue()`
-- direct user redemption is intentionally blocked while the adapter still reports an active position
+  - deployed underlying token amounts reported by every registered adapter's `getPositionValue()`
+- direct user redemption is intentionally blocked while any registered venue still reports an active position
 
 This means the current implementation already validates:
 - vault-to-adapter capital movement
 - adapter-to-vault withdrawal flow
-- total asset accounting across idle and deployed balances
+- total asset accounting across idle balances and one or more deployed venues
 
 It does not yet implement:
 - automatic withdrawal during redemption
 - oracle-driven deployment decisions
-- rebalance logic
+- autonomous strategy selection
 
 ## Current Integration Test Coverage
 
 The current integration tests for `AdaptiveLPVault + UniswapV2Adapter` cover:
-- adapter wiring via `setAdapter(...)`
+- adapter wiring via `setVenue(...)`
 - owner-only deployment and withdrawal
-- revert when deployment or withdrawal is attempted before the adapter is configured
+- revert when deployment or withdrawal is attempted before the venue is configured
+- revert when deployment is attempted for a disabled venue
 - successful deployment moving idle vault funds into an adapter-held LP position
 - unused dust remaining in the vault after deployment
 - successful withdrawal returning underlying token balances back to the vault
 - redemption reverting while the adapter still has an active position
 - redemption succeeding again after the owner withdraws liquidity back to the vault
+- per-venue liquidity tracking in the multi-venue vault
 
 These tests are intentionally focused on:
 - permissions

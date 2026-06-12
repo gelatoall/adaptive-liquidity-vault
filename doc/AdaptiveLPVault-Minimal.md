@@ -2,12 +2,13 @@
 
 ## Goal
 
-Build a minimal idle two-asset vault that:
+Build a minimal two-asset vault that:
 - accepts deposits of `token0` and `token1`
-- mints vault shares based on the deposit value
-- allows users to redeem shares for the underlying tokens
-- tracks total vault assets using internal balances and an external price oracle
-- supports a single venue adapter integration path and a minimal owner-only rebalance wrapper for idle, V2, and V3 deployment states
+- mints vault shares based on deposit value
+- allows users to redeem shares for idle underlying balances
+- tracks total vault assets across idle balances and registered venue positions
+- supports multiple venue adapters through a simple venue registry
+- supports owner-supplied rebalance plans across registered venues
 
 ## Scope
 
@@ -16,23 +17,27 @@ This version includes:
 - `redeem`
 - `totalAssets`
 - share minting and burning
-- oracle-based price reads for testing
-- a single adapter integration path for V2 and V3 venue implementations
-- a minimal rebalance wrapper over the existing deploy and withdraw flows
+- oracle-based asset valuation
+- venue registration through `setVenue(...)`
+- manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
+- multi-venue asset accounting
+- a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 
 This version does not include:
-- multi-venue routing
-- fees
-- the full ERC4626 interface
+- automatic strategy selection
+- autonomous keepers
+- threshold-based rebalance conditions
+- automatic withdrawal during user redemption
 - deposit ratio optimization
+- the full ERC4626 interface
 
 Notes:
-- the vault depends on `IPriceOracle` for prices.
-- `MockPriceOracle` is a test helper that exposes `setPrices(...)`.
-- `IPriceOracle` itself is read-only and only defines `getPrices()`.
-- A production version should replace the mock oracle with a real oracle implementation.
-- TWAP implementation details are documented in `doc/TWAPOracle-Minimal.md`.
-- Rebalance strategy details are documented in `doc/Rebalance-Minimal.md`.
+- the vault depends on `IPriceOracle` for prices
+- `MockPriceOracle` is a test helper that exposes `setPrices(...)`
+- `IPriceOracle` itself is read-only and only defines `getPrices()`
+- a production version should replace the mock oracle with a real oracle implementation
+- TWAP implementation details are documented in `doc/TWAPOracle-Minimal.md`
+- rebalance details are documented in `doc/Rebalance-Minimal.md`
 
 ## State
 
@@ -41,24 +46,42 @@ The vault stores:
 - `token1` address
 - `token0` decimals
 - `token1` decimals
-- oracle address, which provides `token0` and `token1` prices
-- a single venue adapter used for deployment and withdrawal
+- oracle address
+- venue configs by `venueId`
+- registered venue ids for iteration
+- per-venue tracked liquidity
+- total tracked liquidity across all venues
 - ERC20 share supply and balances
 
-Notes:
-- Shares are represented as an ERC20 token.
-- All asset values are normalized into a base-denominated `1e18` value before share calculation.
+Venue state:
+- `venues[venueId]` stores the adapter, enabled flag, and optional label
+- `venueRegistered[venueId]` tracks whether a venue id has been registered
+- `venueIds` is used to iterate all registered venues in `totalAssets()` and withdrawal flows
+- `venueLiquidity[venueId]` tracks liquidity reported by each adapter
+- `totalLiquidity` is bookkeeping only; liquidity units can differ across venues and should not be treated as asset value
+
+Current test and example convention:
+- `1`: Uniswap V2
+- `2`: Uniswap V3 0.05%
+- `3`: Uniswap V3 0.30%
+- `4`: Uniswap V3 1.00%
+
+These ids are not hardcoded protocol semantics. They become meaningful only after the owner registers adapters through `setVenue(...)`. `IDLE` is not a venue id; rebalance-to-idle is represented by an empty target array.
 
 ## Public Functions
 
-- `constructor(token0, token1, decimals0, decimals1)`
-  - purpose: initialize token addresses and decimals
+- `constructor(name, symbol, token0, token1, decimals0, decimals1)`
+  - purpose: initialize share token metadata, underlying tokens, and decimals
 
 - `setOracle(oracle)`
   - purpose: set the oracle used to read `token0` and `token1` prices
 
+- `setVenue(venueId, adapter, label, enabled)`
+  - purpose: register or update a venue adapter
+  - behavior: updating an existing venue is blocked while that venue has tracked liquidity or adapter-reported position state
+
 - `totalAssets()`
-  - purpose: return the combined value of the vault's current token balances
+  - purpose: return the combined value of idle balances and all adapter-reported venue positions
   - returns: `uint256 assets`
 
 - `deposit(amount0, amount1)`
@@ -66,86 +89,117 @@ Notes:
   - returns: `uint256 shares`
 
 - `redeem(shares)`
-  - purpose: burn shares and return the proportional underlying token amounts
+  - purpose: burn shares and return proportional idle token balances
+  - behavior: reverts while any registered venue still has tracked or adapter-reported active position state
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
-- `deployToVenue(amount0, amount1, params)`
-  - purpose: deploy idle funds into the configured venue adapter
+- `deployToVenue(venueId, amount0, amount1, params)`
+  - purpose: deploy idle funds into a registered venue adapter
   - returns: `uint256 liquidity`
 
-- `withdrawFromVenue(liquidity)`
-  - purpose: withdraw deployed liquidity back into idle balances
+- `withdrawFromVenue(venueId, liquidity)`
+  - purpose: withdraw deployed liquidity from a specific venue back into idle balances
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
-- `rebalance(targetVenue)`
-  - purpose: move the vault between idle and the supported deployed states
+- `rebalance(targets)`
+  - purpose: execute an owner-supplied multi-venue target plan
+  - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
 
 ## Core Flows
 
 ### deposit
 
 1. Reject if both deposit amounts are zero.
-2. Read `totalAssets()` before the deposit.
-3. Read `totalSupply()` before the deposit.
-4. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
-5. Calculate shares to mint using `VaultMath.calculateShares`.
-6. Transfer `token0` and `token1` from the user into the vault.
-7. Mint shares to the depositor.
+2. Require an oracle.
+3. Read `totalAssets()` before the deposit.
+4. Read `totalSupply()` before the deposit.
+5. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
+6. Calculate shares to mint using `VaultMath.calculateShares`.
+7. Transfer `token0` and `token1` from the user into the vault.
+8. Mint shares to the depositor.
 
 ### redeem
 
 1. Reject if `shareToRedeem` is zero.
 2. Revert if `shareToRedeem` exceeds the caller's balance.
-3. Read `totalSupply()` before burning.
-4. Read the current `token0` and `token1` balances held by the vault.
-5. Compute the proportional token amounts owed to the user.
-6. Burn the user's `shareToRedeem`.
-7. Transfer `token0` and `token1` to the user.
+3. Revert if any venue still has tracked liquidity or adapter-reported position state.
+4. Read `totalSupply()` before burning.
+5. Read idle `token0` and `token1` balances held by the vault.
+6. Compute the proportional idle token amounts owed to the user.
+7. Burn the user's shares.
+8. Transfer `token0` and `token1` to the user.
 
 ### totalAssets
 
-1. Read the current `token0` balance held by the vault.
-2. Read the current `token1` balance held by the vault.
-3. Read `price0` and `price1` from the configured oracle.
-4. Convert both balances into base-denominated values using the oracle prices.
-5. Return the combined vault value.
+1. Require an oracle.
+2. Read idle `token0` and `token1` balances held by the vault.
+3. Iterate all registered `venueIds`.
+4. For each configured adapter, call `adapter.getPositionValue()`.
+5. Sum idle balances and deployed venue amounts.
+6. Convert the combined token amounts into base-denominated value using oracle prices.
+
+### deployToVenue
+
+1. Require the venue to be registered and configured with an adapter.
+2. Require the venue to be enabled.
+3. Temporarily approve the adapter to pull the requested token amounts.
+4. Call `adapter.addLiquidity(amount0, amount1, params)`.
+5. Increase `venueLiquidity[venueId]` and `totalLiquidity`.
+6. Reset adapter allowances back to zero.
+
+### withdrawFromVenue
+
+1. Require the venue to be registered and configured with an adapter.
+2. Reject zero liquidity.
+3. Require enough tracked liquidity for that venue.
+4. Call `adapter.removeLiquidity(liquidity)`.
+5. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
 ### rebalance
 
-1. Check for Withdrawal (`IDLE`): If the target venue is IDLE, verify that there is active liquidity (`totalLiquidity > 0`). If so, withdraw all tracked liquidity through the adapter; otherwise, revert with `NoRebalanceNeeded`.
+1. Reject duplicate venue targets.
+2. Validate every non-zero target points to a registered and enabled venue.
+3. Sum required `amount0` and `amount1` across the target plan.
+4. If the vault is already idle and the plan requires no funds, revert `NoRebalanceNeeded`.
+5. Withdraw all tracked venue liquidity back to idle balances.
+6. Require idle balances to cover the target plan.
+7. Deploy each non-zero target into its requested venue.
 
-2. Check for Deployment (`DEPLOYED_V2 / DEPLOYED_V3`): If the target venue is a deployed venue, check the current idle token balances of the vault. Revert with `NoRebalanceNeeded` if both balances are zero.
-
-3. Execute Deployment: Encode the specific parameters (including deadlines for V3 if applicable) and deploy the idle funds into the target venue through the adapter.
+An empty target array means "withdraw all venues to idle". It only succeeds if there is tracked liquidity to withdraw.
 
 ## Failure Cases
 
 The vault should revert when:
 - both deposit amounts are zero
 - the oracle is not configured
-- a non-zero deposit asset has a zero price
-- the vault is in an invalid state for share calculation
 - a non-zero deposit would mint zero shares
 - `redeem` is called with zero shares
 - `redeem` is called with more shares than the user owns
-- `rebalance` is called by a non-owner
-- `rebalance` cannot move any funds
-- the adapter is not configured for venue operations
-- the adapter is changed while deployed liquidity is still active
+- `redeem` is called while any venue is active
+- a non-owner calls owner-only functions
+- a venue operation references an unset venue
+- a venue operation references a disabled venue
+- a venue withdrawal requests zero liquidity
+- a venue withdrawal exceeds tracked liquidity
+- a venue update is attempted while that venue has active liquidity
+- a rebalance plan contains duplicate venue ids
+- a rebalance plan requires more token balance than available after withdrawals
+- rebalance cannot move any funds
 
 ## Invariants
 
 These conditions should always hold:
-- the initial deposit mints shares equal to the deposit value
+- the initial deposit mints shares equal to deposit value
 - non-zero deposits must not mint zero shares
-- `totalAssets()` reflects the vault's current token balances and oracle prices
-- redeeming shares reduces the user's share balance and the total share supply
-- rebalance only wraps the existing deploy and withdraw helpers
-- deployed liquidity is tracked as a single active venue position for the minimal version
+- `totalAssets()` reflects idle balances plus adapter-reported position values across all registered venues
+- redeeming shares reduces the user's share balance and total share supply
+- users can only redeem idle balances
+- per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
+- rebalance reuses the same deploy and withdraw helpers as manual venue operations
 
 ## Test Plan
 
-The first test set should cover:
+Vault basics:
 - initial deposit mints shares equal to deposit value
 - subsequent deposit mints proportional shares
 - deposit transfers tokens into the vault
@@ -155,20 +209,24 @@ The first test set should cover:
 - redeem burns shares and returns underlying assets
 - redeem reverts when shares is zero
 - redeem reverts when the user has insufficient shares
-- redeem returns `token0` and `token1` in proportion to the redeemed shares
 
-TWAP integration coverage currently includes:
-- deposit reverts before TWAP oracle has a first valid update
-- deposit works after TWAP update and uses TWAP prices for share minting
-- `totalAssets()` works after TWAP update and reflects TWAP-based valuation
+Venue integration:
+- `setVenue(...)` registers V2 and V3 adapters
+- deployment reverts when venue is unset or disabled
+- deployment tracks per-venue liquidity
+- withdrawal reduces per-venue liquidity and total liquidity
+- `totalAssets()` includes idle balances and all venue positions
+- redeem reverts while any venue has active liquidity
+- venue updates are blocked while the target venue is active
 
-Rebalance coverage currently includes:
+Rebalance coverage:
 - rebalance remains owner-only
-- idle-to-V2 rebalance deploys all idle balances
-- idle-to-V3 rebalance deploys all idle balances
-- V2-to-idle rebalance withdraws all deployed liquidity
-- V3-to-idle rebalance withdraws all deployed liquidity
+- rebalance can deploy to V2
+- rebalance can deploy to V3
+- rebalance can split capital across multiple venues
+- rebalance can withdraw all venues back to idle
+- rebalance rejects duplicate venue targets
+- rebalance rejects plans that exceed available balances
 - rebalance reverts when there is no liquidity to move
-- adapter switching is blocked while liquidity is deployed
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

@@ -8,9 +8,9 @@ import "../src/libraries/v3/LiquidityAmounts.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockNonfungiblePositionManager.sol";
-import "./helpers/V3TestHelper.sol";
+import "./helpers/VenueTestHelper.sol";
 
-contract V3AdapterTest is Test, V3TestHelper {
+contract V3AdapterTest is Test, VenueTestHelper {
     UniswapV3Adapter public adapter;
     MockERC20 public token0;
     MockERC20 public token1;

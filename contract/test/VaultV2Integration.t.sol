@@ -10,10 +10,11 @@ import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
 import "./helpers/TwapTestHelper.sol";
 import "./helpers/VaultTestHelper.sol";
+import "./helpers/VenueTestHelper.sol";
 
 /// @title VaultV2IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV2Adapter`.
-contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
+contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -28,7 +29,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
-    /// @notice Deploys the mock tokens, vault, pair, router, and adapter used by each test.
+    /// @notice Deploys the mock tokens, vault, pair, router, and venue used by each test.
     function setUp() public {
         // deploy token0/token1
         token0 = new MockERC20("token0", "T0", decimals0);
@@ -57,50 +58,45 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         );
 
         // set adapter into vault
-        vault.setAdapter(address(adapter));
+        vault.setVenue(V2_VENUE_ID, address(adapter), V2_LABEL, true);
     }
 
     // ============================================
-    // Integration Tests for User & vault & V2 adapter
+    // Integration Tests for User & vault & V2 venue
     // ============================================
-    /// @notice Verifies the default fixture wires the vault to the configured adapter.
-    function test_SetAdapter_SetsAdapterCorrectly() public {
-        assertEq(address(vault.adapter()), address(adapter));
-    }
-
     /// @notice Verifies only the vault owner can update the configured adapter.
-    function test_SetAdapter_RevertsWhenCallerIsNotOwner() public {
+    function test_SetVenue_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        vault.setAdapter(address(adapter));
+        vault.setVenue(V2_VENUE_ID, address(adapter), V2_LABEL, true);
     }
     
     /// @notice Verifies the vault rejects a zero-address adapter configuration.
-    function test_SetAdapter_RevertsWhenAdapterIsZeroAddress() public {
+    function test_SetVenue_RevertsWhenAdapterIsZeroAddress() public {
         // vm.prank(vault.owner());
         vm.expectRevert(AdaptiveLPVault.ZeroAddress.selector);
-        vault.setAdapter(address(0));
+        vault.setVenue(V2_VENUE_ID, address(0), V2_LABEL, true);
     }
     
-    /// @notice Verifies deployment to a venue fails when no adapter has been configured.
-    function test_DeployToVenue_RevertsWhenAdapterNotSet() public {
+    /// @notice Verifies deployment to a venue fails when no venue has been configured.
+    function test_DeployToVenue_RevertsWhenVenueNotSet() public {
         AdaptiveLPVault freshVault = new AdaptiveLPVault(
             "Adaptive LP Vault", "ALPV", 
             address(token0), address(token1), 
             decimals0, decimals1
         );
-        vm.expectRevert(AdaptiveLPVault.AdapterNotSet.selector);
-        freshVault.deployToVenue(1 ether, 1e6, "");
+        vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
+        freshVault.deployToVenue(1, 1 ether, 1e6, "");
     }
 
     /// @notice Verifies only the vault owner can trigger venue deployment.
     function test_DeployToVenue_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        vault.deployToVenue(1 ether, 1e6, "");
+        vault.deployToVenue(1, 1 ether, 1e6, "");
     }
 
-    /// @notice Verifies deploying idle funds moves balances from the vault into the adapter LP position.
+    /// @notice Verifies deploying idle funds moves balances from the vault into the  LP position.
     function test_DeployToVenue_MovesIdleTokensIntoAdapterPosition() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
@@ -113,7 +109,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 totalAssetsBefore = vault.totalAssets();
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
 
-        uint256 liquidity = vault.deployToVenue(amount0, amount1, "");
+        uint256 liquidity = vault.deployToVenue(1, amount0, amount1, "");
         pair.setReserves(uint112(amount0Used), uint112(amount1Used));
         uint256 totalAssetsAfter = vault.totalAssets();
 
@@ -131,22 +127,22 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         assertEq(totalAssetsBefore, totalAssetsAfter);
     }
     
-    /// @notice Verifies withdrawal from a venue fails when no adapter has been configured.
-    function test_WithdrawFromVenue_RevertsWhenAdapterNotSet() public {
+    /// @notice Verifies withdrawal from a venue fails when no venue has been configured.
+    function test_WithdrawFromVenue_RevertsWhenVenueNotSet() public {
         AdaptiveLPVault freshVault = new AdaptiveLPVault(
             "Adaptive LP Vault", "ALPV", 
             address(token0), address(token1), 
             decimals0, decimals1
         );
-        vm.expectRevert(AdaptiveLPVault.AdapterNotSet.selector);
-        freshVault.withdrawFromVenue(1 ether);
+        vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
+        freshVault.withdrawFromVenue(1, 1 ether);
     }
 
     /// @notice Verifies only the vault owner can withdraw deployed liquidity from the adapter.
     function test_WithdrawFromVenue_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        vault.withdrawFromVenue(1 ether);
+        vault.withdrawFromVenue(1, 1 ether);
     }
 
     /// @notice Verifies withdrawing from the venue returns the underlying tokens back to the vault.
@@ -163,7 +159,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
-        vault.deployToVenue(amount0, amount1, "");
+        vault.deployToVenue(1, amount0, amount1, "");
         pair.setReserves(uint112(amount0Used), uint112(amount1Used));
 
         uint256 vaultToken0Before = token0.balanceOf(address(vault));
@@ -171,7 +167,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 adapterLpBefore = pair.balanceOf(address(adapter));
 
         router.setNextRemoveLiquidityResult(amount0Out, amount1Out);
-        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(liquidityMinted);
+        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(1, liquidityMinted);
 
         assertEq(actual0, amount0Out);
         assertEq(actual1, amount1Out);
@@ -186,7 +182,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
     }
 
     /// @notice Verifies users cannot redeem while the vault still has an active deployed position.
-    function test_Redeem_RevertsWhenAdapterHasActivePosition() public {
+    function test_Redeem_RevertsWhenVenueHasActivePosition() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 amount0Used = 8 ether;
@@ -196,7 +192,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
-        vault.deployToVenue(amount0, amount1, "");
+        vault.deployToVenue(1, amount0, amount1, "");
 
         uint256 aliceShares = vault.balanceOf(alice);
 
@@ -222,14 +218,14 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
         assertEq(aliceShares, 30 ether);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
-        vault.deployToVenue(amount0, amount1, "");
+        vault.deployToVenue(1, amount0, amount1, "");
 
         vm.expectRevert(AdaptiveLPVault.ActivePositionExists.selector);
         vm.prank(alice);
         vault.redeem(aliceShares);
 
         router.setNextRemoveLiquidityResult(amount0OutFromWithdraw, amount1OutFromWithdraw);
-        vault.withdrawFromVenue(liquidityMinted);
+        vault.withdrawFromVenue(1, liquidityMinted);
         assertEq(pair.balanceOf(address(adapter)), 0);  // adapter doesn't have LP tokens
 
         vm.prank(alice);
@@ -266,7 +262,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 liquidityMinted = 1e18;
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
-        vault.deployToVenue(amount0, amount1, "");
+        vault.deployToVenue(1, amount0, amount1, "");
         pair.setReserves(uint112(amount0), uint112(amount1));
 
         uint256 totalAssetsAfterDeploy = vault.totalAssets();

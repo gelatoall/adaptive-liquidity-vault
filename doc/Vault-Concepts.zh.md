@@ -132,7 +132,7 @@
   - `shares -> ownership ratio -> amount0Out/amount1Out`
 - `redeem` 会按 shares 占比返还底层 token。
 - 在当前最小集成里，`redeem` 还有一个额外前置条件：
-  - 如果 adapter 里还有 active position
+  - 如果任意已注册 venue 里还有 active position
   - 就不能直接 `redeem`
   - 必须先把 deployed position withdraw 回 vault
 
@@ -149,16 +149,16 @@
   - `amount0Out = vaultIdle0 * shares / totalSupplyBefore`
   - `amount1Out = vaultIdle1 * shares / totalSupplyBefore`
 - 这也是为什么当前版本要求：
-  - 如果 adapter 里还有 active position
-  - 就要先 `withdrawFromVenue()`
+  - 如果任意 venue 里还有 active position
+  - 就要先 `withdrawFromVenue(venueId, liquidity)` 或 `rebalance(emptyTargets)`
   - 再 `redeem()`
 
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
-- 当前版本下，如果资金仍然部署在 adapter 里，`redeem()` 会直接 revert `ActivePositionExists`。
+- 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会直接 revert `ActivePositionExists`。
 - 所以当前真实流程是：
-  - `deployToVenue(...)`
-  - `withdrawFromVenue(...)`
+  - `deployToVenue(venueId, ...)`
+  - `withdrawFromVenue(venueId, liquidity)` 或 `rebalance(emptyTargets)`
   - `redeem(...)`
 
 ## 4. 约束与 Revert
@@ -370,8 +370,9 @@
 
 ### 为什么 vault 里更适合存 `IVenueAdapter`，而不是 `UniswapV2Adapter`
 - 如果 vault 里存的是：
-  - `IVenueAdapter public adapter`
-  - 含义是：vault 依赖的是 adapter 的统一能力
+  - `mapping(uint256 => VenueConfig) public venues`
+  - 其中 `VenueConfig.adapter` 是 `IVenueAdapter`
+  - 含义是：vault 依赖的是每个 venue adapter 的统一能力
 - 这些统一能力就是：
   - `addLiquidity`
   - `removeLiquidity`
@@ -408,10 +409,10 @@
 
 所以在最小集成阶段：
 - adapter 里把 `vault` 存成 `address`
-- vault 里把 `adapter` 存成 `IVenueAdapter`
+- vault 里按 `venueId` 把 `adapter` 存成 `IVenueAdapter`
 - 这是当前这套分层里最合理、也最稳定的依赖方向
 
-### 为什么 `setAdapter(address _adapter)` 里会写 `adapter = IVenueAdapter(_adapter)`
+### 为什么 `setVenue(..., address _adapter, ...)` 里会写 `adapter: IVenueAdapter(_adapter)`
 - `address _adapter` 本身只是一个地址值。
 - 单独的 `address` 类型只表示“某个链上地址”，不表示这个地址上有什么函数可以调用。
 - 所以如果只是拿到一个 `address`，编译器并不知道你能不能对它调用：
@@ -420,7 +421,7 @@
   - `getPositionValue`
 
 当代码写成：
-- `adapter = IVenueAdapter(_adapter);`
+- `adapter: IVenueAdapter(_adapter)`
 
 它的含义不是：
 - 部署了一个新合约
@@ -431,9 +432,9 @@
 - 告诉 Solidity：请把这个地址当成一个“实现了 `IVenueAdapter` 接口的外部合约引用”来使用
 
 这样后面才可以写：
-- `adapter.addLiquidity(...)`
-- `adapter.removeLiquidity(...)`
-- `adapter.getPositionValue()`
+- `venues[venueId].adapter.addLiquidity(...)`
+- `venues[venueId].adapter.removeLiquidity(...)`
+- `venues[venueId].adapter.getPositionValue()`
 
 更准确地说，这是：
 - 一种“类型视角转换”
@@ -450,8 +451,8 @@
   - 只是原始地址值
 - `IVenueAdapter(_adapter)`
   - 把这个地址解释成一个可按接口调用的合约引用
-- `IVenueAdapter public adapter`
-  - 把这个接口引用保存到 vault 状态里，供后续调用
+- `venues[venueId].adapter`
+  - 把这个接口引用保存到指定 venue 的配置里，供后续调用
 
 一句话记住：
 - `address` 解决“它在哪”
@@ -552,7 +553,7 @@
 - `deposit()` 之前，token 的持有人是用户，不是 vault
 - vault 没资格替用户授权自己花用户的钱
 
-`deployToVenue()` 时：
+`deployToVenue(venueId, ...)` 时：
 - token 已经不在用户手里了
 - token 已经在 vault 手里
 - 接下来是 adapter 想从 vault 这里把 token 拉走去做加池
@@ -565,7 +566,7 @@
 
 一句话对比：
 - `deposit()`：用户的钱进 vault，所以用户先 `approve vault`
-- `deployToVenue()`：vault 的钱进 adapter，所以 vault 自己 `approve adapter`
+- `deployToVenue(venueId, ...)`：vault 的钱进对应 venue adapter，所以 vault 自己 `approve adapter`
 
 ### `balanceOf`、`contract.function()`、`owner`、`msg.sender` 分别是什么意思
 - 这几个词很容易被混在一起，但它们不是一回事。
@@ -690,17 +691,18 @@
 
 ### 当前 vault-adapter 最小集成已经做到什么
 - vault 当前已经能：
-  - 通过 `setAdapter(...)` 挂接一个 `IVenueAdapter`
-  - 通过 `deployToVenue(...)` 把 idle 资金部署出去
-  - 通过 `withdrawFromVenue(...)` 把 deployed 资金撤回
-  - 通过 `totalAssets()` 把 idle balances 和 adapter reported amounts 一起估值
+  - 通过 `setVenue(...)` 注册多个 `IVenueAdapter`
+  - 通过 `deployToVenue(venueId, ...)` 把 idle 资金部署到指定 venue
+  - 通过 `withdrawFromVenue(venueId, liquidity)` 把指定 venue 的 deployed 资金撤回
+  - 通过 `totalAssets()` 把 idle balances 和所有 registered venue reported amounts 一起估值
 - 当前这版还没有做到：
   - 自动根据价格决定什么时候 deploy
   - 自动在 `redeem()` 里帮用户拆仓
-  - 自动 rebalance
+  - 自动生成 rebalance plan
 - 所以更准确地说：
   - 现在已经接通了 vault 和 adapter 的资产流主干
-  - 但策略层和 oracle 层还没有接上
+  - multi-venue 执行层已经接上
+  - 但策略层还没有接上
 
 ## 10. 我已经发现的常见错误
 
@@ -976,71 +978,115 @@
 ## 15. Rebalance（当前实现）
 
 ### 这一层负责什么
-- `rebalance` 负责“状态切换”，不是重新发明一套资金流。
+- `rebalance` 负责执行 owner 给出的目标部署计划，不负责自己决定策略。
 - 更准确地说：
-  - `deployToVenue(...)` 负责把 idle 资金送进当前配置的 adapter
-  - `withdrawFromVenue(...)` 负责把当前仓位撤回成 idle balances
-  - `rebalance(...)` 只是把这两个现有动作包成一个 owner-only 策略入口，并用 `IDLE / DEPLOYED_V2 / DEPLOYED_V3` 表示目标状态
+  - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
+  - `withdrawFromVenue(venueId, liquidity)` 负责把指定 venue 仓位撤回成 idle balances
+  - `rebalance(targets)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
 
-### 当前最小状态机
-- 当前 rebalance 只支持三个状态：
-  - `IDLE`
-  - `DEPLOYED_V2`
-  - `DEPLOYED_V3`
-- 在这版实现里，状态真相仍然主要由 `totalLiquidity` 表示：
-  - `totalLiquidity == 0` -> 视为 `IDLE`
-  - `totalLiquidity > 0` -> 视为已部署
-- 这样做的好处是：
-  - 不需要再维护一套复杂的 `currentVenue` 语义
-  - 直接读取 deployed LP 记录，就能判断当前是否有 active position
+### 当前 multi-venue 模型
+- 当前 vault 不再用 `IDLE / DEPLOYED_V2 / DEPLOYED_V3` 这种 enum 表示目标状态。
+- 当前测试和示例里采用以下 `venueId` 约定：
+  - `1`: Uniswap V2
+  - `2`: Uniswap V3 0.05%
+  - `3`: Uniswap V3 0.30%
+  - `4`: Uniswap V3 1.00%
+- 这些数字不是协议强制语义，而是 owner 在 `setVenue(...)` 里注册出来的 venue id。
+- `IDLE` 不是 venueId。当前如果要 rebalance 回 idle，传空的 `targets` 数组。
 
-### rebalance to deployed venue
-- 如果目标是 `DEPLOYED_V2`：
-  1. 读取 vault 当前 idle 的 `token0` 和 `token1` 余额
-  2. 如果两边余额都为 0，就 `revert NoRebalanceNeeded()`
-  3. 调用现有的 deploy helper，把全部 idle 余额部署进 V2，并传入空 params
-  4. helper 成功后更新 `totalLiquidity`
-- 这表示 rebalance 不是“猜一个金额再部署”，而是“把当前 idle 余额直接搬进 V2”
+### venue registry
+- 每个 venue 通过 `setVenue(venueId, adapter, label, enabled)` 注册。
+- vault 里维护：
+  - `venues[venueId]`
+  - `venueRegistered[venueId]`
+  - `venueIds`
+  - `venueLiquidity[venueId]`
+  - `totalLiquidity`
+- `totalLiquidity` 只是 bookkeeping：
+  - 它说明当前是否有 tracked liquidity
+  - 但不同 venue 的 liquidity 单位不一定可比
+  - 所以不能把 `totalLiquidity` 当成资产价值
 
-- 如果目标是 `DEPLOYED_V3`：
-  1. 读取 vault 当前 idle 的 `token0` 和 `token1` 余额
-  2. 如果两边余额都为 0，就 `revert NoRebalanceNeeded()`
-  3. 调用现有的 deploy helper，把全部 idle 余额部署进 V3，并传入 V3 编码 params
-  4. helper 成功后更新 `totalLiquidity`
-- 这表示 V3 的 rebalance 仍然是同一条最小资金流，只是 deploy params 变成了 V3 需要的最小编码参数
+### RebalanceTarget
+- 当前 `rebalance` 的入参是：
 
-### rebalance to IDLE
-- 如果目标是 `IDLE`：
-  1. 读取当前 tracked `totalLiquidity`
+```solidity
+struct RebalanceTarget {
+    uint256 venueId;
+    uint256 amount0;
+    uint256 amount1;
+    bytes params;
+}
+```
+
+- 含义是：
+  - `venueId`：目标 venue
+  - `amount0`：部署到该 venue 的 token0 原始数量
+  - `amount1`：部署到该 venue 的 token1 原始数量
+  - `params`：透传给 adapter 的 venue-specific 参数
+
+### rebalance to idle
+- 如果想把所有 venue 撤回 idle：
+  1. 传入空数组 `targets`
   2. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
-  3. 调用现有的 withdraw helper，把全部 LP 从当前部署状态撤回
-  4. helper 成功后把 `totalLiquidity` 减回 0
-- 这表示 rebalance 不是“部分撤仓后留下一部分状态”，而是最小版本的全量回退
+  3. vault 遍历 `venueIds`
+  4. 对每个 `venueLiquidity[id] > 0` 的 venue 调 `_withdrawFromVenue(id, liquidity)`
+  5. 所有资金回到 vault idle balances
+
+### rebalance to one or multiple venues
+- 如果想部署到一个或多个 venue：
+  1. 传入一个或多个 `RebalanceTarget`
+  2. vault 检查是否有重复 `venueId`
+  3. vault 检查非零 target 对应的 venue 是否已注册且 enabled
+  4. vault 汇总本次计划需要的 `required0/required1`
+  5. vault 先把所有已有 venue liquidity 撤回 idle
+  6. vault 检查撤回后的 idle balances 是否足够覆盖计划
+  7. vault 逐个把非零 target 部署进对应 venue
+
+### 为什么当前实现是“先全撤，再部署”
+- 这是最小实现的刻意选择：
+  - accounting 简单
+  - 测试简单
+  - 不需要先做 venue-to-venue delta 计算
+  - 不需要处理某个 venue 增仓、另一个 venue 减仓的复杂路径
+- 代价是：
+  - gas 更高
+  - 对真实 AMM 来说可能多一次退出和进入
+- 后续如果做策略层，可以再优化成 delta rebalance。
 
 ### 权限和边界
 - `rebalance()` 是 owner-only 策略入口
-- `setAdapter()` 在仍有 deployed liquidity 时会 revert
+- `setVenue()` 在目标 venue 仍有 tracked liquidity 或 adapter-reported position 时会 revert
+- `rebalance()` 会拒绝 duplicate venue target
+- `rebalance()` 会拒绝 unset 或 disabled venue
+- `rebalance()` 会拒绝超过可用余额的 target plan
 - 这样可以避免：
   - adapter 切换后，vault 里的部署会计和真实仓位脱节
   - rebalance 读到的状态和实际资产流不一致
 
-### 为什么这里先不做 multi-venue / 策略层
-- 当前阶段仍然只维护一个部署槽位，但 rebalance 已经能把目标标签区分成 V2 或 V3
-- 所以 rebalance 的语义应该尽量简单：
-  - 只看 idle balances
-  - 只看 tracked LP liquidity
-  - 只调用现有 deploy / withdraw helper
-- 等以后加 multi-venue 或 TWAP 策略后，再把 rebalance 扩展成更复杂的策略层
+### 为什么这里还不做 strategy
+- 当前已经有 multi-venue 执行层，但还没有自动策略层。
+- 也就是说：
+  - vault 能执行“把多少钱放到哪些 venue”
+  - 但 vault 还不会自己决定“应该把多少钱放到哪些 venue”
+- 下一层 strategy 应该负责：
+  - 读取 oracle / TWAP / volatility
+  - 生成 `RebalanceTarget[]`
+  - 决定是否触发 rebalance
+- vault 当前只负责验证和执行这个 plan。
 
 ### 当前测试覆盖的对应关系
-- 当前 `Rebalance.t.sol` 已覆盖：
+- 当前 rebalance 相关测试覆盖：
   - rebalance 只能由 owner 调用
-  - `IDLE -> DEPLOYED_V2` 会把全部 idle 余额部署出去
-  - `IDLE -> DEPLOYED_V3` 会把全部 idle 余额部署出去
-  - `DEPLOYED_V2 -> IDLE` 会把全部 LP 撤回成 idle balances
-  - `DEPLOYED_V3 -> IDLE` 会把全部 LP 撤回成 idle balances
+  - idle 余额可以部署到 V2
+  - idle 余额可以部署到 V3
+  - idle 余额可以按 plan 拆到多个 venue
+  - 多个 venue 可以一起撤回 idle
+  - 重复 venue target 会 revert
+  - unset / disabled venue 会 revert
+  - target plan 超过可用余额会 revert
   - 没有可移动资金时会 revert `NoRebalanceNeeded`
-  - deployed liquidity 存在时禁止切换 adapter
+  - active venue 存在时禁止更新对应 venue adapter
 
 ## 16. Uniswap V3 Adapter
 
@@ -1328,8 +1374,8 @@
 - 在 adapter 单测稳定后，再新增一组 vault 级集成测试，例如 `VaultV3Integration.t.sol`
 - 这组测试的目标不是重复 adapter 的内部细节，而是验证 vault 到 V3 的完整闭环
 - 最小闭环建议覆盖：
-  - `setAdapter()` 正确接入 V3 adapter
-  - `deposit -> deployToVenue -> withdrawFromVenue -> redeem` 可以完整跑通
+  - `setVenue()` 正确接入 V3 adapter
+  - `deposit -> deployToVenue(venueId, ...) -> withdrawFromVenue(venueId, ...) -> redeem` 可以完整跑通
   - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
   - 当 `adapter.hasPosition()` 为 true 时，redeem 仍会被阻止
 - 当前 vault 还没有公开的 V3 `collectFees()` 入口，所以 fee harvest 先留在 adapter 单测里覆盖

@@ -11,10 +11,31 @@ import "./interfaces/IPriceOracle.sol";
 
 /// @title AdaptiveLPVault
 /// @notice Minimal two-asset vault that mints ERC20 shares against deposited assets.
-/// @dev The vault can keep assets idle or deploy them to a single venue adapter.
+/// @dev The vault can keep assets idle or deploy them across registered venue adapters.
 contract AdaptiveLPVault is ERC20, Ownable {
     using SafeERC20 for IERC20;
 
+    // ============================================
+    // Types
+    // ============================================
+    /// @notice Configuration for one registered liquidity venue.
+    struct VenueConfig {
+        IVenueAdapter adapter;
+        bool enabled;
+        bytes32 label;      // optional, eg: "V2", "V3_005", "V3_030", "V3_100"
+    }
+
+    /// @notice One desired venue allocation used by the rebalance entrypoint.
+    struct RebalanceTarget {
+        uint256 venueId;
+        uint256 amount0;
+        uint256 amount1;
+        bytes params;
+    }
+
+    // ============================================
+    // State
+    // ============================================
     /// @notice First underlying token accepted by the vault.
     IERC20 public immutable token0;
     /// @notice Second underlying token accepted by the vault.
@@ -28,43 +49,47 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Price oracle used to calculate the value of underlying holdings.
     /// @dev The vault depends on the IPriceOracle interface for price discovery.
     IPriceOracle public oracle;
+    
+    /// @notice Venue configuration by caller-defined venue id.
+    mapping(uint256 => VenueConfig) public venues;
 
-    /// @notice Venue adapter used to deploy and withdraw liquidity.
-    /// @dev The vault depends on the adapter interface, not a concrete adapter implementation.
-    IVenueAdapter public adapter;
+    /// @notice Tracks whether a venue id has been registered.
+    mapping(uint256 => bool) public venueRegistered;
 
-    /// @notice Total LP liquidity currently tracked as deployed in the single supported venue.
+    /// @notice Adapter-reported liquidity currently tracked for each venue.
+    mapping(uint256 => uint256) public venueLiquidity;
+    
+    /// @notice List of registered venue ids used for iteration.
+    uint256[] public venueIds;
+
+    /// @notice Sum of adapter-reported liquidity across all venues.
+    /// @dev This is bookkeeping only. Liquidity units may differ across venues and should not be treated as asset value.
     uint256 public totalLiquidity;
-
-    /// @notice Minimal venue state used by the rebalance entrypoint.
-    enum Venue {IDLE, DEPLOYED_V2, DEPLOYED_V3}
 
     // ============================================
     // Events
     // ============================================
-    /// @notice Emitted when a user deposits token0 and token1 into the vault.
-    /// @param user Depositor receiving newly minted vault shares.
-    /// @param amount0 Raw token0 amount transferred into the vault.
-    /// @param amount1 Raw token1 amount transferred into the vault.
+    /// @notice Emitted when a user deposits assets into the vault.
     event Deposit(address indexed user, uint256 amount0, uint256 amount1);
 
-    /// @notice Emitted when a user redeems vault shares for underlying tokens.
-    /// @param user Redeemer whose vault shares are burned.
-    /// @param shares Raw share amount burned during redemption.
+    /// @notice Emitted when a user redeems vault shares.
     event Redeem(address indexed user, uint256 shares);
 
-    /// @notice Emitted when the vault deploys idle funds into the configured venue adapter.
-    /// @param amount0 Requested raw token0 amount sent to the adapter flow.
-    /// @param amount1 Requested raw token1 amount sent to the adapter flow.
-    /// @param liquidity Venue liquidity reported by the adapter.
-    event DeployToVenue(uint256 amount0, uint256 amount1, uint256 liquidity);
+    /// @notice Emitted when the owner updates the valuation oracle.
+    event SetOracle(address indexed oracle);
 
-    /// @notice Emitted when the vault withdraws venue liquidity back into idle balances.
-    /// @param liquidity Raw venue liquidity removed by the adapter.
-    /// @param amount0Out Raw token0 amount returned to the vault.
-    /// @param amount1Out Raw token1 amount returned to the vault.
-    event WithdrawFromVenue(uint256 liquidity, uint256 amount0Out, uint256 amount1Out);
+    /// @notice Emitted when the owner registers or updates a venue.
+    event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
 
+    /// @notice Emitted when the vault deploys idle funds into a venue.
+    event DeployToVenue(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidity);
+
+    /// @notice Emitted when the vault withdraws venue liquidity back to idle balances.
+    event WithdrawFromVenue(uint256 indexed venueId, uint256 liquidity, uint256 amount0Out, uint256 amount1Out);
+
+    /// @notice Emitted after a rebalance plan executes successfully.
+    event Rebalance(address indexed caller);
+    
     // ============================================
     // Custom Errors
     // ============================================
@@ -80,20 +105,35 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Thrown when a caller tries to redeem zero shares.
     error ZeroShares();
 
+    /// @notice Thrown when a caller tries to withdraw zero venue liquidity.
+    error ZeroLiquidity();
+
+    /// @notice Thrown when a caller tries to withdraw more liquidity than tracked for a venue.
+    error InsufficientLiquidity();
+
     /// @notice Thrown when a caller tries to redeem more shares than they own.
     error InsufficientShares();
+
+    /// @notice Thrown when a deployment or rebalance plan requires more idle token balance than available.
+    error InsufficientBalances();
 
     /// @notice Thrown when a valuation or price-dependent operation is requested before an oracle is configured.
     error OracleNotSet();
 
-    /// @notice Thrown when a venue operation is requested before an adapter is configured.
-    error AdapterNotSet();
+    /// @notice Thrown when a requested venue id is not registered or has no adapter configured.
+    error VenueNotSet();
 
-    /// @notice Thrown when redemption is attempted while funds remain deployed in the adapter.
+    /// @notice Thrown when a requested venue is registered but disabled for new deployments.
+    error VenueDisabled();
+
+    /// @notice Thrown when an operation is blocked because at least one venue still has an active position.
     error ActivePositionExists();
 
     /// @notice Thrown when a rebalance request would not move any funds.
     error NoRebalanceNeeded();
+
+    /// @notice Thrown when a rebalance plan contains the same venue id more than once.
+    error DuplicateVenueTarget();
 
     // ============================================
     // Constructor
@@ -126,6 +166,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
         decimals1 = _decimals1;
     }
 
+    // ============================================
+    // User Functions
+    // ============================================
     /// @notice Deposits token0 and token1 and mints vault shares to the caller.
     /// @dev Deposit flow is token amounts -> normalized asset value -> shares.
     /// @param amount0 Raw token0 amount in token0's smallest unit.
@@ -185,7 +228,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
         // Minimal integration rule:
         // if funds are currently deployed, force owner/admin to withdraw first.
-        if (address(adapter) != address(0) && adapter.hasPosition()) {
+        if (_anyVenueHasPosition() || totalLiquidity != 0) {
             revert ActivePositionExists();
         }
         
@@ -214,11 +257,10 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // View Functions
     // ============================================
     /// @notice Returns the current total value of the vault's holdings.
-    /// @dev Includes both idle vault balances and adapter-reported deployed underlying amounts.
+    /// @dev Includes idle vault balances and adapter-reported deployed underlying amounts for every registered venue.
     /// The returned value is denominated in the base asset and uses 1e18 precision.
     /// @return Total vault asset value using the currently configured mock prices.
     function totalAssets() public view returns (uint256) {
-        // Reject if oracle is not configured.
         if (address(oracle) == address(0)) {
             revert OracleNotSet();
         }
@@ -229,8 +271,13 @@ contract AdaptiveLPVault is ERC20, Ownable {
         
         uint256 deployed0 = 0;
         uint256 deployed1 = 0;
-        if (address(adapter) != address(0)) {
-            (deployed0, deployed1) = adapter.getPositionValue();
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 venueId = venueIds[i];
+            VenueConfig storage v = venues[venueId];
+            if (address(v.adapter) == address(0)) continue;
+            (uint256 value0, uint256 value1) = v.adapter.getPositionValue();
+            deployed0 += value0;
+            deployed1 += value1;
         }
 
         uint256 total0 = idle0 + deployed0;
@@ -240,44 +287,6 @@ contract AdaptiveLPVault is ERC20, Ownable {
             total0, price0, decimals0, 
             total1, price1, decimals1
         );
-    }
-
-    // ============================================
-    // Internal Functions
-    // ============================================
-    /// @notice Internal deploy helper shared by manual venue actions and rebalance.
-    /// @dev The vault temporarily approves the adapter to pull the requested token amounts.
-    function _deployToVenue(
-        uint256 amount0, 
-        uint256 amount1,
-        bytes memory params
-    ) internal returns (uint256 liquidity) {
-        if (address(adapter) == address(0)) {
-            revert AdapterNotSet();
-        }
-
-        token0.forceApprove(address(adapter), amount0);
-        token1.forceApprove(address(adapter), amount1);
-
-        liquidity = adapter.addLiquidity(amount0, amount1, params);
-        totalLiquidity += liquidity;
-
-        token0.forceApprove(address(adapter), 0);
-        token1.forceApprove(address(adapter), 0);
-
-        emit DeployToVenue(amount0, amount1, liquidity);
-    }
-
-    /// @notice Internal withdraw helper shared by manual venue actions and rebalance.
-    function _withdrawFromVenue(uint256 liquidity) internal returns (uint256 amount0Out, uint256 amount1Out) {
-        if (address(adapter) == address(0)) {
-            revert AdapterNotSet();
-        }
-
-        (amount0Out, amount1Out) = adapter.removeLiquidity(liquidity);
-        totalLiquidity -= liquidity;
-        
-        emit WithdrawFromVenue(liquidity, amount0Out, amount1Out);
     }
 
     // ============================================
@@ -291,65 +300,214 @@ contract AdaptiveLPVault is ERC20, Ownable {
             revert ZeroAddress();
         }
         oracle = IPriceOracle(_oracle);
+        emit SetOracle(_oracle);
     }
 
-    /// @notice Sets the venue adapter used by the vault.
-    /// @dev The input address is stored as an `IVenueAdapter` interface reference.
-    /// @dev Reverts if the vault already has deployed liquidity, because changing the adapter would desynchronize accounting.
-    /// @param _adapter Address of the adapter contract.
-    function setAdapter(address _adapter) external onlyOwner {
+    /// @notice Registers or updates a venue adapter.
+    /// @dev Existing venues can only be updated when the venue has no tracked liquidity and no adapter-reported position.
+    /// @param _venueId Caller-defined venue id.
+    /// @param _adapter Adapter contract for the venue.
+    /// @param _label Optional bytes32 venue label.
+    /// @param _enabled Whether deployments to the venue are enabled.
+    function setVenue(uint256 _venueId, address _adapter, bytes32 _label, bool _enabled) external onlyOwner {
         if (_adapter == address(0)) {
             revert ZeroAddress();
         }
-        if (totalLiquidity != 0) {
-            revert ActivePositionExists();
+
+        if (venueRegistered[_venueId]) {
+            VenueConfig storage currentVenue = venues[_venueId];
+            if (venueLiquidity[_venueId] != 0 || 
+                (address(currentVenue.adapter) != address(0) && currentVenue.adapter.hasPosition())
+            ) {
+                revert ActivePositionExists();
+            }
+        } else {
+            venueRegistered[_venueId] = true;
+            venueIds.push(_venueId);
         }
-        adapter = IVenueAdapter(_adapter);
+
+        venues[_venueId] = VenueConfig({
+            adapter: IVenueAdapter(_adapter),
+            enabled: _enabled,
+            label: _label
+        });
+
+        emit SetVenue(_venueId, _adapter, _label, _enabled);
     }
 
-    /// @notice Deploys idle vault funds into the configured venue adapter.
+    /// @notice Deploys idle vault funds into a registered venue adapter.
     /// @dev This is the public owner-only venue entrypoint and delegates to the shared internal helper.
+    /// @param venueId Registered venue id to deploy into.
     /// @param amount0 Raw token0 amount the vault attempts to deploy.
     /// @param amount1 Raw token1 amount the vault attempts to deploy.
     /// @param params Venue-specific encoded parameters forwarded to the adapter.
     /// @return liquidity Venue liquidity amount reported by the adapter.
     function deployToVenue(
+        uint256 venueId,
         uint256 amount0, 
         uint256 amount1,
         bytes calldata params
     ) external onlyOwner returns (uint256 liquidity) {
-        return _deployToVenue(amount0, amount1, params);
+        return _deployToVenue(venueId, amount0, amount1, params);
     }
 
-    /// @notice Withdraws deployed liquidity from the configured venue adapter back into the vault.
+    /// @notice Withdraws deployed liquidity from a registered venue adapter back into the vault.
     /// @dev This is the public owner-only venue entrypoint and delegates to the shared internal helper.
+    /// @param venueId Registered venue id to withdraw from.
     /// @param liquidity Raw venue liquidity amount to remove.
     /// @return amount0Out Raw token0 amount returned to the vault.
     /// @return amount1Out Raw token1 amount returned to the vault.
-    function withdrawFromVenue(uint256 liquidity) external onlyOwner returns (uint256 amount0Out, uint256 amount1Out) {
-        return _withdrawFromVenue(liquidity);
+    function withdrawFromVenue(uint256 venueId, uint256 liquidity) external onlyOwner returns (
+        uint256 amount0Out, 
+        uint256 amount1Out
+    ) {
+        return _withdrawFromVenue(venueId, liquidity);
     }
 
-    /// @notice Moves the vault between idle balances and the single supported V2 venue.
-    /// @dev This is a thin owner-only wrapper over the existing deploy and withdraw flows.
-    /// @param targetVenue Desired vault state after the rebalance completes.
-    function rebalance(Venue targetVenue) external onlyOwner {
-        if (targetVenue == Venue.IDLE) {
-            if (totalLiquidity == 0) revert NoRebalanceNeeded();
-            _withdrawFromVenue(totalLiquidity);
-            return;
+    /// @notice Rebalances vault capital according to an owner-supplied target plan.
+    /// @dev The current minimal flow withdraws all tracked venue liquidity first, then deploys into non-zero targets.
+    /// An empty target array means withdraw all venues to idle. Reverts if the vault is already idle.
+    /// @param targets Desired post-rebalance venue deployments.
+    function rebalance(RebalanceTarget[] calldata targets) external onlyOwner {
+        _checkUniqueVenueIds(targets);
+        _validateRebalanceTargets(targets);
+
+        uint256 required0;
+        uint256 required1;
+        for (uint256 i = 0; i < targets.length; i++) {
+            required0 += targets[i].amount0;
+            required1 += targets[i].amount1;
         }
-        
-        uint256 amount0 = token0.balanceOf(address(this));
-        uint256 amount1 = token1.balanceOf(address(this));
-        if (amount0 == 0 && amount1 == 0) {
+
+        // idle -> idle
+        if (totalLiquidity == 0 && required0 == 0 && required1 == 0) {
             revert NoRebalanceNeeded();
         }
 
-        bytes memory params = (targetVenue == Venue.DEPLOYED_V3) 
-            ? abi.encode(0, 0, block.timestamp + 1) : bytes("");
+        // Phase 1: pull all capital back to idle first.
+        _withdrawAllVenues();
 
-        _deployToVenue(amount0, amount1, params);
+        if (targets.length == 0) {
+            emit Rebalance(msg.sender);
+            return;
+        }
+
+        uint256 idle0 = token0.balanceOf(address(this));
+        uint256 idle1 = token1.balanceOf(address(this));
+
+        if (required0 > idle0 || required1 > idle1) {
+            revert InsufficientBalances();
+        }
+
+        for (uint256 i = 0; i < targets.length; i++) {
+            if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
+            _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
+        }
+
+        emit Rebalance(msg.sender);
+    }
+
+    // ============================================
+    // Internal Functions
+    // ============================================
+    /// @notice Returns whether any registered venue adapter reports an active position.
+    function _anyVenueHasPosition() internal view returns (bool) {
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 venueId = venueIds[i];
+            VenueConfig storage v = venues[venueId];
+            if (address(v.adapter) != address(0) && v.adapter.hasPosition()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @notice Shared internal deploy flow for manual deploys and rebalance.
+    function _deployToVenue(
+        uint256 venueId,
+        uint256 amount0, 
+        uint256 amount1,
+        bytes memory params
+    ) internal returns (uint256 liquidity) {
+        VenueConfig storage v = venues[venueId];
+        if (!venueRegistered[venueId] || address(v.adapter) == address(0)) revert VenueNotSet();
+        if (!v.enabled) revert VenueDisabled();
+
+        token0.forceApprove(address(v.adapter), amount0);
+        token1.forceApprove(address(v.adapter), amount1);
+
+        liquidity = v.adapter.addLiquidity(amount0, amount1, params);
+        venueLiquidity[venueId] += liquidity;
+        totalLiquidity += liquidity;
+
+        token0.forceApprove(address(v.adapter), 0);
+        token1.forceApprove(address(v.adapter), 0);
+
+        emit DeployToVenue(venueId, amount0, amount1, liquidity);
+    }
+
+    /// @notice Shared internal withdraw flow for manual withdraws and rebalance.
+    function _withdrawFromVenue(uint256 venueId, uint256 liquidity) internal returns (
+        uint256 amount0Out, 
+        uint256 amount1Out
+    ) {
+        VenueConfig storage v = venues[venueId];
+        if (!venueRegistered[venueId] || address(v.adapter) == address(0)) revert VenueNotSet();
+        if (liquidity == 0) revert ZeroLiquidity();
+        if (venueLiquidity[venueId] < liquidity) revert InsufficientLiquidity();
+
+        (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity);
+        venueLiquidity[venueId] -= liquidity;
+        totalLiquidity -= liquidity;
+        
+        emit WithdrawFromVenue(venueId, liquidity, amount0Out, amount1Out);
+    }
+
+    /// @notice Reverts if a rebalance plan contains duplicate venue ids.
+    function _checkUniqueVenueIds(RebalanceTarget[] calldata targets) internal {
+        uint256 length = targets.length;
+    
+        if (length < 2) return;
+        for (uint256 i = 0; i < length; i++) {
+            uint256 preId = targets[i].venueId;
+            for (uint256 j = i + 1; j < length; j++) {
+                if (preId == targets[j].venueId) {
+                    revert DuplicateVenueTarget();
+                }
+            }
+        }
+    }
+
+    /// @notice Reverts if a non-zero rebalance target points to an unset or disabled venue.
+    function _validateRebalanceTargets(RebalanceTarget[] calldata targets) internal {
+        for (uint256 i = 0; i < targets.length; i++) {
+            if (targets[i].amount0 == 0 && targets[i].amount1 == 0) {
+                continue;
+            }
+
+            uint256 venueId = targets[i].venueId;
+            VenueConfig storage v = venues[venueId];
+
+            if (!venueRegistered[venueId] || address(v.adapter) == address(0)) {
+                revert VenueNotSet();
+            }
+
+            if (!v.enabled) {
+                revert VenueDisabled();
+            }
+        }
+    }
+
+    /// @notice Withdraws all tracked liquidity from every registered venue.
+    /// @dev Venues with zero tracked liquidity are skipped.
+    function _withdrawAllVenues() internal {
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 id = venueIds[i];
+            uint256 liquidity = venueLiquidity[id];
+            if (liquidity > 0) {
+                _withdrawFromVenue(id, liquidity);  
+            }
+        }
     }
 
 }

@@ -9,11 +9,12 @@ import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockNonfungiblePositionManager.sol";
 import "./helpers/VaultTestHelper.sol";
-import "./helpers/V3TestHelper.sol";
+import "./helpers/VenueTestHelper.sol";
+import "./helpers/RebalanceTestHelper.sol";
 
 /// @title RebalanceV3Test
 /// @notice Rebalance-focused tests for the minimal single-venue V3 vault strategy.
-contract RebalanceV3Test is Test, VaultTestHelper, V3TestHelper {
+contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     AdaptiveLPVault public vault;
@@ -68,30 +69,9 @@ contract RebalanceV3Test is Test, VaultTestHelper, V3TestHelper {
         );
 
         // set V3 adapter into vault
-        vault.setAdapter(address(adapter));
+        vault.setVenue(V3_VENUE_ID, address(adapter), V3_LABEL, true);
     }
 
-    /// @notice Deploys idle vault funds into the configured V3 adapter.
-    function _deployIdleVaultToV3(uint256 amount0, uint256 amount1) internal {
-        (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(token0, token1, amount0, amount1);
-
-        (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
-        uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(tickLower);
-        uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(tickUpper);
-
-        uint128 liquidityMinted = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            sqrtRatioLowerX96,
-            sqrtRatioUpperX96,
-            poolAmount0Desired,
-            poolAmount1Desired
-        );
-
-        positionManager.setNextMintResult(liquidityMinted, poolAmount0Desired, poolAmount1Desired);
-
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V3);
-    }
-    
     /// @notice Verifies rebalance moves all idle balances into V3.
     function test_Rebalance_IdleToV3_DeploysAllIdleBalances() public {
         uint256 amount0 = 1 ether;
@@ -100,7 +80,8 @@ contract RebalanceV3Test is Test, VaultTestHelper, V3TestHelper {
         // user -> vault
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
-        _deployIdleVaultToV3(amount0, amount1);
+        _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
+        _rebalanceToVenue(vault, V3_VENUE_ID, amount0, amount1, _defaultV3Params());
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
@@ -120,7 +101,9 @@ contract RebalanceV3Test is Test, VaultTestHelper, V3TestHelper {
         // user -> vault
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
-        _deployIdleVaultToV3(amount0, amount1);
+        _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
+        _rebalanceToVenue(vault, V3_VENUE_ID, amount0, amount1, _defaultV3Params());
+
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
         assertEq(token0.balanceOf(address(vault)), 0);
@@ -131,7 +114,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, V3TestHelper {
 
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
-        vault.rebalance(AdaptiveLPVault.Venue.IDLE);
+        _rebalanceToIdle(vault);
 
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);

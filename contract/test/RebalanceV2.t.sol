@@ -9,10 +9,12 @@ import "./mocks/MockPriceOracle.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "./helpers/VaultTestHelper.sol";
+import "./helpers/VenueTestHelper.sol";
+import "./helpers/RebalanceTestHelper.sol";
 
 /// @title RebalanceV2Test
 /// @notice Rebalance-focused tests for the minimal single-venue V2 vault strategy.
-contract RebalanceV2Test is Test, VaultTestHelper {
+contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     uint8 public decimals0 = 18;
@@ -55,15 +57,15 @@ contract RebalanceV2Test is Test, VaultTestHelper {
             address(pair)
         );
 
-        // set adapter into vault
-        vault.setAdapter(address(adapter));
+        // set venue into vault
+        vault.setVenue(V2_VENUE_ID, address(adapter), V2_LABEL, true);
     }
 
     /// @notice Verifies rebalance remains owner-only.
     function test_Rebalance_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
+        _rebalanceToVenue(vault, V2_VENUE_ID, 10 ether, 5 ether, "");
     }
 
     /// @notice Verifies rebalance moves all idle balances into the single supported V2 venue.
@@ -75,7 +77,7 @@ contract RebalanceV2Test is Test, VaultTestHelper {
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -97,12 +99,13 @@ contract RebalanceV2Test is Test, VaultTestHelper {
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
+
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(vault.totalLiquidity(), liquidityMinted);
 
-        vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
+        vm.expectRevert(AdaptiveLPVault.InsufficientBalances.selector);
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
     }
 
     /// @notice Verifies rebalance to IDLE withdraws all DEPLOYED_V2 liquidity from the adapter.
@@ -114,12 +117,13 @@ contract RebalanceV2Test is Test, VaultTestHelper {
 
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
 
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
+
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(vault.totalLiquidity(), liquidityMinted);
 
         router.setNextRemoveLiquidityResult(amount0, amount1);
-        vault.rebalance(AdaptiveLPVault.Venue.IDLE);
+        _rebalanceToIdle(vault);
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
         assertEq(vault.totalLiquidity(), 0);
@@ -129,24 +133,6 @@ contract RebalanceV2Test is Test, VaultTestHelper {
     /// @notice Verifies rebalance to IDLE reverts when there is no DEPLOYED_V2 liquidity to withdraw.
     function test_Rebalance_Idle_RevertsWhenNoLiquidity() public {
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
-        vault.rebalance(AdaptiveLPVault.Venue.IDLE);
-    }
-
-    /// @notice Verifies adapter changes are blocked while DEPLOYED_V2 liquidity is still active.
-    function test_SetAdapter_RevertsWhenThereIsActiveLiquidity() public {
-        uint256 amount0 = 10 ether;
-        uint256 amount1 = 20e6;
-        uint256 liquidityMinted = 5 ether;
-        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-
-        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
-
-        vault.rebalance(AdaptiveLPVault.Venue.DEPLOYED_V2);
-        assertEq(token0.balanceOf(address(vault)), 0);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
-
-        address newAdapter = address(0xDEAD);
-        vm.expectRevert(AdaptiveLPVault.ActivePositionExists.selector);
-        vault.setAdapter(newAdapter);
+        _rebalanceToIdle(vault);
     }
 }

@@ -348,8 +348,8 @@ After the adapter unit tests are stable, add a separate vault integration file f
 - `VaultV3Integration.t.sol`
 
 That integration layer should verify:
-- `setAdapter()` wires the vault to the V3 adapter
-- `deposit -> deployToVenue -> withdrawFromVenue -> redeem` works as a closed loop
+- `setVenue()` wires the vault to the V3 adapter
+- `deposit -> deployToVenue(venueId, ...) -> withdrawFromVenue(venueId, ...) -> redeem` works as a closed loop
 - `totalAssets()` includes `adapter.getPositionValue()`
 - redemption is blocked while `adapter.hasPosition()` is true
 
@@ -358,13 +358,14 @@ Keep `collectFees()` coverage in the adapter unit tests for now, since the vault
 ## Current Vault Integration
 
 The current vault can integrate this adapter without changing `IVenueAdapter`:
-- the vault stores the configured adapter as `IVenueAdapter`
-- the owner can call `deployToVenue(amount0, amount1, params)`
-- the owner can call `withdrawFromVenue(liquidity)`
+- the vault stores registered venue adapters as `IVenueAdapter`
+- the owner can register one V3 fee tier as one venue through `setVenue(venueId, adapter, label, enabled)`
+- the owner can call `deployToVenue(venueId, amount0, amount1, params)`
+- the owner can call `withdrawFromVenue(venueId, liquidity)`
 - `totalAssets()` can include V3 deployed balances through `adapter.getPositionValue()`
-- direct user redemption remains blocked while `adapter.hasPosition()` reports an active position
+- direct user redemption remains blocked while any registered adapter reports an active position
 
-This means the V3 adapter can be introduced as another venue implementation while preserving the current vault abstraction.
+This means each V3 fee tier can be represented by a separate adapter instance and registered as a separate venue while preserving the current vault abstraction.
 
 ## Future Extensions
 
