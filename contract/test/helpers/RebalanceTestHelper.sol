@@ -3,10 +3,11 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../../src/AdaptiveLPVault.sol";
+import "../../src/libraries/RebalanceTypes.sol";
 
 abstract contract RebalanceTestHelper is Test {
     function _rebalanceToIdle(AdaptiveLPVault vault) internal {
-        AdaptiveLPVault.RebalanceTarget[] memory targets = new AdaptiveLPVault.RebalanceTarget[](0);
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
         vault.rebalance(targets);
     }
 
@@ -15,9 +16,9 @@ abstract contract RebalanceTestHelper is Test {
         uint256 amount0,
         uint256 amount1,
         bytes memory params
-    ) internal pure returns (AdaptiveLPVault.RebalanceTarget[] memory targets) {
-        targets = new AdaptiveLPVault.RebalanceTarget[](1);
-        targets[0] = AdaptiveLPVault.RebalanceTarget({
+    ) internal pure returns (RebalanceTypes.RebalanceTarget[] memory targets) {
+        targets = new RebalanceTypes.RebalanceTarget[](1);
+        targets[0] = RebalanceTypes.RebalanceTarget({
             venueId: venueId,
             amount0: amount0,
             amount1: amount1,
@@ -34,17 +35,17 @@ abstract contract RebalanceTestHelper is Test {
         uint256 amount10,
         uint256 amount11,
         bytes memory params1
-    ) internal pure returns (AdaptiveLPVault.RebalanceTarget[] memory targets) {
-        targets = new AdaptiveLPVault.RebalanceTarget[](2);
+    ) internal pure returns (RebalanceTypes.RebalanceTarget[] memory targets) {
+        targets = new RebalanceTypes.RebalanceTarget[](2);
 
-        targets[0] = AdaptiveLPVault.RebalanceTarget({
+        targets[0] = RebalanceTypes.RebalanceTarget({
             venueId: venueId0,
             amount0: amount00,
             amount1: amount01,
             params: params0
         });
 
-        targets[1] = AdaptiveLPVault.RebalanceTarget({
+        targets[1] = RebalanceTypes.RebalanceTarget({
             venueId: venueId1,
             amount0: amount10,
             amount1: amount11,

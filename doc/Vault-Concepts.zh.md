@@ -978,11 +978,12 @@
 ## 15. Rebalance（当前实现）
 
 ### 这一层负责什么
-- `rebalance` 负责执行 owner 给出的目标部署计划，不负责自己决定策略。
+- `rebalance` 负责执行目标部署计划，不负责自己决定最优 venue。
 - 更准确地说：
   - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
   - `withdrawFromVenue(venueId, liquidity)` 负责把指定 venue 仓位撤回成 idle balances
   - `rebalance(targets)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
+  - `rebalanceWithStrategy(data)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
 
 ### 当前 multi-venue 模型
 - 当前 vault 不再用 `IDLE / DEPLOYED_V2 / DEPLOYED_V3` 这种 enum 表示目标状态。
@@ -1008,7 +1009,7 @@
   - 所以不能把 `totalLiquidity` 当成资产价值
 
 ### RebalanceTarget
-- 当前 `rebalance` 的入参是：
+- 当前 `rebalance` 和 strategy 返回值都使用同一个 target 类型：
 
 ```solidity
 struct RebalanceTarget {
@@ -1024,6 +1025,41 @@ struct RebalanceTarget {
   - `amount0`：部署到该 venue 的 token0 原始数量
   - `amount1`：部署到该 venue 的 token1 原始数量
   - `params`：透传给 adapter 的 venue-specific 参数
+
+### 当前 strategy 最小骨架
+- vault 可以通过 `setStrategy(...)` 配置一个 rebalance strategy。
+- strategy 只需要实现：
+
+```solidity
+function buildTargets(address vault, bytes calldata data)
+    external
+    view
+    returns (RebalanceTypes.RebalanceTarget[] memory targets);
+```
+
+- `rebalanceWithStrategy(data)` 的流程是：
+  1. 检查 strategy 是否已配置
+  2. 检查 `minCooldown`，如果不为 0
+  3. 检查 `maxGasPrice`，如果不为 0
+  4. 调用 strategy 的 `buildTargets(...)`
+  5. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行
+  6. 成功后更新 `lastRebalance`
+- 这表示 strategy 只负责“生成 plan”，vault 仍然负责校验和执行。
+- strategy 返回的 plan 不能绕过 vault 校验：
+  - duplicate venue 会 revert
+  - unset venue 会 revert
+  - disabled venue 会 revert
+  - 余额不足会 revert
+
+### manual rebalance 和 strategy rebalance 的区别
+- `rebalance(targets)`：
+  - owner 手动传入 plan
+  - 适合测试、治理操作、emergency override
+  - 不受 strategy cooldown / max gas price 限制
+- `rebalanceWithStrategy(data)`：
+  - owner 触发 strategy 生成 plan
+  - 受 `minCooldown` / `maxGasPrice` 限制
+  - 成功后更新 `lastRebalance`
 
 ### rebalance to idle
 - 如果想把所有 venue 撤回 idle：
@@ -1064,16 +1100,17 @@ struct RebalanceTarget {
   - adapter 切换后，vault 里的部署会计和真实仓位脱节
   - rebalance 读到的状态和实际资产流不一致
 
-### 为什么这里还不做 strategy
-- 当前已经有 multi-venue 执行层，但还没有自动策略层。
+### 为什么这里还不做 TWAP / volatility strategy
+- 当前已经有 strategy hook，但还没有自动 venue selection 算法。
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
-  - 但 vault 还不会自己决定“应该把多少钱放到哪些 venue”
-- 下一层 strategy 应该负责：
+  - strategy 接口已经能返回 targets
+  - 但当前 mock strategy 只是测试用的预设 plan
+- 下一层 TWAP / volatility strategy 应该负责：
   - 读取 oracle / TWAP / volatility
   - 生成 `RebalanceTarget[]`
   - 决定是否触发 rebalance
-- vault 当前只负责验证和执行这个 plan。
+- vault 仍然只负责验证和执行这个 plan。
 
 ### 当前测试覆盖的对应关系
 - 当前 rebalance 相关测试覆盖：
@@ -1087,6 +1124,10 @@ struct RebalanceTarget {
   - target plan 超过可用余额会 revert
   - 没有可移动资金时会 revert `NoRebalanceNeeded`
   - active venue 存在时禁止更新对应 venue adapter
+  - strategy 未配置时会 revert
+  - strategy-driven rebalance 会更新 `lastRebalance`
+  - cooldown / max gas price guard 会限制 strategy-driven rebalance
+  - strategy 返回 unset venue 时仍然会走 vault 原有校验并 revert
 
 ## 16. Uniswap V3 Adapter
 

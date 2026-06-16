@@ -14,6 +14,7 @@ import "./mocks/MockNonfungiblePositionManager.sol";
 import "../test/helpers/VaultTestHelper.sol";
 import "../test/helpers/VenueTestHelper.sol";
 import "../test/helpers/RebalanceTestHelper.sol";
+import "../src/libraries/RebalanceTypes.sol";
 
 contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, RebalanceTestHelper {
     MockERC20 public token0;
@@ -96,7 +97,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         uint128 v3Liquidity = _primeV3Mint(token0, token1, poolV3, positionManagerV3, 
                                 tickLower, tickUpper, v3Amount0, v3Amount1);
 
-        AdaptiveLPVault.RebalanceTarget[] memory targets = _buildTwoTargets(
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
             V3_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
@@ -138,7 +139,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         uint128 v3Liquidity = _primeV3Mint(token0, token1, poolV3, positionManagerV3, 
                                 tickLower, tickUpper, v3Amount0, v3Amount1);
 
-        AdaptiveLPVault.RebalanceTarget[] memory deployTargets = _buildTwoTargets(
+        RebalanceTypes.RebalanceTarget[] memory deployTargets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
             V3_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
@@ -176,7 +177,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
     function test_Rebalance_RevertsOnDuplicateVenueTargets() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 
-        AdaptiveLPVault.RebalanceTarget[] memory targets = _buildTwoTargets(
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildTwoTargets(
             V2_VENUE_ID, 6 ether, 12e6, "", 
             V2_VENUE_ID, 4 ether, 8e6, ""
         );
@@ -188,7 +189,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
     function test_Rebalance_RevertsWhenTargetVenueNotSet() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 
-        AdaptiveLPVault.RebalanceTarget[] memory targets = _buildSingleTarget(999, 6 ether, 12e6, "");
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(999, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
         vault.rebalance(targets);
@@ -198,7 +199,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, false);
-        AdaptiveLPVault.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.VenueDisabled.selector);
         vault.rebalance(targets);
@@ -207,7 +208,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
     function test_Rebalance_RevertsWhenPlanExceedsIdleBalances() public {
         _mintAndDeposit(token0, token1, vault, alice, 1 ether, 2e6);
         
-        AdaptiveLPVault.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.InsufficientBalances.selector);
         vault.rebalance(targets);
@@ -217,7 +218,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
         assertEq(vault.totalLiquidity(), 0);
 
-        AdaptiveLPVault.RebalanceTarget[] memory targets = new AdaptiveLPVault.RebalanceTarget[](0);
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
         vault.rebalance(targets);
     }

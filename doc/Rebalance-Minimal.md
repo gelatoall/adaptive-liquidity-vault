@@ -6,15 +6,19 @@ Build a minimal rebalance executor for the vault that:
 - reuses the existing venue deploy and withdraw flows
 - supports multiple registered venue adapters
 - accepts an owner-supplied target plan
+- accepts a configured strategy that can build target plans
 - can move capital from idle balances into one or more venues
 - can withdraw all venue liquidity back to idle balances
-- stays as an execution layer, not an autonomous strategy engine
+- stays as an execution layer, not a venue-selection algorithm
 
 ## Scope
 
 This version includes:
 - owner-only rebalance entrypoint
 - `RebalanceTarget[]` plan input
+- `IRebalanceStrategy.buildTargets(...)` strategy hook
+- `rebalanceWithStrategy(data)` for strategy-driven plan execution
+- `minCooldown` and `maxGasPrice` guards for strategy-driven rebalances
 - duplicate venue target validation
 - unset and disabled venue validation
 - full withdrawal of all tracked venue liquidity before redeployment
@@ -25,8 +29,6 @@ This version does not include:
 - automatic venue recommendation
 - TWAP-driven target weighting
 - volatility thresholds
-- cooldown checks
-- max gas price checks
 - keeper automation
 - partial in-place rebalancing
 - slippage optimization beyond adapter-level params
@@ -35,7 +37,8 @@ Notes:
 - rebalance is built on top of `_withdrawFromVenue(...)` and `_deployToVenue(...)`.
 - `totalLiquidity` is used only as bookkeeping to know whether any tracked liquidity exists.
 - per-venue liquidity is tracked in `venueLiquidity[venueId]`.
-- strategy and quote logic should live outside this minimal executor.
+- strategy logic should live outside the vault. The vault only asks the configured strategy for a target plan and then validates and executes it.
+- manual `rebalance(targets)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
 
 ## Data Model
 
@@ -76,6 +79,16 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
   - purpose: execute an owner-supplied target allocation
   - behavior: withdraw all venues first, then deploy non-zero targets
 
+- `setStrategy(strategy)`
+  - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
+
+- `setRebalanceConfig(minCooldown, maxGasPrice)`
+  - purpose: configure strategy-driven rebalance guards
+
+- `rebalanceWithStrategy(data)`
+  - purpose: ask the configured strategy to build a target plan, then execute that plan
+  - behavior: applies `minCooldown` and `maxGasPrice` before calling the strategy
+
 - `setVenue(venueId, adapter, label, enabled)`
   - purpose: register or update a venue adapter
   - behavior: updating an active venue is blocked
@@ -88,12 +101,40 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 ## Core Flow
 
+### strategy-driven rebalance
+
+The vault stores one configured strategy:
+
+```solidity
+IRebalanceStrategy public strategy;
+```
+
+The strategy interface is intentionally small:
+
+```solidity
+function buildTargets(address vault, bytes calldata data)
+    external
+    view
+    returns (RebalanceTypes.RebalanceTarget[] memory targets);
+```
+
+Flow:
+1. Owner calls `rebalanceWithStrategy(data)`.
+2. Vault checks that a strategy is configured.
+3. Vault checks `minCooldown` if it is non-zero.
+4. Vault checks `maxGasPrice` if it is non-zero.
+5. Vault calls `strategy.buildTargets(address(this), data)`.
+6. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
+7. Vault updates `lastRebalance` only after successful execution.
+
+This stage does not implement venue recommendation. The current mock strategy only returns preset targets for testing.
+
 ### rebalance to idle
 
 Call `rebalance` with an empty target array:
 
 ```solidity
-AdaptiveLPVault.RebalanceTarget[] memory targets = new AdaptiveLPVault.RebalanceTarget[](0);
+RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
 vault.rebalance(targets);
 ```
 
@@ -108,7 +149,7 @@ Flow:
 Call `rebalance` with one target:
 
 ```solidity
-targets[0] = AdaptiveLPVault.RebalanceTarget({
+targets[0] = RebalanceTypes.RebalanceTarget({
     venueId: 1,
     amount0: amount0,
     amount1: amount1,
@@ -128,14 +169,14 @@ Flow:
 Call `rebalance` with multiple targets:
 
 ```solidity
-targets[0] = AdaptiveLPVault.RebalanceTarget({
+targets[0] = RebalanceTypes.RebalanceTarget({
     venueId: 1,
     amount0: v2Amount0,
     amount1: v2Amount1,
     params: bytes("")
 });
 
-targets[1] = AdaptiveLPVault.RebalanceTarget({
+targets[1] = RebalanceTypes.RebalanceTarget({
     venueId: 2,
     amount0: v3Amount0,
     amount1: v3Amount1,
@@ -163,6 +204,10 @@ This avoids complex in-place delta accounting between venues. It is less gas eff
 
 The rebalance layer should revert when:
 - a non-owner calls `rebalance`
+- a non-owner calls `rebalanceWithStrategy`
+- `rebalanceWithStrategy` is called before a strategy is configured
+- `rebalanceWithStrategy` is called during cooldown
+- `rebalanceWithStrategy` is called above the configured gas price limit
 - the vault is already idle and the target plan requires no funds
 - a target venue id is duplicated
 - a non-zero target points to an unset venue
@@ -180,11 +225,18 @@ These conditions should always hold:
 - total tracked liquidity equals the sum of tracked liquidity changes applied by venue operations
 - direct user redemption remains blocked while any venue has active liquidity
 - venue ids are caller-defined identifiers, not enum states
+- strategy-built plans must pass the same validation as manual plans
+- failed strategy rebalances must not update `lastRebalance`
 
 ## Current Test Coverage
 
 Core tests should cover:
 - owner-only rebalance
+- strategy configuration
+- strategy-driven rebalance
+- strategy cooldown guard
+- strategy max gas price guard
+- strategy returning an unset venue
 - idle-to-V2 deployment
 - idle-to-V3 deployment
 - deployment to multiple venues in one plan
@@ -195,4 +247,4 @@ Core tests should cover:
 - insufficient balance rejection
 - no-liquidity idle rebalance rejection
 
-This list is intentionally focused on the minimal executor. Future strategy-layer tests should cover how target plans are produced, not repeat the executor's asset-flow coverage.
+This list is intentionally focused on the minimal executor and strategy hook. Future TWAP or volatility strategy tests should cover how target plans are produced, not repeat the executor's asset-flow coverage.

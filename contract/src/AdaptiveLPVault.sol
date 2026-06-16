@@ -6,8 +6,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./libraries/VaultMath.sol";
+import "./libraries/RebalanceTypes.sol";
 import "./interfaces/IVenueAdapter.sol";
 import "./interfaces/IPriceOracle.sol";
+import "./interfaces/IRebalanceStrategy.sol";
 
 /// @title AdaptiveLPVault
 /// @notice Minimal two-asset vault that mints ERC20 shares against deposited assets.
@@ -25,12 +27,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
         bytes32 label;      // optional, eg: "V2", "V3_005", "V3_030", "V3_100"
     }
 
-    /// @notice One desired venue allocation used by the rebalance entrypoint.
-    struct RebalanceTarget {
-        uint256 venueId;
-        uint256 amount0;
-        uint256 amount1;
-        bytes params;
+    /// @notice Execution guards for strategy-driven rebalances.
+    struct RebalanceConfig {
+        /// @notice Minimum time between successful strategy-driven rebalances. Zero disables the guard.
+        uint256 minCooldown;
+        /// @notice Maximum allowed transaction gas price for strategy-driven rebalances. Zero disables the guard.
+        uint256 maxGasPrice;
     }
 
     // ============================================
@@ -49,6 +51,15 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Price oracle used to calculate the value of underlying holdings.
     /// @dev The vault depends on the IPriceOracle interface for price discovery.
     IPriceOracle public oracle;
+
+    /// @notice Strategy used to build target plans for strategy-driven rebalances.
+    IRebalanceStrategy public strategy;
+
+    /// @notice Guard configuration for strategy-driven rebalances.
+    RebalanceConfig public rebalanceConfig;
+
+    /// @notice Timestamp of the last successful strategy-driven rebalance.
+    uint256 public lastRebalance;
     
     /// @notice Venue configuration by caller-defined venue id.
     mapping(uint256 => VenueConfig) public venues;
@@ -78,6 +89,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Emitted when the owner updates the valuation oracle.
     event SetOracle(address indexed oracle);
 
+    /// @notice Emitted when the owner updates the rebalance strategy.
+    event SetStrategy(address indexed strategy);
+
+    /// @notice Emitted when the owner updates strategy rebalance guards.
+    event SetRebalanceConfig(uint256 minCooldown, uint256 maxGasPrice);
+
     /// @notice Emitted when the owner registers or updates a venue.
     event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
 
@@ -89,6 +106,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Emitted after a rebalance plan executes successfully.
     event Rebalance(address indexed caller);
+
+    /// @notice Emitted after a strategy-driven rebalance executes successfully.
+    event RebalanceWithStrategy(address indexed caller, address indexed strategy, bytes data);
     
     // ============================================
     // Custom Errors
@@ -134,6 +154,15 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Thrown when a rebalance plan contains the same venue id more than once.
     error DuplicateVenueTarget();
+
+    /// @notice Thrown when strategy-driven rebalance is called before a strategy is configured.
+    error StrategyNotSet();
+
+    /// @notice Thrown when strategy-driven rebalance is called before cooldown elapses.
+    error CooldownNotElapsed();
+
+    /// @notice Thrown when strategy-driven rebalance is called above the configured gas price limit.
+    error GasPriceTooHigh();
 
     // ============================================
     // Constructor
@@ -303,6 +332,27 @@ contract AdaptiveLPVault is ERC20, Ownable {
         emit SetOracle(_oracle);
     }
 
+    /// @notice Sets the strategy used to build rebalance targets.
+    /// @param _strategy Strategy contract address.
+    function setStrategy(address _strategy) external onlyOwner {
+        if (_strategy == address(0)) {
+            revert ZeroAddress();
+        }
+        strategy = IRebalanceStrategy(_strategy);
+        emit SetStrategy(_strategy);
+    }
+
+    /// @notice Sets cooldown and gas price guards for strategy-driven rebalances.
+    /// @param _minCooldown Minimum time between successful strategy-driven rebalances.
+    /// @param _maxGasPrice Maximum allowed transaction gas price, or zero to disable.
+    function setRebalanceConfig(uint256 _minCooldown, uint256 _maxGasPrice) external onlyOwner {
+        rebalanceConfig = RebalanceConfig({
+            minCooldown: _minCooldown,
+            maxGasPrice: _maxGasPrice
+        });
+        emit SetRebalanceConfig(_minCooldown, _maxGasPrice);
+    }
+
     /// @notice Registers or updates a venue adapter.
     /// @dev Existing venues can only be updated when the venue has no tracked liquidity and no adapter-reported position.
     /// @param _venueId Caller-defined venue id.
@@ -368,43 +418,33 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @dev The current minimal flow withdraws all tracked venue liquidity first, then deploys into non-zero targets.
     /// An empty target array means withdraw all venues to idle. Reverts if the vault is already idle.
     /// @param targets Desired post-rebalance venue deployments.
-    function rebalance(RebalanceTarget[] calldata targets) external onlyOwner {
-        _checkUniqueVenueIds(targets);
-        _validateRebalanceTargets(targets);
-
-        uint256 required0;
-        uint256 required1;
-        for (uint256 i = 0; i < targets.length; i++) {
-            required0 += targets[i].amount0;
-            required1 += targets[i].amount1;
-        }
-
-        // idle -> idle
-        if (totalLiquidity == 0 && required0 == 0 && required1 == 0) {
-            revert NoRebalanceNeeded();
-        }
-
-        // Phase 1: pull all capital back to idle first.
-        _withdrawAllVenues();
-
-        if (targets.length == 0) {
-            emit Rebalance(msg.sender);
-            return;
-        }
-
-        uint256 idle0 = token0.balanceOf(address(this));
-        uint256 idle1 = token1.balanceOf(address(this));
-
-        if (required0 > idle0 || required1 > idle1) {
-            revert InsufficientBalances();
-        }
-
-        for (uint256 i = 0; i < targets.length; i++) {
-            if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
-            _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
-        }
-
+    function rebalance(RebalanceTypes.RebalanceTarget[] calldata targets) external onlyOwner {
+        _rebalance(targets);
         emit Rebalance(msg.sender);
+    }
+
+    /// @notice Builds a target plan from the configured strategy and executes it.
+    /// @param data Opaque strategy-specific data forwarded to `buildTargets`.
+    function rebalanceWithStrategy(bytes calldata data) external onlyOwner {
+        if (address(strategy) == address(0)) revert StrategyNotSet();
+
+        if (lastRebalance != 0 && 
+            rebalanceConfig.minCooldown != 0 && 
+            block.timestamp < lastRebalance + rebalanceConfig.minCooldown
+        ) {
+            revert CooldownNotElapsed();
+        }
+
+        if (rebalanceConfig.maxGasPrice != 0 && tx.gasprice > rebalanceConfig.maxGasPrice) {
+            revert GasPriceTooHigh();
+        }
+
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(this), data);
+
+        _rebalance(targets);
+        lastRebalance = block.timestamp;
+
+        emit RebalanceWithStrategy(msg.sender, address(strategy), data);
     }
 
     // ============================================
@@ -464,7 +504,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Reverts if a rebalance plan contains duplicate venue ids.
-    function _checkUniqueVenueIds(RebalanceTarget[] calldata targets) internal {
+    function _checkUniqueVenueIds(RebalanceTypes.RebalanceTarget[] memory targets) internal pure {
         uint256 length = targets.length;
     
         if (length < 2) return;
@@ -479,7 +519,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Reverts if a non-zero rebalance target points to an unset or disabled venue.
-    function _validateRebalanceTargets(RebalanceTarget[] calldata targets) internal {
+    function _validateRebalanceTargets(RebalanceTypes.RebalanceTarget[] memory targets) internal view {
         for (uint256 i = 0; i < targets.length; i++) {
             if (targets[i].amount0 == 0 && targets[i].amount1 == 0) {
                 continue;
@@ -507,6 +547,41 @@ contract AdaptiveLPVault is ERC20, Ownable {
             if (liquidity > 0) {
                 _withdrawFromVenue(id, liquidity);  
             }
+        }
+    }
+
+    /// @notice Shared rebalance executor used by manual and strategy-driven entrypoints.
+    function _rebalance(RebalanceTypes.RebalanceTarget[] memory targets) internal {
+        _checkUniqueVenueIds(targets);
+        _validateRebalanceTargets(targets);
+
+        uint256 required0;
+        uint256 required1;
+        for (uint256 i = 0; i < targets.length; i++) {
+            required0 += targets[i].amount0;
+            required1 += targets[i].amount1;
+        }
+
+        // idle -> idle
+        if (totalLiquidity == 0 && required0 == 0 && required1 == 0) {
+            revert NoRebalanceNeeded();
+        }
+
+        // Phase 1: pull all capital back to idle first.
+        _withdrawAllVenues();
+
+        if (targets.length == 0) return;
+
+        uint256 idle0 = token0.balanceOf(address(this));
+        uint256 idle1 = token1.balanceOf(address(this));
+
+        if (required0 > idle0 || required1 > idle1) {
+            revert InsufficientBalances();
+        }
+
+        for (uint256 i = 0; i < targets.length; i++) {
+            if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
+            _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
         }
     }
 
