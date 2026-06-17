@@ -11,10 +11,14 @@ import "../mocks/MockNonfungiblePositionManager.sol";
 
 abstract contract VenueTestHelper is Test {
     uint256 internal constant V2_VENUE_ID = 1;
-    uint256 internal constant V3_VENUE_ID = 2;
+    uint256 internal constant V3_LOW_VENUE_ID = 2;
+    uint256 internal constant V3_MID_VENUE_ID = 3;
+    uint256 internal constant V3_HIGH_VENUE_ID = 4;
 
     bytes32 internal constant V2_LABEL = bytes32("V2");
-    bytes32 internal constant V3_LABEL = bytes32("V3_005");
+    bytes32 internal constant V3_LOW_LABEL = bytes32("V3_005");
+    bytes32 internal constant V3_MID_LABEL = bytes32("V3_030");
+    bytes32 internal constant V3_HIGH_LABEL = bytes32("V3_100");
 
     function _defaultV3Params() internal view returns (bytes memory) {
         return abi.encode(0, 0, block.timestamp + 1);

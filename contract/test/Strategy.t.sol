@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "../src/strategies/FixedWeightStrategy.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockRebalanceStrategy.sol";
@@ -19,6 +20,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     AdaptiveLPVault public vault;
     MockPriceOracle public oracle;
     MockRebalanceStrategy public strategy;
+    FixedWeightStrategy public fixedStrategy;
     
     MockUniswapV2Pair public pairV2;
     MockUniswapV2Router public routerV2;
@@ -45,6 +47,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         oracle.setPrices(1e18, 1e18);
 
         strategy = new MockRebalanceStrategy();
+        fixedStrategy = new FixedWeightStrategy();
 
         // deploy V2 venue
         pairV2 = new MockUniswapV2Pair(address(token0), address(token1));
@@ -169,5 +172,35 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         
         vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
         vault.rebalanceWithStrategy("");
+    }
+
+    /// @notice rebalanceWithStrategy can execute a real fixed-weight strategy plan.
+    function test_RebalanceWithStrategy_ExecutesFixedWeightPlan() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+
+        FixedWeightStrategy.TargetConfig[] memory configs = new FixedWeightStrategy.TargetConfig[](1);
+        configs[0] = FixedWeightStrategy.TargetConfig({
+            venueId: V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+        fixedStrategy.setTargets(configs);
+        vault.setStrategy(address(fixedStrategy));
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        vault.rebalanceWithStrategy("");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(token1.balanceOf(address(pairV2)), amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
     }
 }

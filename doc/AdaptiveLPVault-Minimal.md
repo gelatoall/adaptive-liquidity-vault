@@ -9,6 +9,7 @@ Build a minimal two-asset vault that:
 - tracks total vault assets across idle balances and registered venue positions
 - supports multiple venue adapters through a simple venue registry
 - supports owner-supplied rebalance plans across registered venues
+- supports strategy-built rebalance plans through a configured strategy
 
 ## Scope
 
@@ -22,9 +23,10 @@ This version includes:
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
 - multi-venue asset accounting
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
+- strategy-driven rebalance through `IRebalanceStrategy`
 
 This version does not include:
-- automatic strategy selection
+- automatic dynamic strategy selection
 - autonomous keepers
 - threshold-based rebalance conditions
 - automatic withdrawal during user redemption
@@ -52,6 +54,8 @@ The vault stores:
 - per-venue tracked liquidity
 - total tracked liquidity across all venues
 - ERC20 share supply and balances
+- configured rebalance strategy
+- strategy rebalance cooldown and gas price guard config
 
 Venue state:
 - `venues[venueId]` stores the adapter, enabled flag, and optional label
@@ -104,6 +108,16 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 - `rebalance(targets)`
   - purpose: execute an owner-supplied multi-venue target plan
   - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
+
+- `setStrategy(strategy)`
+  - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
+
+- `setRebalanceConfig(minCooldown, maxGasPrice)`
+  - purpose: configure cooldown and gas price guards for strategy-driven rebalances
+
+- `rebalanceWithStrategy(data)`
+  - purpose: ask the configured strategy for a target plan and execute it
+  - behavior: applies strategy guards, then reuses the same rebalance execution path
 
 ## Core Flows
 
@@ -167,6 +181,16 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 An empty target array means "withdraw all venues to idle". It only succeeds if there is tracked liquidity to withdraw.
 
+### rebalanceWithStrategy
+
+1. Require a configured strategy.
+2. Enforce `minCooldown` and `maxGasPrice` when configured.
+3. Call `strategy.buildTargets(address(this), data)`.
+4. Execute the returned targets through the same internal rebalance flow.
+5. Update `lastRebalance` only after successful execution.
+
+The current concrete strategy is `FixedWeightStrategy`, which splits current idle balances across configured venues by fixed bps weights. More dynamic TWAP or volatility strategies can reuse the same interface later.
+
 ## Failure Cases
 
 The vault should revert when:
@@ -185,6 +209,8 @@ The vault should revert when:
 - a rebalance plan contains duplicate venue ids
 - a rebalance plan requires more token balance than available after withdrawals
 - rebalance cannot move any funds
+- strategy-driven rebalance is called before a strategy is configured
+- strategy-driven rebalance violates cooldown or max gas price guards
 
 ## Invariants
 
@@ -196,6 +222,8 @@ These conditions should always hold:
 - users can only redeem idle balances
 - per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
 - rebalance reuses the same deploy and withdraw helpers as manual venue operations
+- strategy-built plans pass through the same validation as manual rebalance plans
+- failed strategy-driven rebalances do not update `lastRebalance`
 
 ## Test Plan
 
@@ -228,5 +256,7 @@ Rebalance coverage:
 - rebalance rejects duplicate venue targets
 - rebalance rejects plans that exceed available balances
 - rebalance reverts when there is no liquidity to move
+- strategy-driven rebalance executes a fixed-weight plan
+- strategy-driven rebalance enforces cooldown and max gas price guards
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

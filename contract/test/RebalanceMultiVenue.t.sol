@@ -79,7 +79,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         );
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
-        vault.setVenue(V3_VENUE_ID, address(adapterV3), V3_LABEL, true);
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
     }
 
     function test_Rebalance_DeploysToMultipleVenues() public {
@@ -99,7 +99,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         RebalanceTypes.RebalanceTarget[] memory targets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
-            V3_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
+            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
 
         vault.rebalance(targets);
@@ -117,7 +117,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         assertEq(adapterV3.tokenId(), 1);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
-        assertEq(vault.venueLiquidity(V3_VENUE_ID), uint256(v3Liquidity));
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(v3Liquidity));
         assertEq(vault.totalLiquidity(), v2Liquidity + uint256(v3Liquidity));
     }
 
@@ -141,7 +141,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         RebalanceTypes.RebalanceTarget[] memory deployTargets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
-            V3_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
+            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
 
         vault.rebalance(deployTargets);
@@ -149,7 +149,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         assertTrue(adapterV2.hasPosition());
         assertTrue(adapterV3.hasPosition());
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
-        assertEq(vault.venueLiquidity(V3_VENUE_ID), uint256(v3Liquidity));
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(v3Liquidity));
         assertEq(vault.totalLiquidity(), v2Liquidity + uint256(v3Liquidity));
 
         // set V2 Venue
@@ -161,7 +161,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         _rebalanceToIdle(vault);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
-        assertEq(vault.venueLiquidity(V3_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
         assertEq(vault.totalLiquidity(), 0);
 
         assertEq(token0.balanceOf(address(vault)), amount0);

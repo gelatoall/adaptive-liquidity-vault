@@ -1051,6 +1051,35 @@ function buildTargets(address vault, bytes calldata data)
   - disabled venue 会 revert
   - 余额不足会 revert
 
+### 当前 FixedWeightStrategy
+- 当前已经有一个具体策略：[FixedWeightStrategy.sol](../contract/src/strategies/FixedWeightStrategy.sol)。
+- 它的职责是：
+  - 读取 vault 当前 idle `token0/token1` 余额
+  - 按 owner 配置的固定 bps 权重拆分这些余额
+  - 返回 `RebalanceTarget[]`
+- 它的配置项是：
+
+```solidity
+struct TargetConfig {
+    uint256 venueId;
+    uint256 weightBps;
+    bytes params;
+}
+```
+
+- `weightBps` 使用 `10_000` 表示 100%。
+- 配置规则：
+  - 每个 weight 必须大于 0
+  - venueId 不能重复
+  - 所有 weight 加起来必须等于 `10_000`
+- `buildTargets(...)` 会把整数除法产生的 rounding dust 分给最后一个 target，保证所有 target 的 `amount0/amount1` 加起来等于 vault 原本的 idle balance。
+
+当前限制：
+- `FixedWeightStrategy` 只基于 idle balances 生成 plan。
+- 它不会读取已部署 venue 的 position value。
+- 它也不做 TWAP / volatility 判断。
+- 更动态的策略可以后续继续实现同一个 `IRebalanceStrategy` 接口。
+
 ### manual rebalance 和 strategy rebalance 的区别
 - `rebalance(targets)`：
   - owner 手动传入 plan
@@ -1101,11 +1130,12 @@ function buildTargets(address vault, bytes calldata data)
   - rebalance 读到的状态和实际资产流不一致
 
 ### 为什么这里还不做 TWAP / volatility strategy
-- 当前已经有 strategy hook，但还没有自动 venue selection 算法。
+- 当前已经有 strategy hook 和一个固定权重策略，但还没有自动 venue selection 算法。
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
   - strategy 接口已经能返回 targets
-  - 但当前 mock strategy 只是测试用的预设 plan
+  - `FixedWeightStrategy` 能按静态权重拆分 idle balances
+  - `MockRebalanceStrategy` 只是测试用的预设 plan
 - 下一层 TWAP / volatility strategy 应该负责：
   - 读取 oracle / TWAP / volatility
   - 生成 `RebalanceTarget[]`
@@ -1128,6 +1158,9 @@ function buildTargets(address vault, bytes calldata data)
   - strategy-driven rebalance 会更新 `lastRebalance`
   - cooldown / max gas price guard 会限制 strategy-driven rebalance
   - strategy 返回 unset venue 时仍然会走 vault 原有校验并 revert
+  - FixedWeightStrategy 会按固定 bps 生成 targets
+  - FixedWeightStrategy 会把 rounding dust 分给最后一个 target
+  - vault 可以执行 FixedWeightStrategy 生成的最小 V2 plan
 
 ## 16. Uniswap V3 Adapter
 

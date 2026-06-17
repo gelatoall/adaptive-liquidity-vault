@@ -7,6 +7,7 @@ Build a minimal rebalance executor for the vault that:
 - supports multiple registered venue adapters
 - accepts an owner-supplied target plan
 - accepts a configured strategy that can build target plans
+- includes a fixed-weight strategy for simple static venue allocation
 - can move capital from idle balances into one or more venues
 - can withdraw all venue liquidity back to idle balances
 - stays as an execution layer, not a venue-selection algorithm
@@ -18,6 +19,7 @@ This version includes:
 - `RebalanceTarget[]` plan input
 - `IRebalanceStrategy.buildTargets(...)` strategy hook
 - `rebalanceWithStrategy(data)` for strategy-driven plan execution
+- `FixedWeightStrategy` for bps-based idle balance allocation
 - `minCooldown` and `maxGasPrice` guards for strategy-driven rebalances
 - duplicate venue target validation
 - unset and disabled venue validation
@@ -127,7 +129,32 @@ Flow:
 6. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
 7. Vault updates `lastRebalance` only after successful execution.
 
-This stage does not implement venue recommendation. The current mock strategy only returns preset targets for testing.
+This stage does not implement dynamic venue recommendation. `MockRebalanceStrategy` is used in tests for preset plans, while `FixedWeightStrategy` is the first concrete strategy implementation.
+
+### fixed-weight strategy
+
+`FixedWeightStrategy` stores owner-configured target venues and weights:
+
+```solidity
+struct TargetConfig {
+    uint256 venueId;
+    uint256 weightBps;
+    bytes params;
+}
+```
+
+Rules:
+- `weightBps` uses `10_000` as 100%
+- every target weight must be non-zero
+- venue ids must be unique
+- all weights must sum to `10_000`
+
+`buildTargets(vault, data)` reads the vault's current idle `token0` and `token1` balances, then splits those balances by the configured weights. The final target receives any integer-division rounding dust so the returned target amounts sum back to the original idle balances.
+
+Current limitation:
+- the strategy allocates current idle balances only
+- it does not read deployed venue value or compute in-place deltas
+- more dynamic TWAP or volatility strategies can reuse the same `IRebalanceStrategy` interface later
 
 ### rebalance to idle
 
@@ -234,6 +261,8 @@ Core tests should cover:
 - owner-only rebalance
 - strategy configuration
 - strategy-driven rebalance
+- fixed-weight strategy target generation
+- fixed-weight strategy execution through `rebalanceWithStrategy`
 - strategy cooldown guard
 - strategy max gas price guard
 - strategy returning an unset venue

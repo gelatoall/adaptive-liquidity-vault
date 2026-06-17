@@ -77,22 +77,22 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         );
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
-        vault.setVenue(V3_VENUE_ID, address(adapterV3), V3_LABEL, true);
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
     }
 
     function test_SetVenue_RegistersMultipleVenuesCorrectly() public {
         assertTrue(vault.venueRegistered(V2_VENUE_ID));
-        assertTrue(vault.venueRegistered(V3_VENUE_ID));
+        assertTrue(vault.venueRegistered(V3_LOW_VENUE_ID));
 
         assertEq(vault.venueIds(0), V2_VENUE_ID);
-        assertEq(vault.venueIds(1), V3_VENUE_ID);
+        assertEq(vault.venueIds(1), V3_LOW_VENUE_ID);
 
         (IVenueAdapter v2Adapter, bool v2Enabled, bytes32 v2Label) = vault.venues(V2_VENUE_ID);
         assertEq(address(v2Adapter), address(adapterV2));
         assertTrue(v2Enabled);
         assertEq(v2Label, bytes32("V2"));
 
-        (IVenueAdapter v3Adapter, bool v3Enabled, bytes32 v3Label) = vault.venues(V3_VENUE_ID);
+        (IVenueAdapter v3Adapter, bool v3Enabled, bytes32 v3Label) = vault.venues(V3_LOW_VENUE_ID);
         assertEq(address(v3Adapter), address(adapterV3));
         assertTrue(v3Enabled);
         assertEq(v3Label, bytes32("V3_005"));
@@ -132,10 +132,10 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
         uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
-                                    V3_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+                                    V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
-        assertEq(vault.venueLiquidity(V3_VENUE_ID), v3Liquidity);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
         assertEq(vault.totalLiquidity(), v2Liquidity + v3Liquidity);
 
         assertEq(token0.balanceOf(address(vault)), 0);
@@ -175,7 +175,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
         uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
-                                    V3_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+                                    V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
 
         uint256 v2Amount0Out = v2Amount0;
         uint256 v2Amount1Out = v2Amount1;
@@ -186,7 +186,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(actual1, v2Amount1Out);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
-        assertEq(vault.venueLiquidity(V3_VENUE_ID), v3Liquidity);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
         assertEq(vault.totalLiquidity(), v3Liquidity);
 
         assertEq(token0.balanceOf(address(vault)), v2Amount0);
@@ -208,7 +208,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
         uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
-                                    V3_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+                                    V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
         
         pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
         
@@ -239,7 +239,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
         uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
-                                    V3_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+                                    V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
 
         uint256 aliceShares = vault.balanceOf(alice);
         vm.expectRevert(AdaptiveLPVault.ActivePositionExists.selector);

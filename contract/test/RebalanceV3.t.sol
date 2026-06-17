@@ -69,7 +69,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         );
 
         // set V3 adapter into vault
-        vault.setVenue(V3_VENUE_ID, address(adapter), V3_LABEL, true);
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapter), V3_LOW_LABEL, true);
     }
 
     /// @notice Verifies rebalance moves all idle balances into V3.
@@ -81,7 +81,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
         _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
-        _rebalanceToVenue(vault, V3_VENUE_ID, amount0, amount1, _defaultV3Params());
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params());
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
@@ -102,7 +102,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
         _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
-        _rebalanceToVenue(vault, V3_VENUE_ID, amount0, amount1, _defaultV3Params());
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params());
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
