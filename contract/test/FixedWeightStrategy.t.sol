@@ -38,39 +38,6 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         strategy = new FixedWeightStrategy();
     }
 
-    function _buildFourTargetConfigs(
-        uint256 weightBps0,
-        uint256 weightBps1,
-        uint256 weightBps2,
-        uint256 weightBps3
-    ) internal pure returns (FixedWeightStrategy.TargetConfig[] memory configs) {
-        configs = new FixedWeightStrategy.TargetConfig[](4);
-
-        configs[0] = FixedWeightStrategy.TargetConfig({
-            venueId: V2_VENUE_ID,
-            weightBps: weightBps0,
-            params: ""
-        });
-
-        configs[1] = FixedWeightStrategy.TargetConfig({
-            venueId: V3_LOW_VENUE_ID,
-            weightBps: weightBps1,
-            params: ""
-        });
-
-        configs[2] = FixedWeightStrategy.TargetConfig({
-            venueId: V3_MID_VENUE_ID,
-            weightBps: weightBps2,
-            params: ""
-        });
-
-        configs[3] = FixedWeightStrategy.TargetConfig({
-            venueId: V3_HIGH_VENUE_ID,
-            weightBps: weightBps3,
-            params: ""
-        });
-    }
-
     /// @notice buildTargets returns four targets using configured bps weights.
     function test_BuildTargets_ReturnsFourWeightedTargets() public {
         uint256 amount0 = 10 ether;
@@ -78,7 +45,7 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        FixedWeightStrategy.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 2000);
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 2000);
         strategy.setTargets(configs);
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
@@ -109,7 +76,7 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        FixedWeightStrategy.TargetConfig[] memory configs = _buildFourTargetConfigs(3333, 3333, 3333, 1);
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(3333, 3333, 3333, 1);
         strategy.setTargets(configs);
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
@@ -127,27 +94,27 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     /// @notice setTargets rejects an empty config list.
     function test_SetTargets_RevertsWhenEmpty() public {
-        FixedWeightStrategy.TargetConfig[] memory configs = new FixedWeightStrategy.TargetConfig[](0);
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](0);
         vm.expectRevert(FixedWeightStrategy.EmptyTargets.selector);
         strategy.setTargets(configs);
     }
 
     /// @notice setTargets rejects zero-weight venues.
     function test_SetTargets_RevertsWhenWeightIsZero() public {
-        FixedWeightStrategy.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 0);
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 0);
         vm.expectRevert(FixedWeightStrategy.ZeroWeight.selector);
         strategy.setTargets(configs);
     }
 
     /// @notice setTargets rejects duplicate venue ids.
     function test_SetTargets_RevertsWhenDuplicateVenue() public {
-        FixedWeightStrategy.TargetConfig[] memory configs = new FixedWeightStrategy.TargetConfig[](2);
-        configs[0] = FixedWeightStrategy.TargetConfig({
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](2);
+        configs[0] = RebalanceTypes.TargetConfig({
             venueId: V2_VENUE_ID,
             weightBps: 5000,
             params: ""
         });
-        configs[1] = FixedWeightStrategy.TargetConfig({
+        configs[1] = RebalanceTypes.TargetConfig({
             venueId: V2_VENUE_ID,
             weightBps: 5000,
             params: ""
@@ -158,7 +125,7 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     /// @notice setTargets requires weights to sum to 10_000 bps.
     function test_SetTargets_RevertsWhenTotalWeightIsNotBps() public {
-        FixedWeightStrategy.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 1000);
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 1000);
         vm.expectRevert(FixedWeightStrategy.InvalidTotalWeight.selector);
         strategy.setTargets(configs);
     }

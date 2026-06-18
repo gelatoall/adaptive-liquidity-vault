@@ -1078,7 +1078,39 @@ struct TargetConfig {
 - `FixedWeightStrategy` 只基于 idle balances 生成 plan。
 - 它不会读取已部署 venue 的 position value。
 - 它也不做 TWAP / volatility 判断。
-- 更动态的策略可以后续继续实现同一个 `IRebalanceStrategy` 接口。
+- 当 vault 已有 tracked liquidity 时会 revert `VaultNotIdle`，避免按不完整的 idle balance 生成计划。
+
+### 当前 VolatilityBucketStrategy
+- 当前还实现了 [VolatilityBucketStrategy.sol](../contract/src/strategies/VolatilityBucketStrategy.sol)。
+- 它预先保存三套权重配置：
+  - `LOW`
+  - `MEDIUM`
+  - `HIGH`
+- owner 配置两个阈值：
+  - `lowVolatilityThresholdBps`
+  - `highVolatilityThresholdBps`
+- bucket 选择规则：
+  - `volatilityBps <= lowThreshold`：`LOW`
+  - `lowThreshold < volatilityBps <= highThreshold`：`MEDIUM`
+  - `volatilityBps > highThreshold`：`HIGH`
+- 当前波动率不是 strategy 自己计算的，而是调用方传入：
+
+```solidity
+vault.rebalanceWithStrategy(abi.encode(volatilityBps));
+```
+
+- `buildTargets(...)` 会：
+  1. 解码 `volatilityBps`
+  2. 选择对应 bucket
+  3. 读取该 bucket 的 `TargetConfig[]`
+  4. 按权重拆分 vault 当前 idle balances
+  5. 把 rounding dust 分给最后一个 target
+- 它仍然是 idle-only：
+  - 不读取已部署 position value
+  - 不计算 venue-to-venue delta
+  - vault 已有 tracked liquidity 时会 revert `VaultNotIdle`
+- 当前它证明的是“动态选择不同权重表”，还不是完整的 oracle-driven 策略。
+- V3 的 `params` 如果长期保存绝对 deadline，执行时可能过期；动态生成 V3 参数属于后续工作。
 
 ### manual rebalance 和 strategy rebalance 的区别
 - `rebalance(targets)`：
@@ -1129,17 +1161,19 @@ struct TargetConfig {
   - adapter 切换后，vault 里的部署会计和真实仓位脱节
   - rebalance 读到的状态和实际资产流不一致
 
-### 为什么这里还不做 TWAP / volatility strategy
-- 当前已经有 strategy hook 和一个固定权重策略，但还没有自动 venue selection 算法。
+### 为什么当前还不直接从 TWAP 计算 volatility
+- 当前已经有 strategy hook、固定权重策略和 volatility bucket 策略，但还没有链上波动率数据源。
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
   - strategy 接口已经能返回 targets
   - `FixedWeightStrategy` 能按静态权重拆分 idle balances
+  - `VolatilityBucketStrategy` 能按外部传入的波动率选择 LOW / MEDIUM / HIGH 权重
   - `MockRebalanceStrategy` 只是测试用的预设 plan
-- 下一层 TWAP / volatility strategy 应该负责：
-  - 读取 oracle / TWAP / volatility
-  - 生成 `RebalanceTarget[]`
-  - 决定是否触发 rebalance
+- 下一层应该实现独立 volatility oracle / reader：
+  - 读取 TWAP 历史观测
+  - 计算并输出统一精度的 `volatilityBps`
+  - 处理数据更新时间和过期检查
+- 之后再把手动传入的 `volatilityBps` 替换成可信数据源。
 - vault 仍然只负责验证和执行这个 plan。
 
 ### 当前测试覆盖的对应关系
@@ -1161,6 +1195,9 @@ struct TargetConfig {
   - FixedWeightStrategy 会按固定 bps 生成 targets
   - FixedWeightStrategy 会把 rounding dust 分给最后一个 target
   - vault 可以执行 FixedWeightStrategy 生成的最小 V2 plan
+  - VolatilityBucketStrategy 会按 LOW / MEDIUM / HIGH 选择不同权重配置
+  - VolatilityBucketStrategy 会把 rounding dust 分给最后一个 target
+  - vault 可以执行 VolatilityBucketStrategy 生成的最小 V2 plan
 
 ## 16. Uniswap V3 Adapter
 

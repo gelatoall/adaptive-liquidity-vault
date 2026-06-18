@@ -20,6 +20,7 @@ abstract contract VenueTestHelper is Test {
     bytes32 internal constant V3_MID_LABEL = bytes32("V3_030");
     bytes32 internal constant V3_HIGH_LABEL = bytes32("V3_100");
 
+    /// @notice Returns permissive V3 add-liquidity params for tests.
     function _defaultV3Params() internal view returns (bytes memory) {
         return abi.encode(0, 0, block.timestamp + 1);
     }
@@ -38,6 +39,7 @@ abstract contract VenueTestHelper is Test {
         }
     }
 
+    /// @notice Quotes V3 liquidity and pool-ordered token amounts.
     function _quoteV3Liquidity(
         MockERC20 token0,
         MockERC20 token1,
@@ -66,6 +68,7 @@ abstract contract VenueTestHelper is Test {
         );
     }
 
+    /// @notice Configures the position manager's next V3 mint result.
     function _primeV3Mint(
         MockERC20 token0,
         MockERC20 token1,
@@ -91,6 +94,7 @@ abstract contract VenueTestHelper is Test {
         positionManager.setNextMintResult(liquidity, poolAmount0, poolAmount1);
     }
 
+    /// @notice Configures and executes a vault deployment to a V2 venue.
     function _deployVaultToV2(
         AdaptiveLPVault vault,
         MockUniswapV2Router router,
@@ -105,6 +109,7 @@ abstract contract VenueTestHelper is Test {
         liquidity = vault.deployToVenue(venueId, amount0, amount1, "");
     }
 
+    /// @notice Configures and executes a vault deployment to a V3 venue.
     function _deployVaultToV3(
         AdaptiveLPVault vault,
         MockERC20 token0,
@@ -134,5 +139,39 @@ abstract contract VenueTestHelper is Test {
             amount1,
             _defaultV3Params()
         );
+    }
+
+    /// @notice Builds weight configs for the standard four test venues.
+    function _buildFourTargetConfigs(
+        uint256 weightBps0,
+        uint256 weightBps1,
+        uint256 weightBps2,
+        uint256 weightBps3
+    ) internal pure returns (RebalanceTypes.TargetConfig[] memory configs) {
+        configs = new RebalanceTypes.TargetConfig[](4);
+
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: V2_VENUE_ID,
+            weightBps: weightBps0,
+            params: ""
+        });
+
+        configs[1] = RebalanceTypes.TargetConfig({
+            venueId: V3_LOW_VENUE_ID,
+            weightBps: weightBps1,
+            params: ""
+        });
+
+        configs[2] = RebalanceTypes.TargetConfig({
+            venueId: V3_MID_VENUE_ID,
+            weightBps: weightBps2,
+            params: ""
+        });
+
+        configs[3] = RebalanceTypes.TargetConfig({
+            venueId: V3_HIGH_VENUE_ID,
+            weightBps: weightBps3,
+            params: ""
+        });
     }
 }

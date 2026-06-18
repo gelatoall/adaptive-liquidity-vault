@@ -24,6 +24,7 @@ This version includes:
 - multi-venue asset accounting
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 - strategy-driven rebalance through `IRebalanceStrategy`
+- fixed-weight and volatility-bucket idle allocation strategies
 
 This version does not include:
 - automatic dynamic strategy selection
@@ -189,7 +190,11 @@ An empty target array means "withdraw all venues to idle". It only succeeds if t
 4. Execute the returned targets through the same internal rebalance flow.
 5. Update `lastRebalance` only after successful execution.
 
-The current concrete strategy is `FixedWeightStrategy`, which splits current idle balances across configured venues by fixed bps weights. More dynamic TWAP or volatility strategies can reuse the same interface later.
+The current concrete strategies are:
+- `FixedWeightStrategy`, which applies one configured set of venue weights
+- `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an ABI-encoded volatility value
+
+Both strategies operate on current idle balances and revert with `VaultNotIdle` when tracked venue liquidity exists. The volatility value is currently caller-supplied rather than calculated from an oracle.
 
 ## Failure Cases
 
@@ -211,6 +216,7 @@ The vault should revert when:
 - rebalance cannot move any funds
 - strategy-driven rebalance is called before a strategy is configured
 - strategy-driven rebalance violates cooldown or max gas price guards
+- an idle-only strategy is asked to build targets while tracked venue liquidity exists
 
 ## Invariants
 
@@ -257,6 +263,7 @@ Rebalance coverage:
 - rebalance rejects plans that exceed available balances
 - rebalance reverts when there is no liquidity to move
 - strategy-driven rebalance executes a fixed-weight plan
+- strategy-driven rebalance executes a volatility-selected plan
 - strategy-driven rebalance enforces cooldown and max gas price guards
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

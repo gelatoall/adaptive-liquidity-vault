@@ -5,21 +5,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
+import "../libraries/RebalanceTypes.sol";
 
 /// @notice Builds rebalance targets by splitting vault idle balances by fixed venue weights.
 contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
-    /// @notice Basis point denominator used for weight configs.
-    uint256 public constant BPS = 10_000;
-
-    /// @notice Fixed allocation for one venue.
-    struct TargetConfig {
-        uint256 venueId;
-        uint256 weightBps;  // Venue weight in basis points.
-        bytes params;       // Venue-specific adapter params.
-    }
-
     /// @notice Configured fixed-weight venue allocations.
-    TargetConfig[] public targetConfigs;
+    RebalanceTypes.TargetConfig[] public targetConfigs;
 
     /// @notice Emitted after the target config set is replaced.
     event SetTargets(uint256 count);
@@ -29,6 +20,7 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     error ZeroWeight();
     error DuplicateVenue();
     error InvalidTotalWeight();
+    error VaultNotIdle();
 
     // ============================================
     // Constructor
@@ -38,19 +30,24 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     // ============================================
     // View Functions
     // ============================================
-    /// @notice Builds a rebalance plan from the vault's current idle token balances.
-    /// @dev The last target receives any rounding dust from integer division.
+    /// @notice Builds a rebalance plan from the vault's idle token balances.
+    /// @dev Requires an idle vault; the last target receives any rounding dust.
     function buildTargets(
         address vault, 
         bytes calldata
     ) external view returns (RebalanceTypes.RebalanceTarget[] memory targets) {
         if (vault == address(0)) revert ZeroAddress();
 
+        AdaptiveLPVault targetVault = AdaptiveLPVault(vault);
+        if (targetVault.totalLiquidity() != 0) {
+            revert VaultNotIdle();
+        }
+
         uint256 length = targetConfigs.length;
         if (length == 0) revert EmptyTargets();
 
-        IERC20 token0 = AdaptiveLPVault(vault).token0();
-        IERC20 token1 = AdaptiveLPVault(vault).token1();
+        IERC20 token0 = targetVault.token0();
+        IERC20 token1 = targetVault.token1();
         uint256 idle0 = token0.balanceOf(vault);
         uint256 idle1 = token1.balanceOf(vault);
 
@@ -66,8 +63,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
                 amount0 = idle0 - used0;
                 amount1 = idle1 - used1;
             } else {
-                amount0 = idle0 * targetConfigs[i].weightBps / BPS;
-                amount1 = idle1 * targetConfigs[i].weightBps / BPS;
+                amount0 = idle0 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
+                amount1 = idle1 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
                 used0 += amount0;
                 used1 += amount1;
             }
@@ -91,7 +88,7 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     // ============================================
     /// @notice Replaces fixed venue weights.
     /// @dev Weights must be nonzero, unique by venue id, and sum to 10_000 bps.
-    function setTargets(TargetConfig[] calldata configs) external onlyOwner {
+    function setTargets(RebalanceTypes.TargetConfig[] calldata configs) external onlyOwner {
         if (configs.length == 0) revert EmptyTargets();
 
         delete targetConfigs;
@@ -106,14 +103,14 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
             }
 
             totalWeight += configs[i].weightBps;
-            targetConfigs.push(TargetConfig({
+            targetConfigs.push(RebalanceTypes.TargetConfig({
                 venueId: configs[i].venueId,
                 weightBps: configs[i].weightBps,
                 params: configs[i].params
             }));
         }
 
-        if (totalWeight != BPS) revert InvalidTotalWeight();
+        if (totalWeight != RebalanceTypes.BPS) revert InvalidTotalWeight();
 
         emit SetTargets(configs.length);
     }

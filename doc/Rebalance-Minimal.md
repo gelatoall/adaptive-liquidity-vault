@@ -8,6 +8,7 @@ Build a minimal rebalance executor for the vault that:
 - accepts an owner-supplied target plan
 - accepts a configured strategy that can build target plans
 - includes a fixed-weight strategy for simple static venue allocation
+- includes a volatility-bucket strategy for selecting among configured allocations
 - can move capital from idle balances into one or more venues
 - can withdraw all venue liquidity back to idle balances
 - stays as an execution layer, not a venue-selection algorithm
@@ -20,6 +21,7 @@ This version includes:
 - `IRebalanceStrategy.buildTargets(...)` strategy hook
 - `rebalanceWithStrategy(data)` for strategy-driven plan execution
 - `FixedWeightStrategy` for bps-based idle balance allocation
+- `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
 - `minCooldown` and `maxGasPrice` guards for strategy-driven rebalances
 - duplicate venue target validation
 - unset and disabled venue validation
@@ -30,7 +32,7 @@ This version includes:
 This version does not include:
 - automatic venue recommendation
 - TWAP-driven target weighting
-- volatility thresholds
+- on-chain volatility calculation
 - keeper automation
 - partial in-place rebalancing
 - slippage optimization beyond adapter-level params
@@ -129,7 +131,7 @@ Flow:
 6. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
 7. Vault updates `lastRebalance` only after successful execution.
 
-This stage does not implement dynamic venue recommendation. `MockRebalanceStrategy` is used in tests for preset plans, while `FixedWeightStrategy` is the first concrete strategy implementation.
+`MockRebalanceStrategy` is used in tests for preset plans. The concrete minimal strategies are `FixedWeightStrategy` and `VolatilityBucketStrategy`.
 
 ### fixed-weight strategy
 
@@ -154,7 +156,34 @@ Rules:
 Current limitation:
 - the strategy allocates current idle balances only
 - it does not read deployed venue value or compute in-place deltas
-- more dynamic TWAP or volatility strategies can reuse the same `IRebalanceStrategy` interface later
+- it reverts with `VaultNotIdle` when the vault has tracked deployed liquidity
+
+### volatility-bucket strategy
+
+`VolatilityBucketStrategy` stores separate venue weights for `LOW`, `MEDIUM`, and `HIGH` volatility buckets.
+
+The owner configures:
+- a low-volatility upper threshold
+- a medium-volatility upper threshold
+- one valid `TargetConfig[]` allocation for each bucket that may be used
+
+For the current minimal version, the caller supplies volatility in basis points:
+
+```solidity
+vault.rebalanceWithStrategy(abi.encode(volatilityBps));
+```
+
+Bucket selection is:
+- `volatilityBps <= lowThreshold`: `LOW`
+- `lowThreshold < volatilityBps <= highThreshold`: `MEDIUM`
+- `volatilityBps > highThreshold`: `HIGH`
+
+The selected weights are applied to current idle balances. As with `FixedWeightStrategy`, the last target receives rounding dust and the strategy reverts when the vault is not idle.
+
+Current limitations:
+- volatility is supplied by the caller rather than read from an oracle
+- the strategy does not calculate TWAP or statistical volatility
+- stored V3 params must not rely on a deadline that will expire before execution; dynamic V3 params remain future work
 
 ### rebalance to idle
 
@@ -263,6 +292,8 @@ Core tests should cover:
 - strategy-driven rebalance
 - fixed-weight strategy target generation
 - fixed-weight strategy execution through `rebalanceWithStrategy`
+- volatility bucket selection and target generation
+- volatility-selected plan execution through `rebalanceWithStrategy`
 - strategy cooldown guard
 - strategy max gas price guard
 - strategy returning an unset venue
@@ -276,4 +307,4 @@ Core tests should cover:
 - insufficient balance rejection
 - no-liquidity idle rebalance rejection
 
-This list is intentionally focused on the minimal executor and strategy hook. Future TWAP or volatility strategy tests should cover how target plans are produced, not repeat the executor's asset-flow coverage.
+This list is intentionally focused on the minimal executor and strategy hook. Future oracle-backed volatility tests should focus on signal production rather than repeat the executor's asset-flow coverage.

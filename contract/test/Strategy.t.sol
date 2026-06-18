@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/strategies/FixedWeightStrategy.sol";
+import "../src/strategies/VolatilityBucketStrategy.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockRebalanceStrategy.sol";
@@ -21,6 +22,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     MockPriceOracle public oracle;
     MockRebalanceStrategy public strategy;
     FixedWeightStrategy public fixedStrategy;
+    VolatilityBucketStrategy public volatilityStrategy;
     
     MockUniswapV2Pair public pairV2;
     MockUniswapV2Router public routerV2;
@@ -31,6 +33,9 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     uint8 public decimals0 = 18;
     uint8 public decimals1 = 6;
+
+    uint256 public lowThresholdBps = 100;
+    uint256 public highThresholdBps = 300;
 
     function setUp() public {
         token0 = new MockERC20("token0", "T0", decimals0);
@@ -48,6 +53,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         strategy = new MockRebalanceStrategy();
         fixedStrategy = new FixedWeightStrategy();
+        volatilityStrategy = new VolatilityBucketStrategy(lowThresholdBps, highThresholdBps);
 
         // deploy V2 venue
         pairV2 = new MockUniswapV2Pair(address(token0), address(token1));
@@ -184,8 +190,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
 
-        FixedWeightStrategy.TargetConfig[] memory configs = new FixedWeightStrategy.TargetConfig[](1);
-        configs[0] = FixedWeightStrategy.TargetConfig({
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
             venueId: V2_VENUE_ID,
             weightBps: 10_000,
             params: ""
@@ -196,6 +202,36 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
         vault.rebalanceWithStrategy("");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(token1.balanceOf(address(pairV2)), amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
+    }
+
+    /// @notice rebalanceWithStrategy executes a volatility-selected allocation.
+    function test_RebalanceWithStrategy_ExecutesVolatilityBucketPlan() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        }); 
+        volatilityStrategy.setBucketTargets(VolatilityBucketStrategy.Bucket.LOW, configs);
+        vault.setStrategy(address(volatilityStrategy));
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        vault.rebalanceWithStrategy(abi.encode(uint256(50)));
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
