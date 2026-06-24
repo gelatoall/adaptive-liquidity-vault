@@ -188,6 +188,22 @@ Current limitations:
 - the strategy does not calculate TWAP or statistical volatility itself
 - stored V3 params must not rely on a deadline that will expire before execution; dynamic V3 params remain future work
 
+### price-change volatility oracle
+
+`PriceChangeVolatilityOracle` is the current concrete `IVolatilityOracle` implementation.
+
+It reads prices from `IPriceOracle.getPrices()` and stores the previous sampled prices. Each `update()` compares the latest prices with the previous snapshot:
+
+```text
+change0Bps = abs(price0 - lastPrice0) * 10_000 / lastPrice0
+change1Bps = abs(price1 - lastPrice1) * 10_000 / lastPrice1
+volatilityBps = max(change0Bps, change1Bps)
+```
+
+The first `update()` only initializes `lastPrice0` and `lastPrice1`; later updates compute `volatilityBps`.
+
+This is intentionally a minimal price-change proxy. It does not compute statistical volatility, standard deviation, or annualized volatility.
+
 ### rebalance to idle
 
 Call `rebalance` with an empty target array:

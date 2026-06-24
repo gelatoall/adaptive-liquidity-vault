@@ -196,6 +196,8 @@ The current concrete strategies are:
 
 Both strategies operate on current idle balances and revert with `VaultNotIdle` when tracked venue liquidity exists. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
+The current concrete volatility oracle is `PriceChangeVolatilityOracle`. It reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points. This is a simple price-change proxy, not a statistical volatility model.
+
 ## Failure Cases
 
 The vault should revert when:

@@ -22,6 +22,43 @@
 - `assets` 的作用是把不同 token 的余额转换到同一个单位里进行比较。
 - `assets` 是“价值单位”，不是 token 数量单位。
 
+### TWAP
+- `TWAP` 是 `Time-Weighted Average Price`，中文可以理解为“时间加权平均价格”。
+- 它不是读取某一瞬间的价格，而是用一段时间内的累计价格变化计算平均价格。
+- 直觉上：
+  - spot price 是“现在这一刻的价格”
+  - TWAP 是“一段时间内的平均价格”
+- 在 AMM 里，瞬时 reserve / spot price 可能被一次大额 swap 或 flash loan 短暂扭曲。
+- TWAP 通过拉长观察窗口，降低短时间价格操纵对 oracle 的影响。
+- 代价是：
+  - 价格反应更慢
+  - 必须等待足够的时间窗口
+  - 不适合表达瞬时市场价格
+
+### Volatility
+- `volatility` 可以理解为“价格变化有多剧烈”。
+- 在严格金融学里，volatility 往往会用历史收益率、标准差、年化等方式计算。
+- 当前项目里的最小实现没有做完整统计模型，而是先用“最近两次价格快照之间的变化幅度”代理 volatility。
+- 例子：
+  - 价格从 `100` 变到 `101`，变化是 `1%`
+  - 价格从 `100` 变到 `120`，变化是 `20%`
+  - 第二种情况就被认为波动更高
+- 项目里统一用 `bps` 表示比例：
+  - `10_000 bps = 100%`
+  - `1_000 bps = 10%`
+  - `100 bps = 1%`
+- `VolatilityBucketStrategy` 不关心 volatility 是怎么计算出来的，只关心 `IVolatilityOracle.getVolatilityBps()` 返回的数字。
+- `bucket` 可以理解为“分档”或“区间”。
+- 把连续的 volatility 数字分到几个 bucket 里，可以避免为每一个具体数值都单独配置策略。
+- 这个数字会被映射到三个 bucket：
+  - `LOW`：低波动
+  - `MEDIUM`：中等波动
+  - `HIGH`：高波动
+- 每个 bucket 可以配置不同的 venue 权重。
+  - 低波动时可以偏向更集中的 LP 策略
+  - 高波动时可以偏向更保守或更分散的 LP 策略
+  - 当前代码只实现“根据 bucket 选择不同权重表”，不负责判断这些权重是否经济上最优
+
 ### 最基础的价值换算公式
 - 单个 token 的 base value 计算公式是：
   - `valueInBase = amount * price / 10**decimals`
@@ -1112,8 +1149,36 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 不读取已部署 position value
   - 不计算 venue-to-venue delta
   - vault 已有 tracked liquidity 时会 revert `VaultNotIdle`
-- 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”；真实 volatility oracle 的计算逻辑仍是后续模块。
+- 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”。
 - V3 的 `params` 如果长期保存绝对 deadline，执行时可能过期；动态生成 V3 参数属于后续工作。
+
+### 当前 PriceChangeVolatilityOracle
+- 当前已经实现了 [PriceChangeVolatilityOracle.sol](../contract/src/oracles/PriceChangeVolatilityOracle.sol)。
+- 它实现 `IVolatilityOracle`，作用是把 `IPriceOracle` 的价格变化转换成 `volatilityBps`。
+- 它从 `IPriceOracle.getPrices()` 读取：
+  - `price0`
+  - `price1`
+- 第一次 `update()` 只初始化快照：
+  - `lastPrice0`
+  - `lastPrice1`
+  - `volatilityBps` 仍为 `0`
+- 第二次及之后的 `update()` 会计算：
+
+```text
+change0Bps = abs(price0 - lastPrice0) * 10_000 / lastPrice0
+change1Bps = abs(price1 - lastPrice1) * 10_000 / lastPrice1
+volatilityBps = max(change0Bps, change1Bps)
+```
+
+- 也就是说：
+  - token0 变化更大，就用 token0 的变化率
+  - token1 变化更大，就用 token1 的变化率
+  - 一个上涨、一个下跌也不会互相抵消，因为用的是绝对变化
+- 这不是严格统计学波动率：
+  - 不计算标准差
+  - 不计算年化波动率
+  - 不维护多周期历史窗口
+- 它是当前最小实现里的 price-change proxy，用来给 `VolatilityBucketStrategy` 提供可测试的链上波动率输入。
 
 ### manual rebalance 和 strategy rebalance 的区别
 - `rebalance(targets)`：
@@ -1165,7 +1230,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - rebalance 读到的状态和实际资产流不一致
 
 ### 为什么当前还不直接从 TWAP 计算 volatility
-- 当前已经有 strategy hook、固定权重策略、volatility bucket 策略和 `IVolatilityOracle` 接口，但还没有真实链上波动率计算合约。
+- 当前已经有 strategy hook、固定权重策略、volatility bucket 策略、`IVolatilityOracle` 接口和 `PriceChangeVolatilityOracle`。
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
   - strategy 接口已经能返回 targets
@@ -1173,10 +1238,14 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - `VolatilityBucketStrategy` 能按 `IVolatilityOracle` 返回的波动率选择 LOW / MEDIUM / HIGH 权重
   - `MockRebalanceStrategy` 只是测试用的预设 plan
   - `MockVolatilityOracle` 只是测试用的可控波动率来源
-- 下一层应该实现独立 volatility oracle / reader：
-  - 读取 TWAP 历史观测
-  - 计算并输出统一精度的 `volatilityBps`
-  - 处理数据更新时间和过期检查
+- `PriceChangeVolatilityOracle` 已经提供了一个最小真实 volatility source：
+  - 读取 `IPriceOracle`
+  - 比较当前价格和上一次价格快照
+  - 输出统一精度的 `volatilityBps`
+- 后续如果要更贴近真实市场，可以继续增强：
+  - 用 V3 TWAP 实现一个新的 `IPriceOracle`
+  - 在 volatility oracle 里维护多周期窗口
+  - 增加价格数据更新时间和过期检查
 - vault 仍然只负责验证和执行这个 plan。
 
 ### 当前测试覆盖的对应关系
@@ -1201,6 +1270,10 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - VolatilityBucketStrategy 会按 LOW / MEDIUM / HIGH 选择不同权重配置
   - VolatilityBucketStrategy 会把 rounding dust 分给最后一个 target
   - vault 可以执行 VolatilityBucketStrategy 生成的最小 V2 plan
+  - PriceChangeVolatilityOracle 会初始化价格快照
+  - PriceChangeVolatilityOracle 会处理上涨、下跌、一个涨一个跌的价格变化
+  - PriceChangeVolatilityOracle 会取 token0/token1 中更大的价格变化作为 `volatilityBps`
+  - vault 可以执行由 PriceChangeVolatilityOracle 驱动的 VolatilityBucketStrategy plan
 
 ## 16. Uniswap V3 Adapter
 

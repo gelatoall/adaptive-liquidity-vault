@@ -88,7 +88,7 @@ Important:
 5. Compute average price deltas in `UQ112x112`.
 6. Advance snapshot state to current cumulative/timestamp.
 7. Mark `initialized = true`.
-8. Emit `Updated(price0, price1, timeElapsed)` with aligned 1e18 prices.
+8. Emit `TwapUpdated(price0, price1, timeElapsed)` with aligned 1e18 prices.
 
 ## Read Behavior
 

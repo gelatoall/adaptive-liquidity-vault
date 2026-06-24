@@ -2,8 +2,8 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/utils/math/Math.sol";
-import "./interfaces/IPriceOracle.sol";
-import "./interfaces/IUniswapV2Pair.sol";
+import "../interfaces/IPriceOracle.sol";
+import "../interfaces/IUniswapV2Pair.sol";
 
 /// @title TWAPOracle
 /// @notice Minimal Uniswap V2 TWAP oracle that returns token prices in 1e18 precision.
@@ -59,7 +59,7 @@ contract TWAPOracle is IPriceOracle {
     /// @param price0 Latest 1e18-scaled price for configured token0.
     /// @param price1 Latest 1e18-scaled price for configured token1.
     /// @param timeElapsed Seconds elapsed in the window used for this update.
-    event Updated(uint256 price0, uint256 price1, uint32 timeElapsed);
+    event TwapUpdated(uint256 price0, uint256 price1, uint32 timeElapsed);
 
     // ============================================
     // Custom Errors
@@ -153,7 +153,7 @@ contract TWAPOracle is IPriceOracle {
         initialized = true;
 
         (uint256 p0, uint256 p1) = _getAlignedPrices();
-        emit Updated(p0, p1, timeElapsed);
+        emit TwapUpdated(p0, p1, timeElapsed);
     }
 
     /// @inheritdoc IPriceOracle

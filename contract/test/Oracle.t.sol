@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
-import "../src/TWAPOracle.sol";
+import "../src/oracles/TWAPOracle.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 

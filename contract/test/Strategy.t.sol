@@ -6,6 +6,7 @@ import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/strategies/FixedWeightStrategy.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
+import "../src/oracles/PriceChangeVolatilityOracle.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockRebalanceStrategy.sol";
@@ -236,6 +237,54 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
         volatilityOracle.setVolatilityBps(50);
+        vault.rebalanceWithStrategy("");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(token1.balanceOf(address(pairV2)), amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
+    }
+
+    /// @notice rebalanceWithStrategy can execute a plan selected by price-change volatility.
+    function test_RebalanceWithStrategy_ExecutesPriceChangeVolatilityPlan() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        // Change price volatility
+        PriceChangeVolatilityOracle priceChangeVolatilityOracle = new PriceChangeVolatilityOracle(address(priceOracle));
+            // First update initializes the price snapshot.
+        priceOracle.setPrices(100e18, 100e18);
+        priceChangeVolatilityOracle.update();
+            // Second update computes 50% volatility, which selects HIGH.
+        priceOracle.setPrices(150e18, 110e18);
+        priceChangeVolatilityOracle.update();
+        assertEq(priceChangeVolatilityOracle.getVolatilityBps(), 5000);
+
+        // Build target configs
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+
+        // Match bucket volatility level with target configs
+        VolatilityBucketStrategy oracleBackedStrategy = new VolatilityBucketStrategy(
+            address(priceChangeVolatilityOracle), 
+            lowThresholdBps, 
+            highThresholdBps
+        );
+        oracleBackedStrategy.setBucketTargets(VolatilityBucketStrategy.Bucket.HIGH, configs);
+
+        // vault <-> strategy
+        vault.setStrategy(address(oracleBackedStrategy));
+        
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
         vault.rebalanceWithStrategy("");
 
         assertEq(token0.balanceOf(address(vault)), 0);
