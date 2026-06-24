@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
+import "../interfaces/IVolatilityOracle.sol";
 
 /// @notice Builds idle-only allocations from configured volatility buckets.
 contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
@@ -14,6 +15,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         MEDIUM,
         HIGH
     }
+
+    /// @notice Volatility source used for bucket selection.
+    IVolatilityOracle public immutable volatilityOracle;
 
     /// @notice Upper bound of the low-volatility bucket.
     uint256 public lowVolatilityThresholdBps;
@@ -32,7 +36,6 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     
     error ZeroAddress();
     error ZeroWeight();
-    error InvalidData();
     error InvalidThresholds();
     error InvalidTotalWeight();
     error EmptyTargets();
@@ -42,19 +45,26 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     // ============================================
     // Constructor
     // ============================================
-    /// @notice Initializes the low and high volatility thresholds.
-    constructor(uint256 lowThresholdBps, uint256 highThresholdBps) Ownable(msg.sender) {
+    /// @notice Initializes the volatility oracle and bucket thresholds.
+    constructor(
+        address _volatilityOracle, 
+        uint256 lowThresholdBps, 
+        uint256 highThresholdBps
+    ) Ownable(msg.sender) {
+        if (_volatilityOracle == address(0)) revert ZeroAddress();
+        volatilityOracle = IVolatilityOracle(_volatilityOracle);
+
         _setThresholds(lowThresholdBps, highThresholdBps);
     }
 
     // ============================================
     // View Functions
     // ============================================
-    /// @notice Builds an idle-balance allocation plan for the supplied volatility.
-    /// @dev `data` must encode one uint256 volatility value in basis points.
+    /// @notice Builds an idle-balance allocation plan from the volatility oracle.
+    /// @dev Extra strategy data is currently unused.
     function buildTargets(
         address vault, 
-        bytes calldata data
+        bytes calldata
     ) external view returns (RebalanceTypes.RebalanceTarget[] memory targets) {
         if (vault == address(0)) revert ZeroAddress();
 
@@ -63,8 +73,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
             revert VaultNotIdle();
         }
 
-        if (data.length != 32) revert InvalidData();
-        uint256 volatilityBps = abi.decode(data, (uint256));
+        uint256 volatilityBps = volatilityOracle.getVolatilityBps();
         Bucket bucket = getBucket(volatilityBps);
         RebalanceTypes.TargetConfig[] storage configs = bucketTargets[bucket];
 

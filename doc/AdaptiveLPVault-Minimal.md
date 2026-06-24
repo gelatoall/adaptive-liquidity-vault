@@ -192,9 +192,9 @@ An empty target array means "withdraw all venues to idle". It only succeeds if t
 
 The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
-- `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an ABI-encoded volatility value
+- `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value
 
-Both strategies operate on current idle balances and revert with `VaultNotIdle` when tracked venue liquidity exists. The volatility value is currently caller-supplied rather than calculated from an oracle.
+Both strategies operate on current idle balances and revert with `VaultNotIdle` when tracked venue liquidity exists. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
 ## Failure Cases
 

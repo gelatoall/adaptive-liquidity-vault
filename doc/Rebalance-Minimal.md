@@ -163,15 +163,18 @@ Current limitation:
 `VolatilityBucketStrategy` stores separate venue weights for `LOW`, `MEDIUM`, and `HIGH` volatility buckets.
 
 The owner configures:
+- a volatility oracle
 - a low-volatility upper threshold
 - a medium-volatility upper threshold
 - one valid `TargetConfig[]` allocation for each bucket that may be used
 
-For the current minimal version, the caller supplies volatility in basis points:
+For the current minimal version, the strategy reads volatility from `IVolatilityOracle`:
 
 ```solidity
-vault.rebalanceWithStrategy(abi.encode(volatilityBps));
+uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 ```
+
+`rebalanceWithStrategy(data)` still forwards opaque strategy data, but `VolatilityBucketStrategy` currently ignores that parameter.
 
 Bucket selection is:
 - `volatilityBps <= lowThreshold`: `LOW`
@@ -181,8 +184,8 @@ Bucket selection is:
 The selected weights are applied to current idle balances. As with `FixedWeightStrategy`, the last target receives rounding dust and the strategy reverts when the vault is not idle.
 
 Current limitations:
-- volatility is supplied by the caller rather than read from an oracle
-- the strategy does not calculate TWAP or statistical volatility
+- volatility is read from an external oracle contract
+- the strategy does not calculate TWAP or statistical volatility itself
 - stored V3 params must not rely on a deadline that will expire before execution; dynamic V3 params remain future work
 
 ### rebalance to idle

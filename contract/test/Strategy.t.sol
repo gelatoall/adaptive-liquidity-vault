@@ -11,6 +11,7 @@ import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockRebalanceStrategy.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
+import "./mocks/MockVolatilityOracle.sol";
 import "../test/helpers/VaultTestHelper.sol";
 import "../test/helpers/VenueTestHelper.sol";
 
@@ -19,7 +20,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
     AdaptiveLPVault public vault;
-    MockPriceOracle public oracle;
+    MockPriceOracle public priceOracle;
+    MockVolatilityOracle public volatilityOracle;
     MockRebalanceStrategy public strategy;
     FixedWeightStrategy public fixedStrategy;
     VolatilityBucketStrategy public volatilityStrategy;
@@ -47,13 +49,15 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
             decimals0, decimals1
         );
 
-        oracle = new MockPriceOracle();
-        vault.setOracle(address(oracle));
-        oracle.setPrices(1e18, 1e18);
+        priceOracle = new MockPriceOracle();
+        vault.setOracle(address(priceOracle));
+        priceOracle.setPrices(1e18, 1e18);
+
+        volatilityOracle = new MockVolatilityOracle();
 
         strategy = new MockRebalanceStrategy();
         fixedStrategy = new FixedWeightStrategy();
-        volatilityStrategy = new VolatilityBucketStrategy(lowThresholdBps, highThresholdBps);
+        volatilityStrategy = new VolatilityBucketStrategy(address(volatilityOracle), lowThresholdBps, highThresholdBps);
 
         // deploy V2 venue
         pairV2 = new MockUniswapV2Pair(address(token0), address(token1));
@@ -231,7 +235,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy(abi.encode(uint256(50)));
+        volatilityOracle.setVolatilityBps(50);
+        vault.rebalanceWithStrategy("");
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);

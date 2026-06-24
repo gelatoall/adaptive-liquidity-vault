@@ -1089,27 +1089,30 @@ struct TargetConfig {
 - owner 配置两个阈值：
   - `lowVolatilityThresholdBps`
   - `highVolatilityThresholdBps`
+- strategy 还会配置一个 `IVolatilityOracle`：
+  - `getVolatilityBps()` 返回当前波动率，单位是 bps
 - bucket 选择规则：
   - `volatilityBps <= lowThreshold`：`LOW`
   - `lowThreshold < volatilityBps <= highThreshold`：`MEDIUM`
   - `volatilityBps > highThreshold`：`HIGH`
-- 当前波动率不是 strategy 自己计算的，而是调用方传入：
+- 当前波动率不是 strategy 自己计算的，而是从 volatility oracle 读取：
 
 ```solidity
-vault.rebalanceWithStrategy(abi.encode(volatilityBps));
+uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 ```
 
 - `buildTargets(...)` 会：
-  1. 解码 `volatilityBps`
+  1. 从 `IVolatilityOracle` 读取 `volatilityBps`
   2. 选择对应 bucket
   3. 读取该 bucket 的 `TargetConfig[]`
   4. 按权重拆分 vault 当前 idle balances
   5. 把 rounding dust 分给最后一个 target
+- `rebalanceWithStrategy(data)` 仍然会把 `data` 透传给 strategy，但当前 `VolatilityBucketStrategy` 不使用这个参数。
 - 它仍然是 idle-only：
   - 不读取已部署 position value
   - 不计算 venue-to-venue delta
   - vault 已有 tracked liquidity 时会 revert `VaultNotIdle`
-- 当前它证明的是“动态选择不同权重表”，还不是完整的 oracle-driven 策略。
+- 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”；真实 volatility oracle 的计算逻辑仍是后续模块。
 - V3 的 `params` 如果长期保存绝对 deadline，执行时可能过期；动态生成 V3 参数属于后续工作。
 
 ### manual rebalance 和 strategy rebalance 的区别
@@ -1162,18 +1165,18 @@ vault.rebalanceWithStrategy(abi.encode(volatilityBps));
   - rebalance 读到的状态和实际资产流不一致
 
 ### 为什么当前还不直接从 TWAP 计算 volatility
-- 当前已经有 strategy hook、固定权重策略和 volatility bucket 策略，但还没有链上波动率数据源。
+- 当前已经有 strategy hook、固定权重策略、volatility bucket 策略和 `IVolatilityOracle` 接口，但还没有真实链上波动率计算合约。
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
   - strategy 接口已经能返回 targets
   - `FixedWeightStrategy` 能按静态权重拆分 idle balances
-  - `VolatilityBucketStrategy` 能按外部传入的波动率选择 LOW / MEDIUM / HIGH 权重
+  - `VolatilityBucketStrategy` 能按 `IVolatilityOracle` 返回的波动率选择 LOW / MEDIUM / HIGH 权重
   - `MockRebalanceStrategy` 只是测试用的预设 plan
+  - `MockVolatilityOracle` 只是测试用的可控波动率来源
 - 下一层应该实现独立 volatility oracle / reader：
   - 读取 TWAP 历史观测
   - 计算并输出统一精度的 `volatilityBps`
   - 处理数据更新时间和过期检查
-- 之后再把手动传入的 `volatilityBps` 替换成可信数据源。
 - vault 仍然只负责验证和执行这个 plan。
 
 ### 当前测试覆盖的对应关系

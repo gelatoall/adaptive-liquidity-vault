@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
+import "./mocks/MockVolatilityOracle.sol";
 import "./helpers/VaultTestHelper.sol";
 import "./helpers/VenueTestHelper.sol";
 
@@ -13,7 +14,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
     MockERC20 public token0;
     MockERC20 public token1;
     AdaptiveLPVault public vault;
-    MockPriceOracle public oracle;
+    MockPriceOracle public priceOracle;
+    MockVolatilityOracle public volatilityOracle;
     VolatilityBucketStrategy public strategy;
 
     address public alice = makeAddr("alice");
@@ -34,11 +36,13 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
             decimals0, decimals1
         );
 
-        oracle = new MockPriceOracle();
-        vault.setOracle(address(oracle));
-        oracle.setPrices(1e18, 1e18);
+        priceOracle = new MockPriceOracle();
+        vault.setOracle(address(priceOracle));
+        priceOracle.setPrices(1e18, 1e18);
 
-        strategy = new VolatilityBucketStrategy(lowThresholdBps, highThresholdBps);
+        volatilityOracle = new MockVolatilityOracle();
+
+        strategy = new VolatilityBucketStrategy(address(volatilityOracle), lowThresholdBps, highThresholdBps);
     }
 
     function _setLowBucketTargets() internal {
@@ -86,7 +90,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
 
         _setLowBucketTargets(); // prepare low strategy
 
-        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), abi.encode(uint256(50)));
+        volatilityOracle.setVolatilityBps(50);
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
 
         assertEq(targets.length, 4);
 
@@ -113,11 +118,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
 
         _setMediumBucketTargets();
 
-        RebalanceTypes.RebalanceTarget[] memory targets =
-            strategy.buildTargets(
-                address(vault),
-                abi.encode(uint256(200))
-            );
+        volatilityOracle.setVolatilityBps(200);
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
 
         assertEq(targets.length, 4);
 
@@ -144,11 +146,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
 
         _setHighBucketTargets();
 
-        RebalanceTypes.RebalanceTarget[] memory targets =
-            strategy.buildTargets(
-                address(vault),
-                abi.encode(uint256(400))
-            );
+        volatilityOracle.setVolatilityBps(400);
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
 
         assertEq(targets.length, 4);
 
@@ -181,7 +180,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
             _buildFourTargetConfigs(3333, 3333, 3333, 1)
         );
 
-        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), abi.encode(uint256(60)));
+        volatilityOracle.setVolatilityBps(60);
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
 
         assertEq(targets[0].venueId, V2_VENUE_ID);
         assertEq(targets[0].amount0, 33);
