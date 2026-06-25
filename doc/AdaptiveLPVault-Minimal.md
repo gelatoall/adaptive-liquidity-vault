@@ -78,8 +78,11 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 - `constructor(name, symbol, token0, token1, decimals0, decimals1)`
   - purpose: initialize share token metadata, underlying tokens, and decimals
 
-- `setOracle(oracle)`
-  - purpose: set the oracle used to read `token0` and `token1` prices
+- `setPriceOracle(priceOracle)`
+  - purpose: set the price oracle used to read `token0` and `token1` prices
+
+- `setVolatilityOracle(volatilityOracle)`
+  - purpose: set the volatility oracle used by strategy rebalance guards
 
 - `setVenue(venueId, adapter, label, enabled)`
   - purpose: register or update a venue adapter
@@ -113,8 +116,8 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
 
-- `setRebalanceConfig(minCooldown, maxGasPrice)`
-  - purpose: configure cooldown and gas price guards for strategy-driven rebalances
+- `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
+  - purpose: configure cooldown, volatility delta, and gas price guards for strategy-driven rebalances
 
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy for a target plan and execute it
@@ -185,10 +188,11 @@ An empty target array means "withdraw all venues to idle". It only succeeds if t
 ### rebalanceWithStrategy
 
 1. Require a configured strategy.
-2. Enforce `minCooldown` and `maxGasPrice` when configured.
+2. Enforce `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` when configured.
 3. Call `strategy.buildTargets(address(this), data)`.
 4. Execute the returned targets through the same internal rebalance flow.
 5. Update `lastRebalance` only after successful execution.
+6. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` after successful execution.
 
 The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
@@ -217,7 +221,8 @@ The vault should revert when:
 - a rebalance plan requires more token balance than available after withdrawals
 - rebalance cannot move any funds
 - strategy-driven rebalance is called before a strategy is configured
-- strategy-driven rebalance violates cooldown or max gas price guards
+- strategy-driven rebalance violates cooldown, volatility delta, or max gas price guards
+- volatility delta guard is enabled before a volatility oracle is configured
 - an idle-only strategy is asked to build targets while tracked venue liquidity exists
 
 ## Invariants

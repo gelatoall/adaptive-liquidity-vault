@@ -37,7 +37,7 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         );
 
         priceOracle = new MockPriceOracle();
-        vault.setOracle(address(priceOracle));
+        vault.setPriceOracle(address(priceOracle));
         priceOracle.setPrices(1e18, 1e18);
 
         volatilityOracle = new MockVolatilityOracle();

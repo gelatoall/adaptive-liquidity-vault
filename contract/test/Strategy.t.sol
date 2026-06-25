@@ -51,7 +51,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         );
 
         priceOracle = new MockPriceOracle();
-        vault.setOracle(address(priceOracle));
+        vault.setPriceOracle(address(priceOracle));
         priceOracle.setPrices(1e18, 1e18);
 
         volatilityOracle = new MockVolatilityOracle();
@@ -83,10 +83,12 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     /// @notice setRebalanceConfig stores cooldown and gas price guards.
     function test_SetRebalanceConfig_SetsConfig() public {
         uint256 _minCooldown = 1 hours;
+        uint256 _minVolatilityDelta = 100;
         uint256 _maxGasPrice = 50 gwei;
-        vault.setRebalanceConfig(_minCooldown, _maxGasPrice);
-        (uint256 minCooldown, uint256 maxGasPrice) = vault.rebalanceConfig();
+        vault.setRebalanceConfig(_minCooldown, _minVolatilityDelta, _maxGasPrice);
+        (uint256 minCooldown, uint256 minVolatilityDelta, uint256 maxGasPrice) = vault.rebalanceConfig();
         assertEq(minCooldown, _minCooldown);
+        assertEq(minVolatilityDelta, _minVolatilityDelta);
         assertEq(maxGasPrice, _maxGasPrice);
     }
 
@@ -148,7 +150,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         vault.setStrategy(address(strategy));
-        vault.setRebalanceConfig(1 hours, 0);
+        vault.setRebalanceConfig(1 hours, 0, 0);
 
         strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
 
@@ -164,7 +166,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     /// @notice rebalanceWithStrategy enforces the configured max gas price.
     function test_RebalanceWithStrategy_RevertsWhenGasPriceTooHigh() public {
         vault.setStrategy(address(strategy));
-        vault.setRebalanceConfig(0, 50 gwei);
+        vault.setRebalanceConfig(0, 0, 50 gwei);
         
         vm.txGasPrice(51 gwei);
         vm.expectRevert(AdaptiveLPVault.GasPriceTooHigh.selector);
@@ -293,4 +295,48 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(pairV2)), amount1);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
     }
+
+    /// @notice rebalanceWithStrategy reverts when volatility guard is enabled without an oracle.
+    function test_RebalanceWithStrategy_RevertsWhenVolatilityOracleNotSet() public {
+        vault.setStrategy(address(strategy));
+        vault.setRebalanceConfig(0, 100, 0);
+
+        vm.expectRevert(AdaptiveLPVault.VolatilityOracleNotSet.selector);
+        vault.rebalanceWithStrategy("");
+    }
+
+    /// @notice rebalanceWithStrategy reverts when volatility change is below the configured minimum.
+    function test_RebalanceWithStrategy_RevertsWhenVolatilityDeltaTooSmall() public {
+        vault.setStrategy(address(strategy));
+        vault.setRebalanceConfig(0, 100, 0);
+        vault.setVolatilityOracle(address(volatilityOracle));
+
+        volatilityOracle.setVolatilityBps(50);
+
+        vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
+        vault.rebalanceWithStrategy("");
+    }
+
+    /// @notice successful strategy rebalance records the current volatility.
+    function test_RebalanceWithStrategy_UpdatesLastRebalanceVolatility() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.setStrategy(address(strategy));
+        vault.setRebalanceConfig(0, 100, 0);
+        vault.setVolatilityOracle(address(volatilityOracle));
+
+        volatilityOracle.setVolatilityBps(150);
+
+        strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        vault.rebalanceWithStrategy("");
+
+        assertEq(vault.lastRebalanceVolatilityBps(), 150);
+    }
+
 }

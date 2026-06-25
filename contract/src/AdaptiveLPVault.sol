@@ -9,6 +9,7 @@ import "./libraries/VaultMath.sol";
 import "./libraries/RebalanceTypes.sol";
 import "./interfaces/IVenueAdapter.sol";
 import "./interfaces/IPriceOracle.sol";
+import "./interfaces/IVolatilityOracle.sol";
 import "./interfaces/IRebalanceStrategy.sol";
 
 /// @title AdaptiveLPVault
@@ -31,6 +32,10 @@ contract AdaptiveLPVault is ERC20, Ownable {
     struct RebalanceConfig {
         /// @notice Minimum time between successful strategy-driven rebalances. Zero disables the guard.
         uint256 minCooldown;
+
+        /// @notice Minimum volatility change since the last successful strategy rebalance. Zero disables the guard.
+        uint256 minVolatilityDelta;
+
         /// @notice Maximum allowed transaction gas price for strategy-driven rebalances. Zero disables the guard.
         uint256 maxGasPrice;
     }
@@ -50,7 +55,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Price oracle used to calculate the value of underlying holdings.
     /// @dev The vault depends on the IPriceOracle interface for price discovery.
-    IPriceOracle public oracle;
+    IPriceOracle public priceOracle;
 
     /// @notice Strategy used to build target plans for strategy-driven rebalances.
     IRebalanceStrategy public strategy;
@@ -60,6 +65,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Timestamp of the last successful strategy-driven rebalance.
     uint256 public lastRebalance;
+
+    /// @notice Volatility oracle used by strategy rebalance guards.
+    IVolatilityOracle public volatilityOracle;
+
+    /// @notice Volatility recorded after the last successful strategy-driven rebalance.
+    uint256 public lastRebalanceVolatilityBps;
     
     /// @notice Venue configuration by caller-defined venue id.
     mapping(uint256 => VenueConfig) public venues;
@@ -86,14 +97,17 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Emitted when a user redeems vault shares.
     event Redeem(address indexed user, uint256 shares);
 
-    /// @notice Emitted when the owner updates the valuation oracle.
-    event SetOracle(address indexed oracle);
+    /// @notice Emitted when the owner updates the valuation price oracle.
+    event SetPriceOracle(address indexed priceOracle);
+
+    /// @notice Emitted when the owner updates the volatility oracle.
+    event SetVolatilityOracle(address indexed volatilityOracle);
 
     /// @notice Emitted when the owner updates the rebalance strategy.
     event SetStrategy(address indexed strategy);
 
     /// @notice Emitted when the owner updates strategy rebalance guards.
-    event SetRebalanceConfig(uint256 minCooldown, uint256 maxGasPrice);
+    event SetRebalanceConfig(uint256 minCooldown, uint256 minVolatilityDelta, uint256 maxGasPrice);
 
     /// @notice Emitted when the owner registers or updates a venue.
     event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
@@ -138,7 +152,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     error InsufficientBalances();
 
     /// @notice Thrown when a valuation or price-dependent operation is requested before an oracle is configured.
-    error OracleNotSet();
+    error PriceOracleNotSet();
 
     /// @notice Thrown when a requested venue id is not registered or has no adapter configured.
     error VenueNotSet();
@@ -163,6 +177,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Thrown when strategy-driven rebalance is called above the configured gas price limit.
     error GasPriceTooHigh();
+
+    /// @notice Thrown when volatility guard is enabled before configuring a volatility oracle.
+    error VolatilityOracleNotSet();
+
+    /// @notice Thrown when volatility change is below the configured minimum.
+    error VolatilityDeltaTooSmall();
 
     // ============================================
     // Constructor
@@ -210,10 +230,10 @@ contract AdaptiveLPVault is ERC20, Ownable {
         }
 
         // Reject if oracle is not configured.
-        if (address(oracle) == address(0)) {
-            revert OracleNotSet();
+        if (address(priceOracle) == address(0)) {
+            revert PriceOracleNotSet();
         }
-        (uint256 price0, uint256 price1) = oracle.getPrices();
+        (uint256 price0, uint256 price1) = priceOracle.getPrices();
 
         // Read totalAssets() before the deposit.
         // Read totalSupply() before the deposit.
@@ -290,10 +310,10 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// The returned value is denominated in the base asset and uses 1e18 precision.
     /// @return Total vault asset value using the currently configured mock prices.
     function totalAssets() public view returns (uint256) {
-        if (address(oracle) == address(0)) {
-            revert OracleNotSet();
+        if (address(priceOracle) == address(0)) {
+            revert PriceOracleNotSet();
         }
-        (uint256 price0, uint256 price1) = oracle.getPrices();
+        (uint256 price0, uint256 price1) = priceOracle.getPrices();
 
         uint256 idle0 = IERC20(token0).balanceOf(address(this));
         uint256 idle1 = IERC20(token1).balanceOf(address(this));
@@ -323,13 +343,23 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     /// @notice Sets the price oracle used by the vault for asset valuation.
     /// @dev The input address is stored as an `IPriceOracle` interface reference.
-    /// @param _oracle Address of the price oracle contract.
-    function setOracle(address _oracle) external onlyOwner {
-        if (_oracle == address(0)) {
+    /// @param _priceOracle Address of the price oracle contract.
+    function setPriceOracle(address _priceOracle) external onlyOwner {
+        if (_priceOracle == address(0)) {
             revert ZeroAddress();
         }
-        oracle = IPriceOracle(_oracle);
-        emit SetOracle(_oracle);
+        priceOracle = IPriceOracle(_priceOracle);
+        emit SetPriceOracle(_priceOracle);
+    }
+
+    /// @notice Sets the volatility oracle used by strategy rebalance guards.
+    /// @param _volatilityOracle Address of the volatility oracle contract.
+    function setVolatilityOracle(address _volatilityOracle) external onlyOwner {
+        if (_volatilityOracle == address(0)) {
+            revert ZeroAddress();
+        }
+        volatilityOracle = IVolatilityOracle(_volatilityOracle);
+        emit SetVolatilityOracle(_volatilityOracle);
     }
 
     /// @notice Sets the strategy used to build rebalance targets.
@@ -342,15 +372,17 @@ contract AdaptiveLPVault is ERC20, Ownable {
         emit SetStrategy(_strategy);
     }
 
-    /// @notice Sets cooldown and gas price guards for strategy-driven rebalances.
+    /// @notice Sets cooldown, volatility delta, and gas price guards for strategy-driven rebalances.
     /// @param _minCooldown Minimum time between successful strategy-driven rebalances.
+    /// @param _minVolatilityDelta Minimum volatility change required, or zero to disable.
     /// @param _maxGasPrice Maximum allowed transaction gas price, or zero to disable.
-    function setRebalanceConfig(uint256 _minCooldown, uint256 _maxGasPrice) external onlyOwner {
+    function setRebalanceConfig(uint256 _minCooldown, uint256 _minVolatilityDelta, uint256 _maxGasPrice) external onlyOwner {
         rebalanceConfig = RebalanceConfig({
             minCooldown: _minCooldown,
+            minVolatilityDelta: _minVolatilityDelta,
             maxGasPrice: _maxGasPrice
         });
-        emit SetRebalanceConfig(_minCooldown, _maxGasPrice);
+        emit SetRebalanceConfig(_minCooldown, _minVolatilityDelta, _maxGasPrice);
     }
 
     /// @notice Registers or updates a venue adapter.
@@ -428,21 +460,16 @@ contract AdaptiveLPVault is ERC20, Ownable {
     function rebalanceWithStrategy(bytes calldata data) external onlyOwner {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
-        if (lastRebalance != 0 && 
-            rebalanceConfig.minCooldown != 0 && 
-            block.timestamp < lastRebalance + rebalanceConfig.minCooldown
-        ) {
-            revert CooldownNotElapsed();
-        }
-
-        if (rebalanceConfig.maxGasPrice != 0 && tx.gasprice > rebalanceConfig.maxGasPrice) {
-            revert GasPriceTooHigh();
-        }
+        uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(this), data);
 
         _rebalance(targets);
         lastRebalance = block.timestamp;
+
+        if (rebalanceConfig.minVolatilityDelta != 0) {
+            lastRebalanceVolatilityBps = currentVolatilityBps;
+        }
 
         emit RebalanceWithStrategy(msg.sender, address(strategy), data);
     }
@@ -583,6 +610,33 @@ contract AdaptiveLPVault is ERC20, Ownable {
             if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
             _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
         }
+    }
+
+    /// @notice Checks strategy rebalance guards and returns the current volatility if needed.
+    function _checkStrategyRebalanceGuards() internal view returns (uint256 currentVolatilityBps) {
+        if (lastRebalance != 0 && 
+            rebalanceConfig.minCooldown != 0 && 
+            block.timestamp < lastRebalance + rebalanceConfig.minCooldown
+        ) {
+            revert CooldownNotElapsed();
+        }
+
+        if (rebalanceConfig.maxGasPrice != 0 && tx.gasprice > rebalanceConfig.maxGasPrice) {
+            revert GasPriceTooHigh();
+        }
+
+        if (rebalanceConfig.minVolatilityDelta != 0) {
+            if (address(volatilityOracle) == address(0)) revert VolatilityOracleNotSet();
+
+            currentVolatilityBps = volatilityOracle.getVolatilityBps();
+            uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
+            if (delta < rebalanceConfig.minVolatilityDelta) revert VolatilityDeltaTooSmall();
+        }
+    }
+
+    /// @notice Returns the absolute difference between two values.
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a >= b ? (a - b) : (b - a);
     }
 
 }

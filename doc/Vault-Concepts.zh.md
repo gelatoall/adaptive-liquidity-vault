@@ -1078,9 +1078,11 @@ function buildTargets(address vault, bytes calldata data)
   1. 检查 strategy 是否已配置
   2. 检查 `minCooldown`，如果不为 0
   3. 检查 `maxGasPrice`，如果不为 0
-  4. 调用 strategy 的 `buildTargets(...)`
-  5. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行
-  6. 成功后更新 `lastRebalance`
+  4. 检查 `minVolatilityDelta`，如果不为 0
+  5. 调用 strategy 的 `buildTargets(...)`
+  6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行
+  7. 成功后更新 `lastRebalance`
+  8. 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
 - 这表示 strategy 只负责“生成 plan”，vault 仍然负责校验和执行。
 - strategy 返回的 plan 不能绕过 vault 校验：
   - duplicate venue 会 revert
@@ -1187,8 +1189,22 @@ volatilityBps = max(change0Bps, change1Bps)
   - 不受 strategy cooldown / max gas price 限制
 - `rebalanceWithStrategy(data)`：
   - owner 触发 strategy 生成 plan
-  - 受 `minCooldown` / `maxGasPrice` 限制
+  - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
   - 成功后更新 `lastRebalance`
+  - 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
+
+### strategy rebalance guard
+- 当前 `rebalanceWithStrategy(...)` 有三类可选 guard：
+  - `minCooldown`：限制两次成功 strategy rebalance 之间的最短时间
+  - `maxGasPrice`：限制交易 gas price 过高时不执行
+  - `minVolatilityDelta`：限制 volatility 变化太小时不执行
+- 其中 `minVolatilityDelta` 的逻辑是：
+  1. 从 `volatilityOracle.getVolatilityBps()` 读取当前 volatility
+  2. 计算它和 `lastRebalanceVolatilityBps` 的绝对差值
+  3. 如果差值小于 `minVolatilityDelta`，就 revert `VolatilityDeltaTooSmall`
+- 如果 `minVolatilityDelta != 0`，必须先配置 `setVolatilityOracle(...)`。
+- 这些 guard 只作用于 `rebalanceWithStrategy(...)`。
+- owner 手动调用 `rebalance(targets)` 仍然是 manual override，不受这些 strategy guard 限制。
 
 ### rebalance to idle
 - 如果想把所有 venue 撤回 idle：
@@ -1263,6 +1279,9 @@ volatilityBps = max(change0Bps, change1Bps)
   - strategy 未配置时会 revert
   - strategy-driven rebalance 会更新 `lastRebalance`
   - cooldown / max gas price guard 会限制 strategy-driven rebalance
+  - volatility oracle 未配置时启用 volatility guard 会 revert
+  - volatility delta 太小时 strategy-driven rebalance 会 revert
+  - 成功的 strategy-driven rebalance 会更新 `lastRebalanceVolatilityBps`
   - strategy 返回 unset venue 时仍然会走 vault 原有校验并 revert
   - FixedWeightStrategy 会按固定 bps 生成 targets
   - FixedWeightStrategy 会把 rounding dust 分给最后一个 target

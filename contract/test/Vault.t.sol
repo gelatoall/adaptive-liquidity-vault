@@ -30,7 +30,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         );
 
         oracle = new MockPriceOracle();
-        vault.setOracle(address(oracle));
+        vault.setPriceOracle(address(oracle));
     }
 
     // ============================================

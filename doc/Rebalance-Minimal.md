@@ -22,7 +22,8 @@ This version includes:
 - `rebalanceWithStrategy(data)` for strategy-driven plan execution
 - `FixedWeightStrategy` for bps-based idle balance allocation
 - `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
-- `minCooldown` and `maxGasPrice` guards for strategy-driven rebalances
+- `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` guards for strategy-driven rebalances
+- `PriceChangeVolatilityOracle` as a minimal on-chain volatility source
 - duplicate venue target validation
 - unset and disabled venue validation
 - full withdrawal of all tracked venue liquidity before redeployment
@@ -32,7 +33,7 @@ This version includes:
 This version does not include:
 - automatic venue recommendation
 - TWAP-driven target weighting
-- on-chain volatility calculation
+- statistical or annualized volatility calculation
 - keeper automation
 - partial in-place rebalancing
 - slippage optimization beyond adapter-level params
@@ -86,12 +87,15 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
 
-- `setRebalanceConfig(minCooldown, maxGasPrice)`
+- `setVolatilityOracle(volatilityOracle)`
+  - purpose: configure the volatility oracle used by volatility delta guards
+
+- `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure strategy-driven rebalance guards
 
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
-  - behavior: applies `minCooldown` and `maxGasPrice` before calling the strategy
+  - behavior: applies `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` before calling the strategy
 
 - `setVenue(venueId, adapter, label, enabled)`
   - purpose: register or update a venue adapter
@@ -127,9 +131,11 @@ Flow:
 2. Vault checks that a strategy is configured.
 3. Vault checks `minCooldown` if it is non-zero.
 4. Vault checks `maxGasPrice` if it is non-zero.
-5. Vault calls `strategy.buildTargets(address(this), data)`.
-6. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
-7. Vault updates `lastRebalance` only after successful execution.
+5. Vault checks `minVolatilityDelta` if it is non-zero.
+6. Vault calls `strategy.buildTargets(address(this), data)`.
+7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
+8. Vault updates `lastRebalance` only after successful execution.
+9. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
 `MockRebalanceStrategy` is used in tests for preset plans. The concrete minimal strategies are `FixedWeightStrategy` and `VolatilityBucketStrategy`.
 

@@ -24,7 +24,7 @@ abstract contract TwapTestHelper is Test {
         twapOracle = new TWAPOracle(address(twapPair), address(token0), address(token1), interval);
         
         // Link the newly deployed oracle to the vault to override any existing mock oracles
-        vault.setOracle(address(twapOracle));
+        vault.setPriceOracle(address(twapOracle));
     }
 
     /** @dev Advances time and primes oracle. Formula: CumNow = CumLast + (avgPriceX112 * dt) */
