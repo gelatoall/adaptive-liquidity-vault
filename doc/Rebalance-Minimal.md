@@ -10,6 +10,7 @@ Build a minimal rebalance executor for the vault that:
 - includes a fixed-weight strategy for simple static venue allocation
 - includes a volatility-bucket strategy for selecting among configured allocations
 - can move capital from idle balances into one or more venues
+- can move deployed capital from one venue allocation into another through withdraw-all-then-redeploy
 - can withdraw all venue liquidity back to idle balances
 - stays as an execution layer, not a venue-selection algorithm
 
@@ -20,7 +21,7 @@ This version includes:
 - `RebalanceTarget[]` plan input
 - `IRebalanceStrategy.buildTargets(...)` strategy hook
 - `rebalanceWithStrategy(data)` for strategy-driven plan execution
-- `FixedWeightStrategy` for bps-based idle balance allocation
+- `FixedWeightStrategy` for bps-based total-underlying allocation
 - `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
 - `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` guards for strategy-driven rebalances
 - `PriceChangeVolatilityOracle` as a minimal on-chain volatility source
@@ -157,12 +158,12 @@ Rules:
 - venue ids must be unique
 - all weights must sum to `10_000`
 
-`buildTargets(vault, data)` reads the vault's current idle `token0` and `token1` balances, then splits those balances by the configured weights. The final target receives any integer-division rounding dust so the returned target amounts sum back to the original idle balances.
+`buildTargets(vault, data)` reads the vault's current total underlying `token0` and `token1` amounts through `vault.getTotalUnderlying()`, then splits those amounts by the configured weights. Total underlying means idle balances plus adapter-reported deployed position amounts. The final target receives any integer-division rounding dust so the returned target amounts sum back to the original totals.
 
 Current limitation:
-- the strategy allocates current idle balances only
-- it does not read deployed venue value or compute in-place deltas
-- it reverts with `VaultNotIdle` when the vault has tracked deployed liquidity
+- the strategy uses adapter-reported deployed amounts, not an independent market quote
+- it does not compute in-place deltas
+- execution still withdraws all tracked venue liquidity before redeploying the target plan
 
 ### volatility-bucket strategy
 
@@ -187,11 +188,13 @@ Bucket selection is:
 - `lowThreshold < volatilityBps <= highThreshold`: `MEDIUM`
 - `volatilityBps > highThreshold`: `HIGH`
 
-The selected weights are applied to current idle balances. As with `FixedWeightStrategy`, the last target receives rounding dust and the strategy reverts when the vault is not idle.
+The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, the last target receives rounding dust.
 
 Current limitations:
 - volatility is read from an external oracle contract
 - the strategy does not calculate TWAP or statistical volatility itself
+- the strategy uses adapter-reported deployed amounts, not an independent market quote
+- execution still withdraws all tracked venue liquidity before redeploying the target plan
 - stored V3 params must not rely on a deadline that will expire before execution; dynamic V3 params remain future work
 
 ### price-change volatility oracle
@@ -281,6 +284,8 @@ The current implementation uses a simple two-phase model:
 
 This avoids complex in-place delta accounting between venues. It is less gas efficient, but easier to reason about and test. A later strategy layer can optimize by calculating deltas and only moving the changed capital.
 
+Because strategies build targets from `getTotalUnderlying()`, they can request a new allocation even when capital is already deployed. The vault then realizes that plan by withdrawing all tracked venue liquidity to idle first, checking the resulting idle balances, and deploying the requested target amounts.
+
 ## Failure Cases
 
 The rebalance layer should revert when:
@@ -317,8 +322,10 @@ Core tests should cover:
 - strategy-driven rebalance
 - fixed-weight strategy target generation
 - fixed-weight strategy execution through `rebalanceWithStrategy`
+- fixed-weight strategy moving deployed capital into a new venue allocation
 - volatility bucket selection and target generation
 - volatility-selected plan execution through `rebalanceWithStrategy`
+- volatility-selected strategy moving deployed capital into a new venue allocation
 - strategy cooldown guard
 - strategy max gas price guard
 - strategy returning an unset venue

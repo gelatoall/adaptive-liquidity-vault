@@ -30,6 +30,11 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     MockUniswapV2Pair public pairV2;
     MockUniswapV2Router public routerV2;
     UniswapV2Adapter public adapterV2;
+    
+    uint256 internal constant SECOND_V2_VENUE_ID = 99;
+    MockUniswapV2Pair public pairV2B;
+    MockUniswapV2Router public routerV2B;
+    UniswapV2Adapter public adapterV2B;
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
@@ -72,6 +77,18 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         );
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
+
+        // deploy another V2 venue for test_RebalanceWithStrategy_MovesDeployedPositionToNewVenueWithFixedWeightStrategy
+        pairV2B = new MockUniswapV2Pair(address(token0), address(token1));
+        routerV2B = new MockUniswapV2Router(pairV2B);
+        adapterV2B = new UniswapV2Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(routerV2B),
+            address(pairV2B)
+        );
+        vault.setVenue(SECOND_V2_VENUE_ID, address(adapterV2B), bytes32("V2_B"), true);
     }
 
     /// @notice setStrategy stores the configured strategy address.
@@ -337,6 +354,95 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.rebalanceWithStrategy("");
 
         assertEq(vault.lastRebalanceVolatilityBps(), 150);
+    }
+
+    /// @notice fixed-weight strategy can move deployed capital from one venue to another.
+    function test_RebalanceWithStrategy_MovesDeployedPositionToNewVenueWithFixedWeightStrategy() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 firstLiquidity = 10 ether;
+        uint256 secondLiquidity = 20 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, firstLiquidity);
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
+        // V2 adapter getPositionValue() reads reserves, not raw token balances.
+        pairV2.setReserves(uint112(amount0), uint112(amount1));
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), firstLiquidity);
+        assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), 0);
+
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: SECOND_V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+        fixedStrategy.setTargets(configs);
+        vault.setStrategy(address(fixedStrategy));
+
+        routerV2.setNextRemoveLiquidityResult(amount0, amount1);
+        routerV2B.setNextAddLiquidityResult(amount0, amount1, secondLiquidity);
+
+        vault.rebalanceWithStrategy("");
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
+        assertEq(vault.totalLiquidity(), secondLiquidity);
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        assertEq(token0.balanceOf(address(pairV2B)), amount0);
+        assertEq(token1.balanceOf(address(pairV2B)), amount1);
+    }
+
+    /// @notice volatility bucket strategy can move deployed capital from one venue to another.
+    function test_RebalanceWithStrategy_MovesDeployedPositionToNewVenueWithVolatilityBucketStrategy() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 firstLiquidity = 10 ether;
+        uint256 secondLiquidity = 20 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, firstLiquidity);
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
+        // V2 adapter getPositionValue() reads reserves, not raw token balances.
+        pairV2.setReserves(uint112(amount0), uint112(amount1));
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), firstLiquidity);
+        assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), 0);
+
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: SECOND_V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+        volatilityOracle.setVolatilityBps(50);
+        volatilityStrategy.setBucketTargets(VolatilityBucketStrategy.Bucket.LOW, configs);
+        vault.setStrategy(address(volatilityStrategy));
+
+        routerV2.setNextRemoveLiquidityResult(amount0, amount1);
+        routerV2B.setNextAddLiquidityResult(amount0, amount1, secondLiquidity);
+
+        vault.rebalanceWithStrategy("");
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
+        assertEq(vault.totalLiquidity(), secondLiquidity);
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        assertEq(token0.balanceOf(address(pairV2B)), amount0);
+        assertEq(token1.balanceOf(address(pairV2B)), amount1);
     }
 
 }

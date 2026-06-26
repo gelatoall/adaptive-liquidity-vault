@@ -315,27 +315,19 @@ contract AdaptiveLPVault is ERC20, Ownable {
         }
         (uint256 price0, uint256 price1) = priceOracle.getPrices();
 
-        uint256 idle0 = IERC20(token0).balanceOf(address(this));
-        uint256 idle1 = IERC20(token1).balanceOf(address(this));
-        
-        uint256 deployed0 = 0;
-        uint256 deployed1 = 0;
-        for (uint256 i = 0; i < venueIds.length; i++) {
-            uint256 venueId = venueIds[i];
-            VenueConfig storage v = venues[venueId];
-            if (address(v.adapter) == address(0)) continue;
-            (uint256 value0, uint256 value1) = v.adapter.getPositionValue();
-            deployed0 += value0;
-            deployed1 += value1;
-        }
+        (uint256 total0, uint256 total1) = _getTotalUnderlying();
 
-        uint256 total0 = idle0 + deployed0;
-        uint256 total1 = idle1 + deployed1;
-        
         return VaultMath.getAssetsTotalValue(
             total0, price0, decimals0, 
             total1, price1, decimals1
         );
+    }
+
+    /// @notice Returns raw token amounts across idle balances and deployed venue positions.
+    /// @return total0 Total token0 amount held directly or reported by venues.
+    /// @return total1 Total token1 amount held directly or reported by venues.
+    function getTotalUnderlying() external view returns (uint256 total0, uint256 total1) {
+        (total0, total1) = _getTotalUnderlying();
     }
 
     // ============================================
@@ -477,6 +469,21 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     // Internal Functions
     // ============================================
+    /// @notice Sums idle token balances and adapter-reported deployed amounts.
+    function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
+        total0 = IERC20(token0).balanceOf(address(this));
+        total1 = IERC20(token1).balanceOf(address(this));
+        
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 venueId = venueIds[i];
+            VenueConfig storage v = venues[venueId];
+            if (address(v.adapter) == address(0)) continue;
+            (uint256 amount0, uint256 amount1) = v.adapter.getPositionValue();
+            total0 += amount0;
+            total1 += amount1;
+        }
+    }
+
     /// @notice Returns whether any registered venue adapter reports an active position.
     function _anyVenueHasPosition() internal view returns (bool) {
         for (uint256 i = 0; i < venueIds.length; i++) {

@@ -2,12 +2,11 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../libraries/RebalanceTypes.sol";
 
-/// @notice Builds rebalance targets by splitting vault idle balances by fixed venue weights.
+/// @notice Builds rebalance targets by splitting total vault underlying by fixed venue weights.
 contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     /// @notice Configured fixed-weight venue allocations.
     RebalanceTypes.TargetConfig[] public targetConfigs;
@@ -20,7 +19,6 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     error ZeroWeight();
     error DuplicateVenue();
     error InvalidTotalWeight();
-    error VaultNotIdle();
 
     // ============================================
     // Constructor
@@ -30,8 +28,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
     // ============================================
     // View Functions
     // ============================================
-    /// @notice Builds a rebalance plan from the vault's idle token balances.
-    /// @dev Requires an idle vault; the last target receives any rounding dust.
+    /// @notice Builds a rebalance plan from the vault's total underlying token balances.
+    /// @dev The last target receives any rounding dust.
     function buildTargets(
         address vault, 
         bytes calldata
@@ -39,17 +37,10 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
         if (vault == address(0)) revert ZeroAddress();
 
         AdaptiveLPVault targetVault = AdaptiveLPVault(vault);
-        if (targetVault.totalLiquidity() != 0) {
-            revert VaultNotIdle();
-        }
-
         uint256 length = targetConfigs.length;
         if (length == 0) revert EmptyTargets();
 
-        IERC20 token0 = targetVault.token0();
-        IERC20 token1 = targetVault.token1();
-        uint256 idle0 = token0.balanceOf(vault);
-        uint256 idle1 = token1.balanceOf(vault);
+        (uint256 total0, uint256 total1) = targetVault.getTotalUnderlying();
 
         targets = new RebalanceTypes.RebalanceTarget[](length);
 
@@ -60,11 +51,11 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
             uint256 amount1;
 
             if (i == length - 1) {
-                amount0 = idle0 - used0;
-                amount1 = idle1 - used1;
+                amount0 = total0 - used0;
+                amount1 = total1 - used1;
             } else {
-                amount0 = idle0 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
-                amount1 = idle1 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
+                amount0 = total0 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
+                amount1 = total1 * targetConfigs[i].weightBps / RebalanceTypes.BPS;
                 used0 += amount0;
                 used1 += amount1;
             }

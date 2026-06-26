@@ -1093,8 +1093,8 @@ function buildTargets(address vault, bytes calldata data)
 ### 当前 FixedWeightStrategy
 - 当前已经有一个具体策略：[FixedWeightStrategy.sol](../contract/src/strategies/FixedWeightStrategy.sol)。
 - 它的职责是：
-  - 读取 vault 当前 idle `token0/token1` 余额
-  - 按 owner 配置的固定 bps 权重拆分这些余额
+  - 读取 vault 当前 total underlying `token0/token1` 数量
+  - 按 owner 配置的固定 bps 权重拆分这些数量
   - 返回 `RebalanceTarget[]`
 - 它的配置项是：
 
@@ -1111,13 +1111,15 @@ struct TargetConfig {
   - 每个 weight 必须大于 0
   - venueId 不能重复
   - 所有 weight 加起来必须等于 `10_000`
-- `buildTargets(...)` 会把整数除法产生的 rounding dust 分给最后一个 target，保证所有 target 的 `amount0/amount1` 加起来等于 vault 原本的 idle balance。
+- `buildTargets(...)` 会调用 vault 的 `getTotalUnderlying()`。
+- `getTotalUnderlying()` 会把 vault idle balances 和所有 adapter-reported deployed amounts 加总。
+- `buildTargets(...)` 会把整数除法产生的 rounding dust 分给最后一个 target，保证所有 target 的 `amount0/amount1` 加起来等于 vault 当前 total underlying。
 
 当前限制：
-- `FixedWeightStrategy` 只基于 idle balances 生成 plan。
-- 它不会读取已部署 venue 的 position value。
+- `FixedWeightStrategy` 使用 adapter 上报的 deployed amounts，不额外做独立市场 quote。
+- 它不会计算 venue-to-venue delta。
 - 它也不做 TWAP / volatility 判断。
-- 当 vault 已有 tracked liquidity 时会 revert `VaultNotIdle`，避免按不完整的 idle balance 生成计划。
+- vault 执行时仍然会先把所有 tracked venue liquidity 撤回 idle，再按 plan 重新部署。
 
 ### 当前 VolatilityBucketStrategy
 - 当前还实现了 [VolatilityBucketStrategy.sol](../contract/src/strategies/VolatilityBucketStrategy.sol)。
@@ -1144,13 +1146,14 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   1. 从 `IVolatilityOracle` 读取 `volatilityBps`
   2. 选择对应 bucket
   3. 读取该 bucket 的 `TargetConfig[]`
-  4. 按权重拆分 vault 当前 idle balances
-  5. 把 rounding dust 分给最后一个 target
+  4. 调用 vault 的 `getTotalUnderlying()`
+  5. 按权重拆分 vault 当前 total underlying
+  6. 把 rounding dust 分给最后一个 target
 - `rebalanceWithStrategy(data)` 仍然会把 `data` 透传给 strategy，但当前 `VolatilityBucketStrategy` 不使用这个参数。
-- 它仍然是 idle-only：
-  - 不读取已部署 position value
-  - 不计算 venue-to-venue delta
-  - vault 已有 tracked liquidity 时会 revert `VaultNotIdle`
+- 它不再是 idle-only：
+  - 会通过 `getTotalUnderlying()` 读取 idle + deployed amounts
+  - 可以在 vault 已有 tracked liquidity 时生成新 plan
+  - 但不计算 in-place delta，执行层仍然是先全撤再部署
 - 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”。
 - V3 的 `params` 如果长期保存绝对 deadline，执行时可能过期；动态生成 V3 参数属于后续工作。
 
@@ -1224,6 +1227,25 @@ volatilityBps = max(change0Bps, change1Bps)
   6. vault 检查撤回后的 idle balances 是否足够覆盖计划
   7. vault 逐个把非零 target 部署进对应 venue
 
+### strategy 如何处理“venue 里已经有仓位”
+- 当前 strategy 不是只看 idle balance。
+- `FixedWeightStrategy` 和 `VolatilityBucketStrategy` 都会读取：
+
+```solidity
+(uint256 total0, uint256 total1) = vault.getTotalUnderlying();
+```
+
+- 这里的 `total0/total1` 包括：
+  - vault 直接持有的 idle token
+  - 所有 registered adapter 通过 `getPositionValue()` 上报的 deployed token amounts
+- 所以如果资金已经在 V2 里，strategy 仍然可以生成“全部去另一个 venue”的 plan。
+- 但这个 plan 只是目标状态，不是精细 delta。
+- 真正执行时，vault 仍然会：
+  1. 先把所有 tracked venue liquidity 撤回 idle
+  2. 检查 idle balances 是否够覆盖 strategy plan
+  3. 再按 strategy plan 部署到目标 venues
+- 这就是现在的“total-underlying strategy + withdraw-all-then-redeploy executor”模型。
+
 ### 为什么当前实现是“先全撤，再部署”
 - 这是最小实现的刻意选择：
   - accounting 简单
@@ -1250,7 +1272,7 @@ volatilityBps = max(change0Bps, change1Bps)
 - 也就是说：
   - vault 能执行“把多少钱放到哪些 venue”
   - strategy 接口已经能返回 targets
-  - `FixedWeightStrategy` 能按静态权重拆分 idle balances
+  - `FixedWeightStrategy` 能按静态权重拆分 total underlying
   - `VolatilityBucketStrategy` 能按 `IVolatilityOracle` 返回的波动率选择 LOW / MEDIUM / HIGH 权重
   - `MockRebalanceStrategy` 只是测试用的预设 plan
   - `MockVolatilityOracle` 只是测试用的可控波动率来源
@@ -1286,9 +1308,11 @@ volatilityBps = max(change0Bps, change1Bps)
   - FixedWeightStrategy 会按固定 bps 生成 targets
   - FixedWeightStrategy 会把 rounding dust 分给最后一个 target
   - vault 可以执行 FixedWeightStrategy 生成的最小 V2 plan
+  - FixedWeightStrategy 可以把已部署 venue 的资金迁移到新的 venue allocation
   - VolatilityBucketStrategy 会按 LOW / MEDIUM / HIGH 选择不同权重配置
   - VolatilityBucketStrategy 会把 rounding dust 分给最后一个 target
   - vault 可以执行 VolatilityBucketStrategy 生成的最小 V2 plan
+  - VolatilityBucketStrategy 可以把已部署 venue 的资金迁移到新的 venue allocation
   - PriceChangeVolatilityOracle 会初始化价格快照
   - PriceChangeVolatilityOracle 会处理上涨、下跌、一个涨一个跌的价格变化
   - PriceChangeVolatilityOracle 会取 token0/token1 中更大的价格变化作为 `volatilityBps`

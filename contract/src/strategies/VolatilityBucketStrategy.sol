@@ -2,12 +2,11 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../interfaces/IVolatilityOracle.sol";
 
-/// @notice Builds idle-only allocations from configured volatility buckets.
+/// @notice Builds total-underlying allocations from configured volatility buckets.
 contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     /// @notice Supported volatility ranges.
     enum Bucket {
@@ -40,7 +39,6 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     error InvalidTotalWeight();
     error EmptyTargets();
     error DuplicateVenue();
-    error VaultNotIdle();
 
     // ============================================
     // Constructor
@@ -60,8 +58,8 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     // ============================================
     // View Functions
     // ============================================
-    /// @notice Builds an idle-balance allocation plan from the volatility oracle.
-    /// @dev Extra strategy data is currently unused.
+    /// @notice Builds a rebalance plan from total vault underlying and the selected volatility bucket.
+    /// @dev Extra strategy data is currently unused; the last target receives rounding dust.
     function buildTargets(
         address vault, 
         bytes calldata
@@ -69,9 +67,6 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         if (vault == address(0)) revert ZeroAddress();
 
         AdaptiveLPVault targetVault = AdaptiveLPVault(vault);
-        if (targetVault.totalLiquidity() != 0) {
-            revert VaultNotIdle();
-        }
 
         uint256 volatilityBps = volatilityOracle.getVolatilityBps();
         Bucket bucket = getBucket(volatilityBps);
@@ -81,10 +76,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         if (length == 0) revert EmptyTargets();
         targets = new RebalanceTypes.RebalanceTarget[](length);
         
-        IERC20 token0 = targetVault.token0();
-        IERC20 token1 = targetVault.token1();
-        uint256 idle0 = token0.balanceOf(vault);
-        uint256 idle1 = token1.balanceOf(vault);
+        (uint256 total0, uint256 total1) = targetVault.getTotalUnderlying();
 
         uint256 used0;
         uint256 used1;
@@ -93,11 +85,11 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
             uint256 amount1;
 
             if (i == length - 1) {
-                amount0 = idle0 - used0;
-                amount1 = idle1 - used1;
+                amount0 = total0 - used0;
+                amount1 = total1 - used1;
             } else {
-                amount0 = idle0 * configs[i].weightBps / RebalanceTypes.BPS;
-                amount1 = idle1 * configs[i].weightBps / RebalanceTypes.BPS;
+                amount0 = total0 * configs[i].weightBps / RebalanceTypes.BPS;
+                amount1 = total1 * configs[i].weightBps / RebalanceTypes.BPS;
 
                 used0 += amount0;
                 used1 += amount1;

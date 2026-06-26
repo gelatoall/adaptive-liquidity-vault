@@ -24,7 +24,7 @@ This version includes:
 - multi-venue asset accounting
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 - strategy-driven rebalance through `IRebalanceStrategy`
-- fixed-weight and volatility-bucket idle allocation strategies
+- fixed-weight and volatility-bucket total-underlying allocation strategies
 
 This version does not include:
 - automatic dynamic strategy selection
@@ -92,6 +92,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - purpose: return the combined value of idle balances and all adapter-reported venue positions
   - returns: `uint256 assets`
 
+- `getTotalUnderlying()`
+  - purpose: return raw `token0` and `token1` amounts across idle balances and adapter-reported venue positions
+  - returns: `uint256 total0, uint256 total1`
+
 - `deposit(amount0, amount1)`
   - purpose: transfer tokens into the vault and mint shares to the depositor
   - returns: `uint256 shares`
@@ -150,11 +154,15 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 ### totalAssets
 
 1. Require an oracle.
-2. Read idle `token0` and `token1` balances held by the vault.
-3. Iterate all registered `venueIds`.
-4. For each configured adapter, call `adapter.getPositionValue()`.
-5. Sum idle balances and deployed venue amounts.
-6. Convert the combined token amounts into base-denominated value using oracle prices.
+2. Read total underlying token amounts through `_getTotalUnderlying()`.
+3. Convert the combined token amounts into base-denominated value using oracle prices.
+
+### getTotalUnderlying
+
+1. Read idle `token0` and `token1` balances held by the vault.
+2. Iterate all registered `venueIds`.
+3. For each configured adapter, call `adapter.getPositionValue()`.
+4. Sum idle balances and deployed venue amounts.
 
 ### deployToVenue
 
@@ -198,7 +206,7 @@ The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
 - `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value
 
-Both strategies operate on current idle balances and revert with `VaultNotIdle` when tracked venue liquidity exists. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
 The current concrete volatility oracle is `PriceChangeVolatilityOracle`. It reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points. This is a simple price-change proxy, not a statistical volatility model.
 
@@ -223,7 +231,6 @@ The vault should revert when:
 - strategy-driven rebalance is called before a strategy is configured
 - strategy-driven rebalance violates cooldown, volatility delta, or max gas price guards
 - volatility delta guard is enabled before a volatility oracle is configured
-- an idle-only strategy is asked to build targets while tracked venue liquidity exists
 
 ## Invariants
 
@@ -271,6 +278,7 @@ Rebalance coverage:
 - rebalance reverts when there is no liquidity to move
 - strategy-driven rebalance executes a fixed-weight plan
 - strategy-driven rebalance executes a volatility-selected plan
+- strategy-driven rebalance can move already-deployed capital from one venue to another
 - strategy-driven rebalance enforces cooldown and max gas price guards
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.
