@@ -260,7 +260,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     } 
 
     /// @notice Redeems vault shares for the proportional underlying token balances.
-    /// @dev Redemption is blocked while the adapter still has an active deployed position.
+    /// @dev Withdraws the caller's proportional venue liquidity before transferring underlying tokens.
     /// @param shareToRedeem Amount of vault shares to redeem.
     /// @return amount0Out Raw token0 amount returned to the caller.
     /// @return amount1Out Raw token1 amount returned to the caller.
@@ -275,22 +275,20 @@ contract AdaptiveLPVault is ERC20, Ownable {
             revert InsufficientShares();
         }
 
-        // Minimal integration rule:
-        // if funds are currently deployed, force owner/admin to withdraw first.
-        if (_anyVenueHasPosition() || totalLiquidity != 0) {
-            revert ActivePositionExists();
-        }
-        
         // Read totalSupply() before burning.
         uint256 totalSharesBefore = totalSupply();
 
         // Read the current token0 and token1 balances held by the vault.
-        uint256 vaultToken0Amount = IERC20(token0).balanceOf(address(this));
-        uint256 vaultToken1Amount = IERC20(token1).balanceOf(address(this));
-        
+        uint256 idle0Before = IERC20(token0).balanceOf(address(this));
+        uint256 idle1Before = IERC20(token1).balanceOf(address(this));
+
         // Compute the proportional token amounts owed to the user.
-        amount0Out = shareToRedeem * vaultToken0Amount / totalSharesBefore;
-        amount1Out = shareToRedeem * vaultToken1Amount / totalSharesBefore;
+        amount0Out = shareToRedeem * idle0Before / totalSharesBefore;
+        amount1Out = shareToRedeem * idle1Before / totalSharesBefore;
+
+        (uint256 venue0Out, uint256 venue1Out) = _withdrawProportionalVenueLiquidity(shareToRedeem, totalSharesBefore);
+        amount0Out += venue0Out;
+        amount1Out += venue1Out;
 
         // Burn the user's share-to-redeem.
         _burn(msg.sender, shareToRedeem);
@@ -300,6 +298,30 @@ contract AdaptiveLPVault is ERC20, Ownable {
         IERC20(token1).safeTransfer(msg.sender, amount1Out);
 
         emit Redeem(msg.sender, shareToRedeem);
+    }
+
+    function _withdrawProportionalVenueLiquidity(
+        uint256 shares, 
+        uint256 totalSharesBefore
+    ) internal returns (uint256 amount0Out, uint256 amount1Out) {
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 id = venueIds[i];
+            uint256 liquidity = venueLiquidity[id];
+            if (liquidity == 0) continue;
+
+            uint256 liquidityToWithdraw; 
+            if (shares == totalSharesBefore) { // Final withdraw
+                liquidityToWithdraw = liquidity;
+            } else {
+                liquidityToWithdraw = liquidity * shares / totalSharesBefore;
+            }
+
+            if (liquidityToWithdraw == 0) continue;
+
+            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw);
+            amount0Out += venue0Out;
+            amount1Out += venue1Out;
+        }
     }
 
     // ============================================

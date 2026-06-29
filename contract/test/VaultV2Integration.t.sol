@@ -181,8 +181,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(pair.balanceOf(address(adapter)), 0);
     }
 
-    /// @notice Verifies users cannot redeem while the vault still has an active deployed position.
-    function test_Redeem_RevertsWhenVenueHasActivePosition() public {
+    /// @notice Verifies full redeem withdraws all active V2 liquidity.
+    function test_Redeem_FullyWithdrawsActiveV2Position() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 amount0Used = 8 ether;
@@ -192,48 +192,55 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
-        vault.deployToVenue(1, amount0, amount1, "");
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
 
+        router.setNextRemoveLiquidityResult(amount0Used, amount1Used);
         uint256 aliceShares = vault.balanceOf(alice);
-
-        vm.expectRevert(AdaptiveLPVault.ActivePositionExists.selector);
-        vm.prank(alice);
-        vault.redeem(aliceShares);
-    }
-
-    /// @notice Verifies redemption succeeds again after the owner withdraws the deployed position back to the vault.
-    function test_Redeem_WorksAfterWithdrawFromVenue() public {
-        uint256 amount0 = 10 ether;
-        uint256 amount1 = 20e6;
-        uint256 amount0Used = 8 ether;
-        uint256 amount1Used = 15e6;
-        uint256 liquidityMinted = 5 ether;
-
-        uint256 amount0OutFromWithdraw = 3 ether;
-        uint256 amount1OutFromWithdraw = 7e6;
-
-        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-
-        uint256 aliceShares = vault.balanceOf(alice);
-        assertEq(aliceShares, 30 ether);
-
-        router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
-        vault.deployToVenue(1, amount0, amount1, "");
-
-        vm.expectRevert(AdaptiveLPVault.ActivePositionExists.selector);
-        vm.prank(alice);
-        vault.redeem(aliceShares);
-
-        router.setNextRemoveLiquidityResult(amount0OutFromWithdraw, amount1OutFromWithdraw);
-        vault.withdrawFromVenue(1, liquidityMinted);
-        assertEq(pair.balanceOf(address(adapter)), 0);  // adapter doesn't have LP tokens
-
         vm.prank(alice);
         (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares);
-        assertEq(redeemAmount0, amount0 - amount0Used + amount0OutFromWithdraw);
-        assertEq(redeemAmount1, amount1 - amount1Used + amount1OutFromWithdraw);
-        assertEq(vault.balanceOf(alice), 0);    // Alice doesn't have shares in the vault
-        assertEq(vault.totalSupply(), 0);       // No shares in the vault
+        
+        assertEq(redeemAmount0, amount0);
+        assertEq(redeemAmount1, amount1);
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.totalSupply(), 0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(vault.totalLiquidity(), 0);
+        assertEq(pair.balanceOf(address(adapter)), 0);
+    }
+
+    /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V2 liquidity.
+    function test_Redeem_PartiallyWithdrawsActiveV2Position() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
+        uint256 aliceShares = vault.balanceOf(alice);
+        uint256 bobShares = vault.balanceOf(bob);
+        uint256 totalSharesBefore = vault.totalSupply();
+        assertEq(aliceShares, bobShares);
+        assertEq(totalSharesBefore, aliceShares + bobShares);
+
+        uint256 totalAmount0 = 20 ether;
+        uint256 totalAmount1 = 40e6;
+        uint256 liquidityMinted = 10 ether;
+        router.setNextAddLiquidityResult(totalAmount0, totalAmount1, liquidityMinted);
+        vault.deployToVenue(V2_VENUE_ID, totalAmount0, totalAmount1, "");
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
+        assertEq(vault.totalLiquidity(), liquidityMinted);
+
+        router.setNextRemoveLiquidityResult(amount0, amount1);
+        vm.prank(alice);
+        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares);
+
+        assertEq(redeem0, amount0);
+        assertEq(redeem1, amount1);
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.balanceOf(bob), bobShares);
+        assertEq(vault.totalSupply(), bobShares);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 5 ether);
+        assertEq(vault.totalLiquidity(), 5 ether);
+        assertEq(pair.balanceOf(address(adapter)), 5 ether);
     }
 
     // ============================================

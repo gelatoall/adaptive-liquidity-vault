@@ -168,35 +168,31 @@
 - `redeem` 的流程是：
   - `shares -> ownership ratio -> amount0Out/amount1Out`
 - `redeem` 会按 shares 占比返还底层 token。
-- 在当前最小集成里，`redeem` 还有一个额外前置条件：
-  - 如果任意已注册 venue 里还有 active position
-  - 就不能直接 `redeem`
-  - 必须先把 deployed position withdraw 回 vault
+- 在当前集成里，`redeem` 会同时处理：
+  - vault 里直接持有的 idle token
+  - 已注册 venue 里按 vault 记账追踪的 deployed liquidity
 
 ### Redeem 的输出公式
-- `amount0Out = vaultBalance0 * shares / totalSupplyBefore`
-- `amount1Out = vaultBalance1 * shares / totalSupplyBefore`
+- `idle0Out = vaultIdle0 * shares / totalSupplyBefore`
+- `idle1Out = vaultIdle1 * shares / totalSupplyBefore`
+- `venueLiquidityToWithdraw = venueLiquidity * shares / totalSupplyBefore`
+- 最终输出是 idle 部分加上所有 venue 撤仓返回的 token。
 
 ### 当前 `redeem()` 要特别注意什么
 - 当前实现里，`redeem()` 不是先把 shares 换算成一个统一的 `assets`，再去买回 token。
 - 它当前做的是：
   - 按 shares 占总 shares 的比例
   - 直接拿走 vault 当前 idle token 余额中的同样比例
+  - 同时从每个 active venue 中撤出相同比例的 tracked liquidity
 - 所以当前实现更准确地说是：
-  - `amount0Out = vaultIdle0 * shares / totalSupplyBefore`
-  - `amount1Out = vaultIdle1 * shares / totalSupplyBefore`
-- 这也是为什么当前版本要求：
-  - 如果任意 venue 里还有 active position
-  - 就要先 `withdrawFromVenue(venueId, liquidity)` 或 `rebalance(emptyTargets)`
-  - 再 `redeem()`
+  - `amount0Out = idle0Out + venue0Out`
+  - `amount1Out = idle1Out + venue1Out`
+- 如果 `shares == totalSupplyBefore`，会直接撤出每个 active venue 的全部 tracked liquidity，避免整数除法留下 dust。
 
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
-- 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会直接 revert `ActivePositionExists`。
-- 所以当前真实流程是：
-  - `deployToVenue(venueId, ...)`
-  - `withdrawFromVenue(venueId, liquidity)` 或 `rebalance(emptyTargets)`
-  - `redeem(...)`
+- 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会按 shares 比例调用内部 withdrawal flow，把用户对应比例的 liquidity 撤回后再转出 token。
+- `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
 
 ## 4. 约束与 Revert
 
@@ -734,11 +730,11 @@
   - 通过 `totalAssets()` 把 idle balances 和所有 registered venue reported amounts 一起估值
 - 当前这版还没有做到：
   - 自动根据价格决定什么时候 deploy
-  - 自动在 `redeem()` 里帮用户拆仓
   - 自动生成 rebalance plan
 - 所以更准确地说：
   - 现在已经接通了 vault 和 adapter 的资产流主干
   - multi-venue 执行层已经接上
+  - `redeem()` 已经可以按 shares 比例拆出 active venue 仓位
   - 但策略层还没有接上
 
 ## 10. 我已经发现的常见错误
@@ -1605,9 +1601,11 @@ volatilityBps = max(change0Bps, change1Bps)
 - 这组测试的目标不是重复 adapter 的内部细节，而是验证 vault 到 V3 的完整闭环
 - 最小闭环建议覆盖：
   - `setVenue()` 正确接入 V3 adapter
-  - `deposit -> deployToVenue(venueId, ...) -> withdrawFromVenue(venueId, ...) -> redeem` 可以完整跑通
+  - `deposit -> deployToVenue(venueId, ...) -> redeem` 可以通过 redeem 自动按比例撤出 active V3 仓位
+  - full redeem 会清理整个 active V3 position
+  - partial redeem 会保留原 `tokenId`，只减少 position liquidity
   - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
-  - 当 `adapter.hasPosition()` 为 true 时，redeem 仍会被阻止
+  - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出对应比例 liquidity 并清理 fully redeemed position
 - 当前 vault 还没有公开的 V3 `collectFees()` 入口，所以 fee harvest 先留在 adapter 单测里覆盖
 
 ### V3 集成测试边界

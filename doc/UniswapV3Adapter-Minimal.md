@@ -349,9 +349,9 @@ After the adapter unit tests are stable, add a separate vault integration file f
 
 That integration layer should verify:
 - `setVenue()` wires the vault to the V3 adapter
-- `deposit -> deployToVenue(venueId, ...) -> withdrawFromVenue(venueId, ...) -> redeem` works as a closed loop
+- `deposit -> deployToVenue(venueId, ...) -> redeem` works as a closed loop by withdrawing proportional active V3 liquidity during redemption
 - `totalAssets()` includes `adapter.getPositionValue()`
-- redemption is blocked while `adapter.hasPosition()` is true
+- redemption can clear the active V3 position when the user redeems all shares
 
 Keep `collectFees()` coverage in the adapter unit tests for now, since the vault does not yet expose a dedicated public fee-harvest entrypoint for V3.
 

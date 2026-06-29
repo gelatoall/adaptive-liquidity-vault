@@ -237,15 +237,16 @@ The current repository now goes beyond an isolated standalone adapter unit.
 - `totalAssets()` adds:
   - idle token balances held by the vault
   - deployed underlying token amounts reported by every registered adapter's `getPositionValue()`
-- direct user redemption is intentionally blocked while any registered venue still reports an active position
+- direct user redemption withdraws the caller's proportional tracked venue liquidity before transferring underlying tokens
 
 This means the current implementation already validates:
 - vault-to-adapter capital movement
 - adapter-to-vault withdrawal flow
 - total asset accounting across idle balances and one or more deployed venues
+- redemption-triggered proportional withdrawal from active V2 liquidity
 
 It does not yet implement:
-- automatic withdrawal during redemption
+- slippage controls for redemption-triggered withdrawal
 - oracle-driven deployment decisions
 - autonomous strategy selection
 

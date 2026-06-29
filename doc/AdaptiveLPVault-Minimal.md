@@ -5,7 +5,7 @@
 Build a minimal two-asset vault that:
 - accepts deposits of `token0` and `token1`
 - mints vault shares based on deposit value
-- allows users to redeem shares for idle underlying balances
+- allows users to redeem shares for proportional idle balances and deployed venue liquidity
 - tracks total vault assets across idle balances and registered venue positions
 - supports multiple venue adapters through a simple venue registry
 - supports owner-supplied rebalance plans across registered venues
@@ -30,7 +30,7 @@ This version does not include:
 - automatic dynamic strategy selection
 - autonomous keepers
 - threshold-based rebalance conditions
-- automatic withdrawal during user redemption
+- slippage controls for redemption-triggered venue withdrawals
 - deposit ratio optimization
 - the full ERC4626 interface
 
@@ -101,8 +101,8 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - returns: `uint256 shares`
 
 - `redeem(shares)`
-  - purpose: burn shares and return proportional idle token balances
-  - behavior: reverts while any registered venue still has tracked or adapter-reported active position state
+  - purpose: burn shares and return proportional token balances across idle assets and active venue positions
+  - behavior: withdraws the caller's proportional tracked liquidity from each active venue before transferring tokens
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `deployToVenue(venueId, amount0, amount1, params)`
@@ -144,12 +144,15 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 1. Reject if `shareToRedeem` is zero.
 2. Revert if `shareToRedeem` exceeds the caller's balance.
-3. Revert if any venue still has tracked liquidity or adapter-reported position state.
-4. Read `totalSupply()` before burning.
-5. Read idle `token0` and `token1` balances held by the vault.
-6. Compute the proportional idle token amounts owed to the user.
-7. Burn the user's shares.
-8. Transfer `token0` and `token1` to the user.
+3. Read `totalSupply()` before burning.
+4. Read idle `token0` and `token1` balances held by the vault.
+5. Compute the proportional idle token amounts owed to the user.
+6. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
+7. Add the tokens returned from venue withdrawals to the user's output amounts.
+8. Burn the user's shares.
+9. Transfer `token0` and `token1` to the user.
+
+When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
 
 ### totalAssets
 
@@ -218,7 +221,6 @@ The vault should revert when:
 - a non-zero deposit would mint zero shares
 - `redeem` is called with zero shares
 - `redeem` is called with more shares than the user owns
-- `redeem` is called while any venue is active
 - a non-owner calls owner-only functions
 - a venue operation references an unset venue
 - a venue operation references a disabled venue
@@ -239,7 +241,7 @@ These conditions should always hold:
 - non-zero deposits must not mint zero shares
 - `totalAssets()` reflects idle balances plus adapter-reported position values across all registered venues
 - redeeming shares reduces the user's share balance and total share supply
-- users can only redeem idle balances
+- redeeming shares withdraws the caller's proportional tracked liquidity from active venues
 - per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
 - rebalance reuses the same deploy and withdraw helpers as manual venue operations
 - strategy-built plans pass through the same validation as manual rebalance plans
@@ -264,7 +266,8 @@ Venue integration:
 - deployment tracks per-venue liquidity
 - withdrawal reduces per-venue liquidity and total liquidity
 - `totalAssets()` includes idle balances and all venue positions
-- redeem reverts while any venue has active liquidity
+- full redeem withdraws all active V2, V3, and multi-venue liquidity
+- partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
 - venue updates are blocked while the target venue is active
 
 Rebalance coverage:
