@@ -280,12 +280,59 @@ contract V2AdapterTest is Test {
         adapter.addLiquidity(0, 0, "");
     }
 
-    /// @notice Verifies venue-specific params are currently unsupported.
-    function test_AddLiquidity_RevertsWhenParamsAreNonEmpty() public {
-        bytes memory fakeParams = abi.encodePacked("Some extra data");
-        vm.expectRevert(UniswapV2Adapter.UnsupportedOperation.selector);
+    /// @notice Verifies add-liquidity params are forwarded to the V2 router.
+    function test_AddLiquidity_ForwardsLiquidityParams() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 50 ether;
+        uint256 amount0Min = 9 ether;
+        uint256 amount1Min = 45 ether;
+        uint256 deadline = block.timestamp + 1 hours;
+        uint256 liquidity = 5 ether;
+
+        token0.mint(address(vault), amount0);
+        token1.mint(address(vault), amount1);
+
+        vm.startPrank(vault);
+        token0.approve(address(adapter), amount0);
+        token1.approve(address(adapter), amount1);
+
+        router.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+        uint256 minted = adapter.addLiquidity(amount0, amount1, params);
+
+        vm.stopPrank();
+
+        assertEq(minted, liquidity);
+        assertEq(router.lastAddAmountAMin(), amount0Min);
+        assertEq(router.lastAddAmountBMin(), amount1Min);
+        assertEq(router.lastAddDeadline(), deadline);
+    }
+
+    /// @notice Verifies remove-liquidity params are forwarded to the V2 router.
+    function test_RemoveLiquidity_ForwardsLiquidityParams() public {
+        uint256 liquidity = 5 ether;
+        uint256 amount0Out = 4 ether;
+        uint256 amount1Out = 8 ether;
+
+        uint256 amount0Min = 3 ether;
+        uint256 amount1Min = 7 ether;
+        uint256 deadline = block.timestamp + 1 hours;
+
+        pair.mintLp(address(adapter), liquidity);
+        router.setNextRemoveLiquidityResult(amount0Out, amount1Out);
+
+        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+
         vm.prank(vault);
-        adapter.addLiquidity(0, 50 ether, fakeParams);
+        (uint256 actual0, uint256 actual1) = adapter.removeLiquidity(liquidity, params);
+        
+        assertEq(actual0, amount0Out);
+        assertEq(actual1, amount1Out);
+
+        assertEq(router.lastRemoveAmountAMin(), amount0Min);
+        assertEq(router.lastRemoveAmountBMin(), amount1Min);
+        assertEq(router.lastRemoveDeadline(), deadline);
     }
 
     /// @notice Verifies only the vault can remove liquidity through the adapter.

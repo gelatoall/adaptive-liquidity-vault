@@ -39,9 +39,9 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @notice Current active position tokenId, or zero when no position is active.
     uint256 public tokenId;
 
-    /// @notice Add-liquidity parameters encoded by the vault.
-    /// @dev The adapter uses the vault-provided minimums and deadline when building pool params.
-    struct AddLiquidityParams {
+    /// @notice Slippage and deadline controls for V3 add/remove liquidity execution.
+    /// @dev Minimum amounts are expressed in vault token order and mapped into pool token order internally.
+    struct LiquidityParams {
         /// @notice Minimum amount of vault token 0 that may be used.
         uint256 amount0Min;
         /// @notice Minimum amount of vault token 1 that may be used.
@@ -102,9 +102,6 @@ contract UniswapV3Adapter is IVenueAdapter {
     error NoLiquidityToRemove();
     /// @notice Thrown when attempting to remove more liquidity than the position holds.
     error InsufficientPositionLiquidity();
-
-    /// @notice Thrown when reserved params are provided before support is implemented.
-    error UnsupportedOperation();
 
     // ============================================
     // Modifiers
@@ -169,7 +166,7 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @notice Adds liquidity to the managed Uniswap V3 position.
     /// @param amount0 Vault token 0 amount supplied by the vault.
     /// @param amount1 Vault token 1 amount supplied by the vault.
-    /// @param params ABI-encoded {@link AddLiquidityParams} used to set minimums and deadline.
+    /// @param params ABI-encoded {@link LiquidityParams} used to set minimums and deadline.
     /// @return liquidity Liquidity minted or added to the current position.
     /// @dev Pulls tokens from the vault, maps vault ordering to pool ordering, then mints or increases the active position.
     function addLiquidity(
@@ -180,7 +177,7 @@ contract UniswapV3Adapter is IVenueAdapter {
         // zero amount check
         if (amount0 == 0 && amount1 == 0) revert ZeroAmounts();
         // decode params
-        AddLiquidityParams memory p = abi.decode(params, (AddLiquidityParams));
+        LiquidityParams memory p = _decodeLiquidityParams(params);
 
         liquidity = _addLiquidity(amount0, amount1, p);
 
@@ -190,7 +187,7 @@ contract UniswapV3Adapter is IVenueAdapter {
 
     /// @notice Removes liquidity from the managed Uniswap V3 position and returns withdrawn tokens to the vault.
     /// @param liquidity Amount of liquidity to remove.
-    /// @param params Reserved for future slippage controls and must be empty in this refactor step.
+    /// @param params ABI-encoded {@link LiquidityParams} used to set minimums and deadline.
     /// @return amount0 Vault token 0 withdrawn from the position.
     /// @return amount1 Vault token 1 withdrawn from the position.
     /// @dev Decreases liquidity first, then collects owed amounts, then cleans up an empty position if possible.
@@ -198,8 +195,6 @@ contract UniswapV3Adapter is IVenueAdapter {
         uint256 liquidity, 
         bytes calldata params
     ) external override onlyVault returns (uint256 amount0, uint256 amount1) {
-        if (params.length != 0) revert UnsupportedOperation();
-
         if (liquidity == 0) revert ZeroLiquidity();
         
         if (tokenId == 0) revert NoPosition();
@@ -210,12 +205,19 @@ contract UniswapV3Adapter is IVenueAdapter {
         }
         if (liquidity > currentLiquidity) revert InsufficientPositionLiquidity();
 
+        LiquidityParams memory p = _decodeLiquidityParams(params);
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapTokenAmounts(
+            address(token0), 
+            address(token1), 
+            p.amount0Min, 
+            p.amount1Min
+        );
         INonfungiblePositionManager.DecreaseLiquidityParams memory decreaseLqParams = INonfungiblePositionManager.DecreaseLiquidityParams({
             tokenId: tokenId,
             liquidity: uint128(liquidity),
-            amount0Min: 0, // minimal implementation, no slippage
-            amount1Min: 0,
-            deadline: block.timestamp
+            amount0Min: poolAmount0Min,
+            amount1Min: poolAmount1Min,
+            deadline: p.deadline
         });
 
         positionManager.decreaseLiquidity(decreaseLqParams);
@@ -277,6 +279,18 @@ contract UniswapV3Adapter is IVenueAdapter {
     // Internal Functions
     // ============================================
     // helper functions
+    /// @notice Decodes optional V3 liquidity execution parameters.
+    function _decodeLiquidityParams(bytes calldata params) internal view returns (LiquidityParams memory p) {
+        if (params.length == 0) {
+            return LiquidityParams({
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            });
+        }
+        p = abi.decode(params, (LiquidityParams));
+    }
+
     /// @notice Maps vault token order and amounts into pool token order and amounts.
     /// @param vaultToken0 Vault token 0 address.
     /// @param vaultToken1 Vault token 1 address.
@@ -400,7 +414,7 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @param amount1 Vault token 1 amount supplied by the vault.
     /// @param p Decoded add-liquidity parameters containing min amounts and deadline.
     /// @return liquidity Liquidity minted or added to the active position.
-    function _addLiquidity(uint256 amount0, uint256 amount1, AddLiquidityParams memory p) internal returns (uint256 liquidity){
+    function _addLiquidity(uint256 amount0, uint256 amount1, LiquidityParams memory p) internal returns (uint256 liquidity){
         // pull token0/token1 from vault to adapter
         token0.safeTransferFrom(vault, address(this), amount0);
         token1.safeTransferFrom(vault, address(this), amount1);

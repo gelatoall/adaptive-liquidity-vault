@@ -33,6 +33,14 @@ contract UniswapV2Adapter is IVenueAdapter {
     /// @notice Second vault asset configured for this adapter.
     IERC20 public immutable token1;
 
+    /// @notice Slippage and deadline controls for V2 add/remove liquidity execution.
+    /// @dev Empty params preserve the legacy default: zero minimums and the current block timestamp.
+    struct LiquidityParams {
+        uint256 amount0Min;
+        uint256 amount1Min;
+        uint256 deadline;
+    }
+
     // ============================================
     // Events
     // ============================================
@@ -137,14 +145,12 @@ contract UniswapV2Adapter is IVenueAdapter {
     // Functions
     // ============================================
     /// @inheritdoc IVenueAdapter
-    /// @dev `params` is reserved for future venue-specific options and must be empty in this minimal version.
+    /// @dev `params` optionally encodes {@link LiquidityParams}. Empty params use zero minimums and `block.timestamp`.
     function addLiquidity(
         uint256 amount0,
         uint256 amount1,
         bytes calldata params
     ) external override onlyVault returns (uint256 liquidity) {
-        if (params.length != 0) revert UnsupportedOperation();
-        
         // Reject if both token amounts are zero.
         if (amount0 == 0 && amount1 == 0) {
             revert ZeroAmounts();
@@ -158,18 +164,16 @@ contract UniswapV2Adapter is IVenueAdapter {
         token0.forceApprove(address(router), amount0);
         token1.forceApprove(address(router), amount1);
 
+        LiquidityParams memory p = _decodeLiquidityParams(params);
         // Call the V2 router to add liquidity.
-        uint256 amount0Min = 0;
-        uint256 amount1Min = 0;
-        uint256 deadline = block.timestamp;
         uint256 amount0Used;
         uint256 amount1Used;
         (amount0Used, amount1Used, liquidity) = router.addLiquidity(
             address(token0), address(token1), 
             amount0, amount1, 
-            amount0Min, amount1Min, 
+            p.amount0Min, p.amount1Min, 
             address(this), 
-            deadline
+            p.deadline
         );
         
         // Record or infer the minted LP tokens.
@@ -192,13 +196,11 @@ contract UniswapV2Adapter is IVenueAdapter {
     }
 
     /// @inheritdoc IVenueAdapter
-    /// @dev Removal params are reserved for slippage controls and must be empty in this refactor step.
+    /// @dev `params` optionally encodes {@link LiquidityParams}. Empty params use zero minimums and `block.timestamp`.
     function removeLiquidity(
         uint256 liquidity, 
         bytes calldata params
     ) external override onlyVault returns (uint256 amount0, uint256 amount1) {
-        if (params.length != 0) revert UnsupportedOperation();
-
         // Reject if liquidity is zero.
         if (liquidity == 0) {
             revert ZeroLiquidity();
@@ -214,15 +216,13 @@ contract UniswapV2Adapter is IVenueAdapter {
         IERC20(address(pair)).forceApprove(address(router), liquidity);
 
         // Call the V2 router to remove liquidity.
-        uint256 amount0Min = 0;
-        uint256 amount1Min = 0;
-        uint256 deadline = block.timestamp;
+        LiquidityParams memory p = _decodeLiquidityParams(params);
         (amount0, amount1) = router.removeLiquidity(
             address(token0), address(token1), 
             liquidity, 
-            amount0Min, amount1Min, 
+            p.amount0Min, p.amount1Min, 
             address(this), 
-            deadline
+            p.deadline
         );
 
         // Receive `token0` and `token1` back from the pair.
@@ -279,5 +279,20 @@ contract UniswapV2Adapter is IVenueAdapter {
     /// @inheritdoc IVenueAdapter
     function hasPosition() external override view returns (bool) {
         return pair.balanceOf(address(this)) > 0;
+    }
+
+    // ============================================
+    // Internal Functions
+    // ============================================
+    /// @notice Decodes optional V2 liquidity execution parameters.
+    function _decodeLiquidityParams(bytes calldata params) internal view returns (LiquidityParams memory p) {
+        if (params.length == 0) {
+            return LiquidityParams({
+                amount0Min: 0,
+                amount1Min: 0,
+                deadline: block.timestamp
+            });
+        }
+        p = abi.decode(params, (LiquidityParams));
     }
 }

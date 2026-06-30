@@ -124,6 +124,11 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 amount1Used = 1500e6;
         uint128 liquidityMinted = 1234;
 
+        uint256 amount0Min = amount0 / 2;
+        uint256 amount1Min = amount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+
         token0.mint(vault, amount0);
         token1.mint(vault, amount1);
 
@@ -131,13 +136,14 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 vault1Before = token1.balanceOf(vault);
 
         (uint256 poolAmount0Used, uint256 poolAmount1Used) = _mapPoolAmounts(token0, token1, amount0Used, amount1Used);
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
 
         vm.startPrank(vault);
         token0.approve(address(adapter), amount0);
         token1.approve(address(adapter), amount1);
 
         positionManager.setNextMintResult(liquidityMinted, poolAmount0Used, poolAmount1Used);
-        uint256 liquidity = adapter.addLiquidity(amount0, amount1, abi.encode(0, 0, block.timestamp + 1));
+        uint256 liquidity = adapter.addLiquidity(amount0, amount1, params);
         vm.stopPrank();
 
         assertEq(liquidity, liquidityMinted);
@@ -149,6 +155,10 @@ contract V3AdapterTest is Test, VenueTestHelper {
         
         assertEq(token0.allowance(address(adapter), address(positionManager)), 0);
         assertEq(token1.allowance(address(adapter), address(positionManager)), 0);
+
+        assertEq(positionManager.lastMintAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastMintAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastMintDeadline(), deadline);
     }
 
     function test_AddLiquidity_IncreasesWhenTokenIdExists() public {
@@ -164,6 +174,11 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 increaseAmount1Used = 800e6;
         uint128 increaseLiquidity = 5678;
 
+        uint256 amount0Min = increaseAmount0 / 2;
+        uint256 amount1Min = increaseAmount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+
         token0.mint(vault, mintAmount0 + increaseAmount0);
         token1.mint(vault, mintAmount1 + increaseAmount1);
 
@@ -178,6 +193,12 @@ contract V3AdapterTest is Test, VenueTestHelper {
             token1, 
             increaseAmount0Used, 
             increaseAmount1Used
+        );
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(
+            token0, 
+            token1, 
+            amount0Min, 
+            amount1Min
         );
 
         vm.startPrank(vault);
@@ -198,7 +219,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 secondLiquidity = adapter.addLiquidity(
             increaseAmount0, 
             increaseAmount1, 
-            abi.encode(0, 0, block.timestamp + 1)
+            params
         );
         uint256 tokenIdAfter = adapter.tokenId();
         vm.stopPrank();
@@ -211,6 +232,10 @@ contract V3AdapterTest is Test, VenueTestHelper {
         assertEq(token1.balanceOf(vault), vault1Before - increaseAmount1Used);
         assertEq(firstLiquidity, mintLiquidity);
         assertEq(secondLiquidity, increaseLiquidity);
+
+        assertEq(positionManager.lastIncreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastIncreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastIncreaseDeadline(), deadline);
     }
 
     function test_RemoveLiquidity_DecreasesAndCollectsToVault() public {
@@ -221,6 +246,11 @@ contract V3AdapterTest is Test, VenueTestHelper {
 
         uint256 expectedVaultAmount0Out = 0.25 ether;
         uint256 expectedVaultAmount1Out = 500e6;
+
+        uint256 amount0Min = expectedVaultAmount0Out / 2;
+        uint256 amount1Min = expectedVaultAmount1Out / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
 
         uint256 liquidity = _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
 
@@ -236,11 +266,17 @@ contract V3AdapterTest is Test, VenueTestHelper {
             expectedVaultAmount0Out,
             expectedVaultAmount1Out
         );
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(
+            token0, 
+            token1, 
+            amount0Min, 
+            amount1Min
+        );
 
         positionManager.setNextDecreaseResult(decreasePoolAmount0Out, decreasePoolAmount1Out);
 
         vm.prank(vault);
-        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount, "");
+        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount, params);
 
         assertEq(amount0, expectedVaultAmount0Out);
         assertEq(amount1, expectedVaultAmount1Out);
@@ -248,6 +284,10 @@ contract V3AdapterTest is Test, VenueTestHelper {
         assertEq(token1.balanceOf(vault), vault1BeforeDecrease + expectedVaultAmount1Out);
         assertEq(adapter.tokenId(), 0);
         assertFalse(adapter.hasPosition());
+
+        assertEq(positionManager.lastDecreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastDecreaseDeadline(), deadline);
     }
 
     function test_RemoveLiquidity_PartialRemoveKeepsTokenId() public {

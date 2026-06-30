@@ -17,6 +17,14 @@ contract MockUniswapV2Router is IUniswapV2Router {
     uint256 public nextAmountAOut;
     uint256 public nextAmountBOut;
 
+    uint256 public lastAddAmountAMin;
+    uint256 public lastAddAmountBMin;
+    uint256 public lastAddDeadline;
+
+    uint256 public lastRemoveAmountAMin;
+    uint256 public lastRemoveAmountBMin;
+    uint256 public lastRemoveDeadline;
+
     /// @param _pair LP token contract minted and burned by the router mock.
     constructor(MockUniswapV2Pair _pair) {
         pair = _pair;
@@ -53,11 +61,15 @@ contract MockUniswapV2Router is IUniswapV2Router {
         address token1,
         uint256,
         uint256,
-        uint256,
-        uint256,
+        uint256 amountAMin,
+        uint256 amountBMin,
         address to,
-        uint256
+        uint256 deadline
     ) external override returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
+        lastAddAmountAMin = amountAMin;
+        lastAddAmountBMin = amountBMin;
+        lastAddDeadline = deadline;
+
         amountA = nextAmountAUsed;
         amountB = nextAmountBUsed;
         liquidity = nextLiquidityMinted;
@@ -77,11 +89,15 @@ contract MockUniswapV2Router is IUniswapV2Router {
         address tokenA,
         address tokenB,
         uint256 liquidity,
-        uint256,
-        uint256,
+        uint256 amountAMin,
+        uint256 amountBMin,
         address to,
-        uint256
+        uint256 deadline
     ) external override returns (uint256 amountA, uint256 amountB) {
+        lastRemoveAmountAMin = amountAMin;
+        lastRemoveAmountBMin = amountBMin;
+        lastRemoveDeadline = deadline;
+        
         if (liquidity > 0) {
             pair.burnLp(msg.sender, liquidity);
         }

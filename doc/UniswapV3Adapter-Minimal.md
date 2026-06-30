@@ -132,7 +132,9 @@ Reason:
   - returns: `uint256 amount0, uint256 amount1` in vault token order
   - behavior:
     - only callable by `vault`
-    - reverts on non-empty `params` in the current refactor step
+    - decodes optional `amount0Min`, `amount1Min`, and `deadline` from `params`
+    - empty `params` use `amount0Min = 0`, `amount1Min = 0`, and `deadline = block.timestamp`
+    - maps vault-ordered minimum amounts into pool token order before calling `decreaseLiquidity`
     - reverts when liquidity is zero
     - reverts when no position exists
     - reverts when requested liquidity exceeds current position liquidity
@@ -178,7 +180,7 @@ Reason:
 
 ## Params Encoding
 
-Minimal `addLiquidity` params:
+Minimal add/remove liquidity params:
 
 ```solidity
 abi.encode(
@@ -194,9 +196,10 @@ Where:
 - `deadline` is forwarded to the position manager
 
 Adapter behavior:
-- desired amounts come from `addLiquidity(amount0, amount1, params)`
+- desired amounts come from `addLiquidity(amount0, amount1, params)` for add operations
 - minimum amounts come from `params`
-- both desired and minimum amounts are mapped into pool token order before calling the position manager
+- desired and minimum amounts are mapped into pool token order before calling the position manager
+- remove operations map the minimum amounts into pool token order before `decreaseLiquidity`
 
 ## Core Flows
 
@@ -371,7 +374,6 @@ This means each V3 fee tier can be represented by a separate adapter instance an
 ## Future Extensions
 
 Later versions may add:
-- decoding withdraw params for slippage-protected `decreaseLiquidity`
 - V3 TWAP oracle integration
 - tick range updates
 - multiple adapter instances for multiple fee tiers

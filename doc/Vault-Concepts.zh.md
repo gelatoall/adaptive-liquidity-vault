@@ -526,12 +526,17 @@
 
 ### 当前 V2 `params` 的语义
 - `addLiquidity(amount0, amount1, params)` 和 `removeLiquidity(liquidity, params)` 都保留了 `params`
-- 但当前 V2 最小实现里，`params` 必须为空
-- 如果传入非空 `params`，会直接 revert `UnsupportedOperation`
+- 当前 V2 实现会把 `params` 解码为：
+  - `amount0Min`
+  - `amount1Min`
+  - `deadline`
+- 如果 `params` 为空，会使用兼容默认值：
+  - `amount0Min = 0`
+  - `amount1Min = 0`
+  - `deadline = block.timestamp`
 - 这表示：
-  - 接口为了以后扩展预留了位置
-  - remove 侧参数已经贯通到 adapter 接口
-  - 但当前版本还没有解码 slippage/deadline 等 venue-specific 参数
+  - manual deploy / withdraw 已经可以向 V2 adapter 传入 slippage/deadline 参数
+  - redeem / rebalance 内部路径当前仍传空 params，后续需要单独设计
 
 ### 当前 adapter 的资产流
 - `addLiquidity()` 时：
@@ -1404,7 +1409,7 @@ volatilityBps = max(change0Bps, change1Bps)
 - `abi.encode(amount0Min, amount1Min, deadline)`
 
 如果用 struct，也可以在 adapter 内部定义：
-- `AddLiquidityParams { amount0Min, amount1Min, deadline }`
+- `LiquidityParams { amount0Min, amount1Min, deadline }`
 
 两种方式都可以：
 - struct 更清楚
@@ -1431,7 +1436,9 @@ volatilityBps = max(change0Bps, change1Bps)
 
 ### removeLiquidity 最小流程
 - `removeLiquidity(liquidity, params)` 负责从当前 V3 position 里撤出指定 liquidity。
-- 当前 V3 remove 仍要求 `params` 为空；后续会把 `amount0Min/amount1Min/deadline` 解码进 `decreaseLiquidity`。
+- 当前 V3 remove 会把 `params` 解码成 `amount0Min/amount1Min/deadline`。
+- 这些 minimum amounts 以 vault token 顺序传入，adapter 会映射成 pool token 顺序后再传给 `decreaseLiquidity`。
+- 如果 `params` 为空，会使用兼容默认值：`amount0Min = 0`、`amount1Min = 0`、`deadline = block.timestamp`。
 
 流程是：
 1. 如果 `liquidity == 0`，revert

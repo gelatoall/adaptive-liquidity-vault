@@ -110,7 +110,8 @@ Current code status:
   - returns: `uint256 liquidity`
   - current behavior:
     - only callable by `vault`
-    - reverts on non-empty `params`
+    - decodes optional `amount0Min`, `amount1Min`, and `deadline` from `params`
+    - empty `params` use `amount0Min = 0`, `amount1Min = 0`, and `deadline = block.timestamp`
     - pulls funds from the vault with `safeTransferFrom`
     - resets token approvals back to zero after router execution
 
@@ -119,7 +120,8 @@ Current code status:
   - returns: `uint256 amount0Out, uint256 amount1Out`
   - current behavior:
     - only callable by `vault`
-    - reverts on non-empty `params`
+    - decodes optional `amount0Min`, `amount1Min`, and `deadline` from `params`
+    - empty `params` use `amount0Min = 0`, `amount1Min = 0`, and `deadline = block.timestamp`
     - reverts if requested liquidity exceeds adapter LP balance
 
 - `collectFees()`
@@ -247,7 +249,6 @@ This means the current implementation already validates:
 - redemption-triggered proportional withdrawal from active V2 liquidity
 
 It does not yet implement:
-- decoding slippage params for V2 add/remove execution
 - slippage controls for redemption-triggered withdrawal
 - oracle-driven deployment decisions
 - autonomous strategy selection

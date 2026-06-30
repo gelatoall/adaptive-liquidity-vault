@@ -39,6 +39,18 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
 
     uint256 public nextDecreaseAmount0;
     uint256 public nextDecreaseAmount1;
+
+    uint256 public lastMintAmount0Min;
+    uint256 public lastMintAmount1Min;
+    uint256 public lastMintDeadline;
+
+    uint256 public lastIncreaseAmount0Min;
+    uint256 public lastIncreaseAmount1Min;
+    uint256 public lastIncreaseDeadline;
+
+    uint256 public lastDecreaseAmount0Min;
+    uint256 public lastDecreaseAmount1Min;
+    uint256 public lastDecreaseDeadline;
     
     /// @notice Sets the next mint result returned by the mock.
     function setNextMintResult(
@@ -120,6 +132,9 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
         external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)
     {
         tokenId = nextTokenId++;
+        lastMintAmount0Min = params.amount0Min;
+        lastMintAmount1Min = params.amount1Min;
+        lastMintDeadline = params.deadline;
 
         liquidity = nextMintLiquidity;
         amount0 = nextMintAmount0Used;
@@ -154,6 +169,10 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
         Position storage p = _positions[params.tokenId];
         require(p.exists, "NO_POSITION");
 
+        lastIncreaseAmount0Min = params.amount0Min;
+        lastIncreaseAmount1Min = params.amount1Min;
+        lastIncreaseDeadline = params.deadline;
+
         liquidity = nextIncreaseLiquidity;
         amount0 = nextIncreaseAmount0Used;
         amount1 = nextIncreaseAmount1Used;
@@ -174,6 +193,10 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
         
         require(p.exists, "NO_POSITION");
         require(p.liquidity >= params.liquidity, "Insufficient liquidity");
+        lastDecreaseAmount0Min = params.amount0Min;
+        lastDecreaseAmount1Min = params.amount1Min;
+        lastDecreaseDeadline = params.deadline;
+
         p.liquidity -= params.liquidity;
 
         amount0 = nextDecreaseAmount0;
