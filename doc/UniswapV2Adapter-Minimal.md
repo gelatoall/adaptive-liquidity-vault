@@ -94,7 +94,7 @@ Current code status:
 - `AdaptiveLPVault` is now minimally integrated with the adapter through:
   - `setVenue(venueId, adapter, label, enabled)`
   - `deployToVenue(venueId, amount0, amount1, params)`
-  - `withdrawFromVenue(venueId, liquidity)`
+  - `withdrawFromVenue(venueId, liquidity, params)`
   - `totalAssets()` including idle balances and adapter-reported deployed underlying amounts across registered venues
 
 ## Public Functions
@@ -114,11 +114,12 @@ Current code status:
     - pulls funds from the vault with `safeTransferFrom`
     - resets token approvals back to zero after router execution
 
-- `removeLiquidity(liquidity)`
+- `removeLiquidity(liquidity, params)`
   - purpose: remove liquidity from the pair
   - returns: `uint256 amount0Out, uint256 amount1Out`
   - current behavior:
     - only callable by `vault`
+    - reverts on non-empty `params`
     - reverts if requested liquidity exceeds adapter LP balance
 
 - `collectFees()`
@@ -233,7 +234,7 @@ The current repository now goes beyond an isolated standalone adapter unit.
 - the vault stores registered venue adapters as `IVenueAdapter`
 - the owner can register the V2 adapter with `setVenue(venueId, adapter, label, enabled)`
 - the owner can call `deployToVenue(venueId, amount0, amount1, params)`
-- the owner can call `withdrawFromVenue(venueId, liquidity)`
+- the owner can call `withdrawFromVenue(venueId, liquidity, params)`
 - `totalAssets()` adds:
   - idle token balances held by the vault
   - deployed underlying token amounts reported by every registered adapter's `getPositionValue()`
@@ -246,6 +247,7 @@ This means the current implementation already validates:
 - redemption-triggered proportional withdrawal from active V2 liquidity
 
 It does not yet implement:
+- decoding slippage params for V2 add/remove execution
 - slippage controls for redemption-triggered withdrawal
 - oracle-driven deployment decisions
 - autonomous strategy selection

@@ -192,7 +192,13 @@ contract UniswapV2Adapter is IVenueAdapter {
     }
 
     /// @inheritdoc IVenueAdapter
-    function removeLiquidity(uint256 liquidity) external override onlyVault returns (uint256 amount0, uint256 amount1) {
+    /// @dev Removal params are reserved for slippage controls and must be empty in this refactor step.
+    function removeLiquidity(
+        uint256 liquidity, 
+        bytes calldata params
+    ) external override onlyVault returns (uint256 amount0, uint256 amount1) {
+        if (params.length != 0) revert UnsupportedOperation();
+
         // Reject if liquidity is zero.
         if (liquidity == 0) {
             revert ZeroLiquidity();

@@ -109,8 +109,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - purpose: deploy idle funds into a registered venue adapter
   - returns: `uint256 liquidity`
 
-- `withdrawFromVenue(venueId, liquidity)`
+- `withdrawFromVenue(venueId, liquidity, params)`
   - purpose: withdraw deployed liquidity from a specific venue back into idle balances
+  - signature: `withdrawFromVenue(venueId, liquidity, params)`
+  - behavior: forwards venue-specific removal params to the adapter
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `rebalance(targets)`
@@ -181,8 +183,10 @@ When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liqu
 1. Require the venue to be registered and configured with an adapter.
 2. Reject zero liquidity.
 3. Require enough tracked liquidity for that venue.
-4. Call `adapter.removeLiquidity(liquidity)`.
+4. Call `adapter.removeLiquidity(liquidity, params)`.
 5. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
+
+Current internal withdrawal callers such as rebalance and redeem pass empty params. This refactor prepares the interface for slippage-aware withdrawals; adapter-side decoding of removal params is future work.
 
 ### rebalance
 

@@ -103,6 +103,9 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @notice Thrown when attempting to remove more liquidity than the position holds.
     error InsufficientPositionLiquidity();
 
+    /// @notice Thrown when reserved params are provided before support is implemented.
+    error UnsupportedOperation();
+
     // ============================================
     // Modifiers
     // ============================================
@@ -187,10 +190,16 @@ contract UniswapV3Adapter is IVenueAdapter {
 
     /// @notice Removes liquidity from the managed Uniswap V3 position and returns withdrawn tokens to the vault.
     /// @param liquidity Amount of liquidity to remove.
+    /// @param params Reserved for future slippage controls and must be empty in this refactor step.
     /// @return amount0 Vault token 0 withdrawn from the position.
     /// @return amount1 Vault token 1 withdrawn from the position.
     /// @dev Decreases liquidity first, then collects owed amounts, then cleans up an empty position if possible.
-    function removeLiquidity(uint256 liquidity) external override onlyVault returns (uint256 amount0, uint256 amount1) {
+    function removeLiquidity(
+        uint256 liquidity, 
+        bytes calldata params
+    ) external override onlyVault returns (uint256 amount0, uint256 amount1) {
+        if (params.length != 0) revert UnsupportedOperation();
+
         if (liquidity == 0) revert ZeroLiquidity();
         
         if (tokenId == 0) revert NoPosition();

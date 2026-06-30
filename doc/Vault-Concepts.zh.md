@@ -524,13 +524,14 @@
   - `pair.token0 == token1` 且 `pair.token1 == token0`
 - 也就是说，当前实现不要求 pair 内部顺序和 adapter 输入顺序完全一致，只要求它们是同一组 token
 
-### 当前 `params` 的语义
-- `addLiquidity(amount0, amount1, params)` 虽然保留了 `params`
-- 但当前最小实现里，`params` 必须为空
+### 当前 V2 `params` 的语义
+- `addLiquidity(amount0, amount1, params)` 和 `removeLiquidity(liquidity, params)` 都保留了 `params`
+- 但当前 V2 最小实现里，`params` 必须为空
 - 如果传入非空 `params`，会直接 revert `UnsupportedOperation`
 - 这表示：
   - 接口为了以后扩展预留了位置
-  - 但当前版本还没有引入额外的 venue-specific 参数
+  - remove 侧参数已经贯通到 adapter 接口
+  - 但当前版本还没有解码 slippage/deadline 等 venue-specific 参数
 
 ### 当前 adapter 的资产流
 - `addLiquidity()` 时：
@@ -726,7 +727,7 @@
 - vault 当前已经能：
   - 通过 `setVenue(...)` 注册多个 `IVenueAdapter`
   - 通过 `deployToVenue(venueId, ...)` 把 idle 资金部署到指定 venue
-  - 通过 `withdrawFromVenue(venueId, liquidity)` 把指定 venue 的 deployed 资金撤回
+  - 通过 `withdrawFromVenue(venueId, liquidity, params)` 把指定 venue 的 deployed 资金撤回
   - 通过 `totalAssets()` 把 idle balances 和所有 registered venue reported amounts 一起估值
 - 当前这版还没有做到：
   - 自动根据价格决定什么时候 deploy
@@ -1014,7 +1015,7 @@
 - `rebalance` 负责执行目标部署计划，不负责自己决定最优 venue。
 - 更准确地说：
   - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
-  - `withdrawFromVenue(venueId, liquidity)` 负责把指定 venue 仓位撤回成 idle balances
+  - `withdrawFromVenue(venueId, liquidity, params)` 负责把指定 venue 仓位撤回成 idle balances
   - `rebalance(targets)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
   - `rebalanceWithStrategy(data)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
 
@@ -1329,14 +1330,14 @@ volatilityBps = max(change0Bps, change1Bps)
 - 不要先把 adapter 做成多 position / 多 fee tier manager。
 - 多 fee tier 更像后续 strategy manager 或 venue manager 的职责。
 
-### 为什么现在不改 `IVenueAdapter`
+### 当前 `IVenueAdapter`
 - 当前 `IVenueAdapter` 已经有：
   - `addLiquidity(amount0, amount1, params)`
-  - `removeLiquidity(liquidity)`
+  - `removeLiquidity(liquidity, params)`
   - `collectFees()`
   - `getPositionValue()`
   - `hasPosition()`
-- 对最小 V3 adapter 来说，这组接口暂时够用。
+- 对最小 V3 adapter 来说，这组接口暂时够用，并且 remove 侧 `params` 已经为后续 slippage-protected withdrawal 预留。
 - 关键原因是：
   - V3 的 `tokenId` 可以由 adapter 内部保存
   - vault 不需要知道具体 NFT 编号
@@ -1429,7 +1430,8 @@ volatilityBps = max(change0Bps, change1Bps)
 - 退 dust 时必须映射回 vault 语义。
 
 ### removeLiquidity 最小流程
-- `removeLiquidity(liquidity)` 负责从当前 V3 position 里撤出指定 liquidity。
+- `removeLiquidity(liquidity, params)` 负责从当前 V3 position 里撤出指定 liquidity。
+- 当前 V3 remove 仍要求 `params` 为空；后续会把 `amount0Min/amount1Min/deadline` 解码进 `decreaseLiquidity`。
 
 流程是：
 1. 如果 `liquidity == 0`，revert

@@ -180,7 +180,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v2Amount0Out = v2Amount0;
         uint256 v2Amount1Out = v2Amount1;
         routerV2.setNextRemoveLiquidityResult(v2Amount0Out, v2Amount1Out);
-        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity);
+        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity, "");
 
         assertEq(actual0, v2Amount0Out);
         assertEq(actual1, v2Amount1Out);

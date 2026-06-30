@@ -105,8 +105,9 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: manually deploy idle funds into a specific venue
 
-- `withdrawFromVenue(venueId, liquidity)`
+- `withdrawFromVenue(venueId, liquidity, params)`
   - purpose: manually withdraw liquidity from a specific venue
+  - behavior: forwards venue-specific removal params to the adapter; current rebalance internals pass empty params
 
 ## Core Flow
 
@@ -309,7 +310,7 @@ These conditions should always hold:
 - rebalance only wraps existing deploy and withdraw helpers
 - per-venue liquidity is updated through the same path as manual venue operations
 - total tracked liquidity equals the sum of tracked liquidity changes applied by venue operations
-- direct user redemption remains blocked while any venue has active liquidity
+- direct user redemption withdraws the caller's proportional tracked venue liquidity
 - venue ids are caller-defined identifiers, not enum states
 - strategy-built plans must pass the same validation as manual plans
 - failed strategy rebalances must not update `lastRebalance`

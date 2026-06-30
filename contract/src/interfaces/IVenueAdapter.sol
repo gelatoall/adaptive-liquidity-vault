@@ -15,9 +15,13 @@ interface IVenueAdapter {
 
     /// @notice Remove liquidity from the venue
     /// @param liquidity Amount of LP tokens or position liquidity to remove
+    /// @param params Venue-specific encoded parameters for removal execution
     /// @return amount0 Token0 received
     /// @return amount1 Token1 received
-    function removeLiquidity(uint256 liquidity) external returns (uint256 amount0, uint256 amount1);
+    function removeLiquidity(
+        uint256 liquidity, 
+        bytes calldata params
+    ) external returns (uint256 amount0, uint256 amount1);
 
     /// @notice Collect any accumulated fees if the venue supports explicit fee collection
     function collectFees() external returns (uint256 fees0, uint256 fees1);

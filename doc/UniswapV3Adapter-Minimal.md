@@ -127,11 +127,12 @@ Reason:
     - returns unused dust to the vault
     - resets approvals back to zero
 
-- `removeLiquidity(liquidity)`
+- `removeLiquidity(liquidity, params)`
   - purpose: remove liquidity from the current V3 position
   - returns: `uint256 amount0, uint256 amount1` in vault token order
   - behavior:
     - only callable by `vault`
+    - reverts on non-empty `params` in the current refactor step
     - reverts when liquidity is zero
     - reverts when no position exists
     - reverts when requested liquidity exceeds current position liquidity
@@ -361,16 +362,16 @@ The current vault can integrate this adapter without changing `IVenueAdapter`:
 - the vault stores registered venue adapters as `IVenueAdapter`
 - the owner can register one V3 fee tier as one venue through `setVenue(venueId, adapter, label, enabled)`
 - the owner can call `deployToVenue(venueId, amount0, amount1, params)`
-- the owner can call `withdrawFromVenue(venueId, liquidity)`
+- the owner can call `withdrawFromVenue(venueId, liquidity, params)`
 - `totalAssets()` can include V3 deployed balances through `adapter.getPositionValue()`
-- direct user redemption remains blocked while any registered adapter reports an active position
+- direct user redemption withdraws the caller's proportional tracked V3 liquidity before transferring underlying tokens
 
 This means each V3 fee tier can be represented by a separate adapter instance and registered as a separate venue while preserving the current vault abstraction.
 
 ## Future Extensions
 
 Later versions may add:
-- separate withdraw params for slippage-protected `decreaseLiquidity`
+- decoding withdraw params for slippage-protected `decreaseLiquidity`
 - V3 TWAP oracle integration
 - tick range updates
 - multiple adapter instances for multiple fee tiers

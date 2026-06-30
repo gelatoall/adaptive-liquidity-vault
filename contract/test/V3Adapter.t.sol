@@ -240,7 +240,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         positionManager.setNextDecreaseResult(decreasePoolAmount0Out, decreasePoolAmount1Out);
 
         vm.prank(vault);
-        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount);
+        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount, "");
 
         assertEq(amount0, expectedVaultAmount0Out);
         assertEq(amount1, expectedVaultAmount1Out);
@@ -274,7 +274,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         positionManager.setNextDecreaseResult(decreasePoolAmount0Out, decreasePoolAmount1Out);
         
         vm.prank(vault);
-        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount);
+        (uint256 amount0, uint256 amount1) = adapter.removeLiquidity(removeLiquidityAmount, "");
 
         assertEq(amount0, expectedVaultAmount0Out);
         assertEq(amount1, expectedVaultAmount1Out);
@@ -359,7 +359,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         positionManager.setNextDecreaseResult(decreasePoolAmount0Out, decreasePoolAmount1Out);
         
         vm.prank(vault);
-        adapter.removeLiquidity(mintLiquidity);
+        adapter.removeLiquidity(mintLiquidity, "");
 
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);

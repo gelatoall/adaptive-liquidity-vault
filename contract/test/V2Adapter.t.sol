@@ -291,14 +291,14 @@ contract V2AdapterTest is Test {
     /// @notice Verifies only the vault can remove liquidity through the adapter.
     function test_RemoveLiquidity_RevertsWhenCallerIsNotVault() public {
         vm.expectRevert(UniswapV2Adapter.NotVault.selector);
-        adapter.removeLiquidity(5 ether);
+        adapter.removeLiquidity(5 ether, "");
     }
 
     /// @notice Verifies zero-liquidity removals are rejected.
     function test_RemoveLiquidity_RevertsWhenLiquidityIsZero() public {
         vm.expectRevert(UniswapV2Adapter.ZeroLiquidity.selector);
         vm.prank(vault);
-        adapter.removeLiquidity(0);
+        adapter.removeLiquidity(0, "");
     }
 
     /// @notice Verifies liquidity removal cannot exceed the adapter's LP balance.
@@ -308,7 +308,7 @@ contract V2AdapterTest is Test {
         pair.mintLp(address(adapter), adapterLp);
         vm.expectRevert(UniswapV2Adapter.InsufficientLpBalance.selector);
         vm.prank(vault);
-        adapter.removeLiquidity(liquidity);
+        adapter.removeLiquidity(liquidity, "");
     }
 
     /// @notice Verifies successful adds leave the minted LP tokens on the adapter.
@@ -408,7 +408,7 @@ contract V2AdapterTest is Test {
         router.setNextRemoveLiquidityResult(amount0Out, amount1Out);
 
         vm.prank(vault);
-        (uint256 actual0, uint256 actual1) = adapter.removeLiquidity(liquidityToRemove);
+        (uint256 actual0, uint256 actual1) = adapter.removeLiquidity(liquidityToRemove, "");
 
         assertEq(actual0, amount0Out);
         assertEq(actual1, amount1Out);

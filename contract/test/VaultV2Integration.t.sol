@@ -135,14 +135,14 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
             decimals0, decimals1
         );
         vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
-        freshVault.withdrawFromVenue(1, 1 ether);
+        freshVault.withdrawFromVenue(1, 1 ether, "");
     }
 
     /// @notice Verifies only the vault owner can withdraw deployed liquidity from the adapter.
     function test_WithdrawFromVenue_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        vault.withdrawFromVenue(1, 1 ether);
+        vault.withdrawFromVenue(1, 1 ether, "");
     }
 
     /// @notice Verifies withdrawing from the venue returns the underlying tokens back to the vault.
@@ -167,7 +167,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         uint256 adapterLpBefore = pair.balanceOf(address(adapter));
 
         router.setNextRemoveLiquidityResult(amount0Out, amount1Out);
-        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(1, liquidityMinted);
+        (uint256 actual0, uint256 actual1) = vault.withdrawFromVenue(1, liquidityMinted, "");
 
         assertEq(actual0, amount0Out);
         assertEq(actual1, amount1Out);

@@ -119,7 +119,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Desired, poolAmount1Desired);
-        (uint256 amount0Out, uint256 amount1Out) =vault.withdrawFromVenue(2, deployedLiquidity);
+        (uint256 amount0Out, uint256 amount1Out) = vault.withdrawFromVenue(2, deployedLiquidity, "");
 
         assertEq(amount0Out, amount0);
         assertEq(amount1Out, amount1);

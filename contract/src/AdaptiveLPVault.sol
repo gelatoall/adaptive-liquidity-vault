@@ -318,7 +318,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
             if (liquidityToWithdraw == 0) continue;
 
-            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw);
+            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, "");
             amount0Out += venue0Out;
             amount1Out += venue1Out;
         }
@@ -451,13 +451,18 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @dev This is the public owner-only venue entrypoint and delegates to the shared internal helper.
     /// @param venueId Registered venue id to withdraw from.
     /// @param liquidity Raw venue liquidity amount to remove.
+    /// @param params Venue-specific encoded parameters forwarded to the adapter.
     /// @return amount0Out Raw token0 amount returned to the vault.
     /// @return amount1Out Raw token1 amount returned to the vault.
-    function withdrawFromVenue(uint256 venueId, uint256 liquidity) external onlyOwner returns (
+    function withdrawFromVenue(
+        uint256 venueId, 
+        uint256 liquidity, 
+        bytes calldata params
+    ) external onlyOwner returns (
         uint256 amount0Out, 
         uint256 amount1Out
     ) {
-        return _withdrawFromVenue(venueId, liquidity);
+        return _withdrawFromVenue(venueId, liquidity, params);
     }
 
     /// @notice Rebalances vault capital according to an owner-supplied target plan.
@@ -542,8 +547,14 @@ contract AdaptiveLPVault is ERC20, Ownable {
         emit DeployToVenue(venueId, amount0, amount1, liquidity);
     }
 
-    /// @notice Shared internal withdraw flow for manual withdraws and rebalance.
-    function _withdrawFromVenue(uint256 venueId, uint256 liquidity) internal returns (
+    /// @notice Shared internal withdraw flow for manual withdraws, rebalances, and redemptions.
+    /// @dev `params` is forwarded to the venue adapter. Internal callers pass empty params until
+    /// slippage-aware withdrawal data is plumbed through those entrypoints.
+    function _withdrawFromVenue(
+        uint256 venueId, 
+        uint256 liquidity, 
+        bytes memory params
+    ) internal returns (
         uint256 amount0Out, 
         uint256 amount1Out
     ) {
@@ -552,7 +563,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         if (liquidity == 0) revert ZeroLiquidity();
         if (venueLiquidity[venueId] < liquidity) revert InsufficientLiquidity();
 
-        (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity);
+        (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity, params);
         venueLiquidity[venueId] -= liquidity;
         totalLiquidity -= liquidity;
         
@@ -601,7 +612,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
             uint256 id = venueIds[i];
             uint256 liquidity = venueLiquidity[id];
             if (liquidity > 0) {
-                _withdrawFromVenue(id, liquidity);  
+                _withdrawFromVenue(id, liquidity, "");  
             }
         }
     }
