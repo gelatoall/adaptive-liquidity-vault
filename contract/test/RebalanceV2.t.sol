@@ -122,12 +122,27 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(vault.totalLiquidity(), liquidityMinted);
 
+        uint256 amount0Min = amount0 / 2;
+        uint256 amount1Min = amount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V2_VENUE_ID,
+            params: abi.encode(amount0Min, amount1Min, deadline)
+        });
+
         router.setNextRemoveLiquidityResult(amount0, amount1);
-        _rebalanceToIdle(vault);
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
+        vault.rebalance(targets, withdrawalParams);
+
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
         assertEq(vault.totalLiquidity(), 0);
         assertFalse(adapter.hasPosition());
+
+        assertEq(router.lastRemoveAmountAMin(), amount0Min);
+        assertEq(router.lastRemoveAmountBMin(), amount1Min);
+        assertEq(router.lastRemoveDeadline(), deadline);
     }
 
     /// @notice Verifies rebalance to IDLE reverts when there is no DEPLOYED_V2 liquidity to withdraw.

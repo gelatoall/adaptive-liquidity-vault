@@ -102,7 +102,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
             V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
 
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -144,7 +144,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
             V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
         );
 
-        vault.rebalance(deployTargets);
+        vault.rebalance(deployTargets, _emptyWithdrawalParams());
 
         assertTrue(adapterV2.hasPosition());
         assertTrue(adapterV3.hasPosition());
@@ -183,7 +183,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         );
 
         vm.expectRevert(AdaptiveLPVault.DuplicateVenueTarget.selector);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     function test_Rebalance_RevertsWhenTargetVenueNotSet() public {
@@ -192,7 +192,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(999, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     function test_Rebalance_RevertsWhenTargetVenueDisabled() public {
@@ -202,7 +202,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.VenueDisabled.selector);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     function test_Rebalance_RevertsWhenPlanExceedsIdleBalances() public {
@@ -211,7 +211,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V2_VENUE_ID, 6 ether, 12e6, "");
 
         vm.expectRevert(AdaptiveLPVault.InsufficientBalances.selector);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     function test_Rebalance_RevertsWhenNoRebalanceNeeded() public {
@@ -220,6 +220,6 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 }

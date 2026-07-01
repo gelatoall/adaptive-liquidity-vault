@@ -112,9 +112,20 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(token0.balanceOf(address(positionManager)), amount0);
         assertEq(token1.balanceOf(address(positionManager)), amount1);
 
+        uint256 amount0Min = amount0 / 2;
+        uint256 amount1Min = amount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: abi.encode(amount0Min, amount1Min, deadline)
+        });
+
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
-        _rebalanceToIdle(vault);
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
+        vault.rebalance(targets, withdrawalParams);
 
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);
@@ -123,5 +134,9 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(token1.balanceOf(address(vault)), amount1);
         assertEq(token0.balanceOf(address(positionManager)), 0);
         assertEq(token1.balanceOf(address(positionManager)), 0);
+
+        assertEq(positionManager.lastDecreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastDecreaseDeadline(), deadline);
     }
 }

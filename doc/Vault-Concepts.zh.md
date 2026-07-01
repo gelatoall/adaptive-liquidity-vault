@@ -539,7 +539,7 @@
 - 这表示：
   - manual deploy / withdraw 已经可以向 V2 adapter 传入 slippage/deadline 参数
   - redeem 已经可以通过 `withdrawalParams` 向 active V2 withdrawal 传入 slippage/deadline 参数
-  - rebalance 内部 withdrawal 路径当前仍传空 params，后续需要单独设计
+  - manual rebalance 已经可以通过 `withdrawalParams` 向 active V2 withdrawal 传入 slippage/deadline 参数
 
 ### 当前 adapter 的资产流
 - `addLiquidity()` 时：
@@ -1024,7 +1024,7 @@
 - 更准确地说：
   - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
   - `withdrawFromVenue(venueId, liquidity, params)` 负责把指定 venue 仓位撤回成 idle balances
-  - `rebalance(targets)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
+  - `rebalance(targets, withdrawalParams)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
   - `rebalanceWithStrategy(data)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
 
 ### 当前 multi-venue 模型
@@ -1036,6 +1036,7 @@
   - `4`: Uniswap V3 1.00%
 - 这些数字不是协议强制语义，而是 owner 在 `setVenue(...)` 里注册出来的 venue id。
 - `IDLE` 不是 venueId。当前如果要 rebalance 回 idle，传空的 `targets` 数组。
+  - 如果 withdrawal 阶段需要 slippage/deadline 保护，同时传入对应的 `withdrawalParams`。
 
 ### venue registry
 - 每个 venue 通过 `setVenue(venueId, adapter, label, enabled)` 注册。
@@ -1066,7 +1067,25 @@ struct RebalanceTarget {
   - `venueId`：目标 venue
   - `amount0`：部署到该 venue 的 token0 原始数量
   - `amount1`：部署到该 venue 的 token1 原始数量
-  - `params`：透传给 adapter 的 venue-specific 参数
+  - `params`：透传给 adapter 的部署参数，也就是 addLiquidity params
+
+### VenueWithdrawalParams
+- manual `rebalance` 额外接收 withdrawal params：
+
+```solidity
+struct VenueWithdrawalParams {
+    uint256 venueId;
+    bytes params;
+}
+```
+
+- 含义是：
+  - `venueId`：要撤出的旧 venue
+  - `params`：透传给 adapter 的 withdrawal 参数，也就是 removeLiquidity params
+- 所以 manual rebalance 现在有两组 params：
+  - `targets[i].params`：进入新 venue 时用
+  - `withdrawalParams[i].params`：从旧 venue 撤出时用
+- 如果某个 active venue 没有匹配的 `withdrawalParams`，vault 会向 adapter 传空 `params`。
 
 ### 当前 strategy 最小骨架
 - vault 可以通过 `setStrategy(...)` 配置一个 rebalance strategy。
@@ -1085,7 +1104,7 @@ function buildTargets(address vault, bytes calldata data)
   3. 检查 `maxGasPrice`，如果不为 0
   4. 检查 `minVolatilityDelta`，如果不为 0
   5. 调用 strategy 的 `buildTargets(...)`
-  6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行
+  6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行，但 withdrawal params 暂时为空
   7. 成功后更新 `lastRebalance`
   8. 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
 - 这表示 strategy 只负责“生成 plan”，vault 仍然负责校验和执行。
@@ -1191,12 +1210,14 @@ volatilityBps = max(change0Bps, change1Bps)
 - 它是当前最小实现里的 price-change proxy，用来给 `VolatilityBucketStrategy` 提供可测试的链上波动率输入。
 
 ### manual rebalance 和 strategy rebalance 的区别
-- `rebalance(targets)`：
+- `rebalance(targets, withdrawalParams)`：
   - owner 手动传入 plan
+  - owner 也可以为 withdrawal 阶段传入 per-venue slippage/deadline 参数
   - 适合测试、治理操作、emergency override
   - 不受 strategy cooldown / max gas price 限制
 - `rebalanceWithStrategy(data)`：
   - owner 触发 strategy 生成 plan
+  - 当前 withdrawal 阶段使用空 params，strategy-side withdrawal params 需要后续单独设计
   - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
   - 成功后更新 `lastRebalance`
   - 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
@@ -1212,15 +1233,16 @@ volatilityBps = max(change0Bps, change1Bps)
   3. 如果差值小于 `minVolatilityDelta`，就 revert `VolatilityDeltaTooSmall`
 - 如果 `minVolatilityDelta != 0`，必须先配置 `setVolatilityOracle(...)`。
 - 这些 guard 只作用于 `rebalanceWithStrategy(...)`。
-- owner 手动调用 `rebalance(targets)` 仍然是 manual override，不受这些 strategy guard 限制。
+- owner 手动调用 `rebalance(targets, withdrawalParams)` 仍然是 manual override，不受这些 strategy guard 限制。
 
 ### rebalance to idle
 - 如果想把所有 venue 撤回 idle：
   1. 传入空数组 `targets`
-  2. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
-  3. vault 遍历 `venueIds`
-  4. 对每个 `venueLiquidity[id] > 0` 的 venue 调 `_withdrawFromVenue(id, liquidity)`
-  5. 所有资金回到 vault idle balances
+  2. 如果需要 withdrawal slippage/deadline 保护，传入对应的 `withdrawalParams`
+  3. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
+  4. vault 遍历 `venueIds`
+  5. 对每个 `venueLiquidity[id] > 0` 的 venue 调 `_withdrawFromVenue(id, liquidity, params)`
+  6. 所有资金回到 vault idle balances
 
 ### rebalance to one or multiple venues
 - 如果想部署到一个或多个 venue：

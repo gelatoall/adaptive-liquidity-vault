@@ -44,11 +44,11 @@ Notes:
 - `totalLiquidity` is used only as bookkeeping to know whether any tracked liquidity exists.
 - per-venue liquidity is tracked in `venueLiquidity[venueId]`.
 - strategy logic should live outside the vault. The vault only asks the configured strategy for a target plan and then validates and executes it.
-- manual `rebalance(targets)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
+- manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
 
 ## Data Model
 
-The rebalance entrypoint accepts:
+The rebalance entrypoint accepts target deployment plans and per-venue withdrawal params:
 
 ```solidity
 struct RebalanceTarget {
@@ -63,7 +63,16 @@ Field meanings:
 - `venueId`: registered venue receiving capital
 - `amount0`: raw token0 amount to deploy into that venue
 - `amount1`: raw token1 amount to deploy into that venue
-- `params`: venue-specific adapter params, for example V3 mint limits and deadline
+- `params`: venue-specific adapter params for deployment, for example V3 mint limits and deadline
+
+```solidity
+struct VenueWithdrawalParams {
+    uint256 venueId;
+    bytes params;
+}
+```
+
+Withdrawal params are matched by `venueId` during the withdraw-all phase. Venues without a matching entry receive empty params.
 
 Zero-amount targets are skipped during deployment. They are still checked for duplicate venue ids.
 
@@ -81,9 +90,10 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 ## Public Functions
 
-- `rebalance(targets)`
+- `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied target allocation
   - behavior: withdraw all venues first, then deploy non-zero targets
+  - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
 
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
@@ -107,7 +117,7 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 - `withdrawFromVenue(venueId, liquidity, params)`
   - purpose: manually withdraw liquidity from a specific venue
-  - behavior: forwards venue-specific removal params to the adapter; current rebalance internals pass empty params
+  - behavior: forwards venue-specific removal params to the adapter
 
 ## Core Flow
 
@@ -135,7 +145,7 @@ Flow:
 4. Vault checks `maxGasPrice` if it is non-zero.
 5. Vault checks `minVolatilityDelta` if it is non-zero.
 6. Vault calls `strategy.buildTargets(address(this), data)`.
-7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets)`.
+7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, but with empty withdrawal params.
 8. Vault updates `lastRebalance` only after successful execution.
 9. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
@@ -220,7 +230,9 @@ Call `rebalance` with an empty target array:
 
 ```solidity
 RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
-vault.rebalance(targets);
+AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams =
+    new AdaptiveLPVault.VenueWithdrawalParams[](0);
+vault.rebalance(targets, withdrawalParams);
 ```
 
 Flow:

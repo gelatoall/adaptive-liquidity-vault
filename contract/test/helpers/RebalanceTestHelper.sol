@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "forge-std/Test.sol";
 import "../../src/AdaptiveLPVault.sol";
 import "../../src/libraries/RebalanceTypes.sol";
+import "./VaultTestHelper.sol";
 
-abstract contract RebalanceTestHelper is Test {
+abstract contract RebalanceTestHelper is VaultTestHelper {
+    /// @notice Rebalances the vault back to idle using empty withdrawal params.
     function _rebalanceToIdle(AdaptiveLPVault vault) internal {
         RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
-        vault.rebalance(targets);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     function _buildSingleTarget(
@@ -53,6 +54,7 @@ abstract contract RebalanceTestHelper is Test {
         });
     }
 
+    /// @notice Rebalances the vault into one target venue using empty withdrawal params.
     function _rebalanceToVenue(
         AdaptiveLPVault vault,
         uint256 venueId,
@@ -60,6 +62,9 @@ abstract contract RebalanceTestHelper is Test {
         uint256 amount1,
         bytes memory params
     ) internal {
-        vault.rebalance(_buildSingleTarget(venueId, amount0, amount1, params));
+        vault.rebalance(
+            _buildSingleTarget(venueId, amount0, amount1, params),
+            _emptyWithdrawalParams()
+        );
     }
 }

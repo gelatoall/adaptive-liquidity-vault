@@ -116,9 +116,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - behavior: forwards venue-specific removal params to the adapter
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
-- `rebalance(targets)`
+- `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied multi-venue target plan
   - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
+  - behavior: forwards matching per-venue withdrawal params during the withdrawal phase; `targets[i].params` controls deployment into the new venue
 
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
@@ -188,7 +189,7 @@ When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liqu
 4. Call `adapter.removeLiquidity(liquidity, params)`.
 5. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Rebalance internals still withdraw existing venue liquidity with empty params; slippage-aware rebalance withdrawals are the next execution-layer improvement.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances still use empty withdrawal params in this entrypoint; strategy-side withdrawal params are a separate interface design task.
 
 ### rebalance
 

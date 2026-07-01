@@ -485,12 +485,17 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @dev The current minimal flow withdraws all tracked venue liquidity first, then deploys into non-zero targets.
     /// An empty target array means withdraw all venues to idle. Reverts if the vault is already idle.
     /// @param targets Desired post-rebalance venue deployments.
-    function rebalance(RebalanceTypes.RebalanceTarget[] calldata targets) external onlyOwner {
-        _rebalance(targets);
+    /// @param withdrawalParams Venue-specific remove-liquidity params used when rebalance withdraws active positions.
+    function rebalance(
+        RebalanceTypes.RebalanceTarget[] calldata targets,
+        VenueWithdrawalParams[] calldata withdrawalParams
+    ) external onlyOwner {
+        _rebalance(targets, withdrawalParams);
         emit Rebalance(msg.sender);
     }
 
     /// @notice Builds a target plan from the configured strategy and executes it.
+    /// @dev Strategy-built targets control deployment params; withdrawal params are empty in this entrypoint for now.
     /// @param data Opaque strategy-specific data forwarded to `buildTargets`.
     function rebalanceWithStrategy(bytes calldata data) external onlyOwner {
         if (address(strategy) == address(0)) revert StrategyNotSet();
@@ -499,7 +504,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(this), data);
 
-        _rebalance(targets);
+        VenueWithdrawalParams[] memory emptyWithdrawalParams = new VenueWithdrawalParams[](0);
+
+        _rebalance(targets, emptyWithdrawalParams);
         lastRebalance = block.timestamp;
 
         if (rebalanceConfig.minVolatilityDelta != 0) {
@@ -514,7 +521,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     function _getVenueWithdrawalParams(
         uint256 venueId,
-        VenueWithdrawalParams[] calldata withdrawalParams
+        VenueWithdrawalParams[] memory withdrawalParams
     ) internal pure returns (bytes memory) {
         for (uint256 i = 0; i < withdrawalParams.length; i++) {
             if (withdrawalParams[i].venueId == venueId) {
@@ -635,19 +642,23 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Withdraws all tracked liquidity from every registered venue.
-    /// @dev Venues with zero tracked liquidity are skipped.
-    function _withdrawAllVenues() internal {
+    /// @dev Forwards matching per-venue withdrawal params to adapters; venues with zero tracked liquidity are skipped.
+    function _withdrawAllVenues(VenueWithdrawalParams[] memory withdrawalParams) internal {
         for (uint256 i = 0; i < venueIds.length; i++) {
             uint256 id = venueIds[i];
             uint256 liquidity = venueLiquidity[id];
             if (liquidity > 0) {
-                _withdrawFromVenue(id, liquidity, "");  
+                bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
+                _withdrawFromVenue(id, liquidity, params);
             }
         }
     }
 
     /// @notice Shared rebalance executor used by manual and strategy-driven entrypoints.
-    function _rebalance(RebalanceTypes.RebalanceTarget[] memory targets) internal {
+    function _rebalance(
+        RebalanceTypes.RebalanceTarget[] memory targets,
+        VenueWithdrawalParams[] memory withdrawalParams
+    ) internal {
         _checkUniqueVenueIds(targets);
         _validateRebalanceTargets(targets);
 
@@ -664,7 +675,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         }
 
         // Phase 1: pull all capital back to idle first.
-        _withdrawAllVenues();
+        _withdrawAllVenues(withdrawalParams);
 
         if (targets.length == 0) return;
 
