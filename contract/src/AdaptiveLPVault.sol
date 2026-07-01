@@ -28,6 +28,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
         bytes32 label;      // optional, eg: "V2", "V3_005", "V3_030", "V3_100"
     }
 
+    /// @notice Venue-specific withdrawal execution params used during user redemptions.
+    struct VenueWithdrawalParams {
+        uint256 venueId;
+        bytes params;
+    }
+
     /// @notice Execution guards for strategy-driven rebalances.
     struct RebalanceConfig {
         /// @notice Minimum time between successful strategy-driven rebalances. Zero disables the guard.
@@ -262,9 +268,13 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Redeems vault shares for the proportional underlying token balances.
     /// @dev Withdraws the caller's proportional venue liquidity before transferring underlying tokens.
     /// @param shareToRedeem Amount of vault shares to redeem.
+    /// @param withdrawalParams Venue-specific remove-liquidity params used when redeem withdraws active positions.
     /// @return amount0Out Raw token0 amount returned to the caller.
     /// @return amount1Out Raw token1 amount returned to the caller.
-    function redeem(uint256 shareToRedeem) external returns (uint256 amount0Out, uint256 amount1Out) {
+    function redeem(
+        uint256 shareToRedeem,
+        VenueWithdrawalParams[] calldata withdrawalParams
+    ) external returns (uint256 amount0Out, uint256 amount1Out) {
         // Reject if shares is zero.
         if (shareToRedeem == 0) {
             revert ZeroShares();
@@ -286,7 +296,11 @@ contract AdaptiveLPVault is ERC20, Ownable {
         amount0Out = shareToRedeem * idle0Before / totalSharesBefore;
         amount1Out = shareToRedeem * idle1Before / totalSharesBefore;
 
-        (uint256 venue0Out, uint256 venue1Out) = _withdrawProportionalVenueLiquidity(shareToRedeem, totalSharesBefore);
+        (uint256 venue0Out, uint256 venue1Out) = _withdrawProportionalVenueLiquidity(
+            shareToRedeem,
+            totalSharesBefore,
+            withdrawalParams
+        );
         amount0Out += venue0Out;
         amount1Out += venue1Out;
 
@@ -302,7 +316,8 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     function _withdrawProportionalVenueLiquidity(
         uint256 shares, 
-        uint256 totalSharesBefore
+        uint256 totalSharesBefore,
+        VenueWithdrawalParams[] calldata withdrawalParams
     ) internal returns (uint256 amount0Out, uint256 amount1Out) {
         for (uint256 i = 0; i < venueIds.length; i++) {
             uint256 id = venueIds[i];
@@ -318,7 +333,8 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
             if (liquidityToWithdraw == 0) continue;
 
-            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, "");
+            bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
+            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, params);
             amount0Out += venue0Out;
             amount1Out += venue1Out;
         }
@@ -455,7 +471,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @return amount0Out Raw token0 amount returned to the vault.
     /// @return amount1Out Raw token1 amount returned to the vault.
     function withdrawFromVenue(
-        uint256 venueId, 
+        uint256 venueId,
         uint256 liquidity, 
         bytes calldata params
     ) external onlyOwner returns (
@@ -496,6 +512,19 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     // Internal Functions
     // ============================================
+    function _getVenueWithdrawalParams(
+        uint256 venueId,
+        VenueWithdrawalParams[] calldata withdrawalParams
+    ) internal pure returns (bytes memory) {
+        for (uint256 i = 0; i < withdrawalParams.length; i++) {
+            if (withdrawalParams[i].venueId == venueId) {
+                return withdrawalParams[i].params;
+            }
+        }
+
+        return "";
+    }
+
     /// @notice Sums idle token balances and adapter-reported deployed amounts.
     function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
         total0 = IERC20(token0).balanceOf(address(this));

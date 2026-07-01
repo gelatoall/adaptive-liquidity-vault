@@ -205,14 +205,14 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.startPrank(alice);
         uint256 shares = 3e18;
         vm.expectRevert(AdaptiveLPVault.InsufficientShares.selector);
-        vault.redeem(shares);
+        vault.redeem(shares, _emptyWithdrawalParams());
         vm.stopPrank();
     }
 
     function test_Redeem_RevertsWhenSharesIsZero() public {
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.ZeroShares.selector);
-        vault.redeem(0);
+        vault.redeem(0, _emptyWithdrawalParams());
     }
 
     function test_Redeem_BurnsUserShares() public {
@@ -226,7 +226,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = 1e18;
         vm.prank(alice);
-        vault.redeem(shares);
+        vault.redeem(shares, _emptyWithdrawalParams());
         assertEq(vault.balanceOf(alice), 1e18);
     }
 
@@ -247,7 +247,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = 1e18;
         vm.prank(alice);
-        vault.redeem(shares);
+        vault.redeem(shares, _emptyWithdrawalParams());
 
         assertEq(vault.balanceOf(alice), 1e18);
         assertEq(vault.totalSupply(), 3e18);
@@ -265,7 +265,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         
         uint256 shares = 1e18;
         vm.prank(alice);
-        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, _emptyWithdrawalParams());
 
         assertEq(amount0Out, 0.5e18);
         assertEq(amount1Out, 1000e6);

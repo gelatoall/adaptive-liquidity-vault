@@ -181,7 +181,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(pair.balanceOf(address(adapter)), 0);
     }
 
-    /// @notice Verifies full redeem withdraws all active V2 liquidity.
+    /// @notice Verifies full redeem withdraws all active V2 liquidity and forwards withdrawal params.
     function test_Redeem_FullyWithdrawsActiveV2Position() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
@@ -194,10 +194,20 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         router.setNextAddLiquidityResult(amount0Used, amount1Used, liquidityMinted);
         vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
 
+        uint256 amount0Min = amount0 / 2;
+        uint256 amount1Min = amount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams =
+                new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V2_VENUE_ID,
+            params: abi.encode(amount0Min, amount1Min, deadline)
+        });
+
         router.setNextRemoveLiquidityResult(amount0Used, amount1Used);
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, withdrawalParams);
         
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
@@ -206,6 +216,10 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.totalLiquidity(), 0);
         assertEq(pair.balanceOf(address(adapter)), 0);
+
+        assertEq(router.lastRemoveAmountAMin(), amount0Min);
+        assertEq(router.lastRemoveAmountBMin(), amount1Min);
+        assertEq(router.lastRemoveDeadline(), deadline);
     }
 
     /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V2 liquidity.
@@ -231,7 +245,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         router.setNextRemoveLiquidityResult(amount0, amount1);
         vm.prank(alice);
-        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares);
+        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, _emptyWithdrawalParams());
 
         assertEq(redeem0, amount0);
         assertEq(redeem1, amount1);

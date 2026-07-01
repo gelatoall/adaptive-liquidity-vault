@@ -130,11 +130,21 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(vault)), amount1);
     }
 
-    /// @notice Verifies full redeem withdraws all active V3 liquidity.
+    /// @notice Verifies full redeem withdraws all active V3 liquidity and forwards withdrawal params.
     function test_Redeem_FullyWithdrawsActiveV3Position() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
-        
+
+        uint256 amount0Min = amount0 / 2;
+        uint256 amount1Min = amount1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams =
+                new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: abi.encode(amount0Min, amount1Min, deadline)
+        });
+
         // user -> vault
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
        
@@ -146,10 +156,12 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(adapter.tokenId(), 1);
         
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
+
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, withdrawalParams);
 
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
@@ -159,6 +171,10 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(vault.totalLiquidity(), 0);
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);
+
+        assertEq(positionManager.lastDecreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastDecreaseDeadline(), deadline);
     }
 
     /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V3 liquidity.
@@ -187,7 +203,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
 
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, _emptyWithdrawalParams());
 
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);

@@ -28,4 +28,11 @@ abstract contract VaultTestHelper is Test {
         shares = vault.deposit(amount0, amount1);
         vm.stopPrank();
     }
+
+    /// @notice Returns an empty redeem withdrawal params array for tests that do not exercise adapter slippage.
+    function _emptyWithdrawalParams() internal pure returns (
+        AdaptiveLPVault.VenueWithdrawalParams[] memory params
+    ){
+        params = new AdaptiveLPVault.VenueWithdrawalParams[](0);
+    }
 }

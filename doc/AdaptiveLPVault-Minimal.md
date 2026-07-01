@@ -100,9 +100,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - purpose: transfer tokens into the vault and mint shares to the depositor
   - returns: `uint256 shares`
 
-- `redeem(shares)`
+- `redeem(shares, withdrawalParams)`
   - purpose: burn shares and return proportional token balances across idle assets and active venue positions
   - behavior: withdraws the caller's proportional tracked liquidity from each active venue before transferring tokens
+  - behavior: forwards matching per-venue withdrawal params to adapters; venues without a matching entry receive empty params
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `deployToVenue(venueId, amount0, amount1, params)`
@@ -150,9 +151,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 4. Read idle `token0` and `token1` balances held by the vault.
 5. Compute the proportional idle token amounts owed to the user.
 6. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
-7. Add the tokens returned from venue withdrawals to the user's output amounts.
-8. Burn the user's shares.
-9. Transfer `token0` and `token1` to the user.
+7. For each venue withdrawal, forward the matching `VenueWithdrawalParams.params` entry to the adapter; if no entry matches the venue id, forward empty params.
+8. Add the tokens returned from venue withdrawals to the user's output amounts.
+9. Burn the user's shares.
+10. Transfer `token0` and `token1` to the user.
 
 When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
 
@@ -186,7 +188,7 @@ When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liqu
 4. Call `adapter.removeLiquidity(liquidity, params)`.
 5. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-Current internal withdrawal callers such as rebalance and redeem pass empty params. This refactor prepares the interface for slippage-aware withdrawals; adapter-side decoding of removal params is future work.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Rebalance internals still withdraw existing venue liquidity with empty params; slippage-aware rebalance withdrawals are the next execution-layer improvement.
 
 ### rebalance
 
@@ -272,6 +274,7 @@ Venue integration:
 - `totalAssets()` includes idle balances and all venue positions
 - full redeem withdraws all active V2, V3, and multi-venue liquidity
 - partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
+- redeem forwards per-venue withdrawal params to V2 and V3 adapters
 - venue updates are blocked while the target venue is active
 
 Rebalance coverage:

@@ -188,6 +188,8 @@
   - `amount0Out = idle0Out + venue0Out`
   - `amount1Out = idle1Out + venue1Out`
 - 如果 `shares == totalSupplyBefore`，会直接撤出每个 active venue 的全部 tracked liquidity，避免整数除法留下 dust。
+- `redeem` 现在接收 `withdrawalParams`，可以按 `venueId` 给不同 venue 的 withdrawal 传入不同的 slippage/deadline 参数。
+- 如果某个 active venue 没有对应的 `withdrawalParams`，vault 会向该 adapter 传空 `params`，adapter 使用自己的默认值。
 
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
@@ -536,7 +538,8 @@
   - `deadline = block.timestamp`
 - 这表示：
   - manual deploy / withdraw 已经可以向 V2 adapter 传入 slippage/deadline 参数
-  - redeem / rebalance 内部路径当前仍传空 params，后续需要单独设计
+  - redeem 已经可以通过 `withdrawalParams` 向 active V2 withdrawal 传入 slippage/deadline 参数
+  - rebalance 内部 withdrawal 路径当前仍传空 params，后续需要单独设计
 
 ### 当前 adapter 的资产流
 - `addLiquidity()` 时：
@@ -740,7 +743,7 @@
 - 所以更准确地说：
   - 现在已经接通了 vault 和 adapter 的资产流主干
   - multi-venue 执行层已经接上
-  - `redeem()` 已经可以按 shares 比例拆出 active venue 仓位
+  - `redeem()` 已经可以按 shares 比例拆出 active venue 仓位，并支持按 venue 转发 withdrawal params
   - 但策略层还没有接上
 
 ## 10. 我已经发现的常见错误
