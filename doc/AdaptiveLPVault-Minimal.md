@@ -23,6 +23,7 @@ This version includes:
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
 - multi-venue asset accounting
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
+- optional rebalance value-loss guard using `maxRebalanceValueLossBps`
 - strategy-driven rebalance through `IRebalanceStrategy`
 - fixed-weight and volatility-bucket total-underlying allocation strategies
 
@@ -30,7 +31,7 @@ This version does not include:
 - automatic dynamic strategy selection
 - autonomous keepers
 - threshold-based rebalance conditions
-- slippage controls for redemption-triggered venue withdrawals
+- automatic TWAP-based slippage calculation
 - deposit ratio optimization
 - the full ERC4626 interface
 
@@ -127,6 +128,11 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 - `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure cooldown, volatility delta, and gas price guards for strategy-driven rebalances
 
+- `setMaxRebalanceValueLossBps(maxRebalanceValueLossBps)`
+  - purpose: configure the maximum total-value loss allowed during rebalance
+  - behavior: `0` disables the guard; non-zero values are interpreted in basis points
+  - behavior: only limits downside loss and does not reject value increases
+
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy for a target plan and execute it
   - behavior: applies strategy guards, then reuses the same rebalance execution path
@@ -200,8 +206,12 @@ User redemptions can pass per-venue withdrawal params through `redeem(shares, wi
 5. Withdraw all tracked venue liquidity back to idle balances.
 6. Require idle balances to cover the target plan.
 7. Deploy each non-zero target into its requested venue.
+8. Verify share supply did not change.
+9. If `maxRebalanceValueLossBps` is non-zero, verify post-rebalance `totalAssets()` did not fall below the configured loss threshold.
 
 An empty target array means "withdraw all venues to idle". It only succeeds if there is tracked liquidity to withdraw.
+
+The value-loss guard is downside-only. A rebalance that increases `totalAssets()` is allowed, but large positive deviations without fees, donations, or price movement should be investigated in tests or monitoring as a possible accounting issue.
 
 ### rebalanceWithStrategy
 

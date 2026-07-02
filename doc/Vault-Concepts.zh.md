@@ -1213,11 +1213,13 @@ volatilityBps = max(change0Bps, change1Bps)
 - `rebalance(targets, withdrawalParams)`：
   - owner 手动传入 plan
   - owner 也可以为 withdrawal 阶段传入 per-venue slippage/deadline 参数
+  - 如果配置了 `maxRebalanceValueLossBps`，执行结束后会检查 vault 总价值没有跌破允许下限
   - 适合测试、治理操作、emergency override
   - 不受 strategy cooldown / max gas price 限制
 - `rebalanceWithStrategy(data)`：
   - owner 触发 strategy 生成 plan
   - 当前 withdrawal 阶段使用空 params，strategy-side withdrawal params 需要后续单独设计
+  - 仍然会复用同一套 rebalance value-loss guard
   - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
   - 成功后更新 `lastRebalance`
   - 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
@@ -1242,7 +1244,9 @@ volatilityBps = max(change0Bps, change1Bps)
   3. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
   4. vault 遍历 `venueIds`
   5. 对每个 `venueLiquidity[id] > 0` 的 venue 调 `_withdrawFromVenue(id, liquidity, params)`
-  6. 所有资金回到 vault idle balances
+  6. 检查 rebalance 前后 share supply 没有变化
+  7. 如果开启了 `maxRebalanceValueLossBps`，检查 `totalAssets()` 没有低于允许下限
+  8. 所有资金回到 vault idle balances
 
 ### rebalance to one or multiple venues
 - 如果想部署到一个或多个 venue：
@@ -1253,6 +1257,25 @@ volatilityBps = max(change0Bps, change1Bps)
   5. vault 先把所有已有 venue liquidity 撤回 idle
   6. vault 检查撤回后的 idle balances 是否足够覆盖计划
   7. vault 逐个把非零 target 部署进对应 venue
+  8. 检查 rebalance 前后 share supply 没有变化
+  9. 如果开启了 `maxRebalanceValueLossBps`，检查 `totalAssets()` 没有低于允许下限
+
+### rebalance value-loss guard
+- `maxRebalanceValueLossBps` 是 rebalance 的总价值下行保护。
+- 默认值是 `0`，表示关闭检查。
+- 非零时，rebalance 会在执行前记录：
+  - `totalSupply()`
+  - `totalAssets()`
+- 执行完成后检查：
+
+```text
+totalSupplyAfter == totalSupplyBefore
+totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10_000
+```
+
+- 这个 guard 只限制 downside，不限制 upside。
+- 如果 rebalance 后 `totalAssets()` 变大，合约不会 revert，因为 fees、donation、价格变化都可能让用户受益。
+- 但如果在测试环境里没有 fees、donation 或价格变化，`totalAssets()` 明显变大，应该优先排查估值或会计问题，比如 reserves 没同步、token 顺序映射错误、V3 principal 计算不一致。
 
 ### strategy 如何处理“venue 里已经有仓位”
 - 当前 strategy 不是只看 idle balance。

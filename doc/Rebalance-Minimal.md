@@ -29,6 +29,7 @@ This version includes:
 - unset and disabled venue validation
 - full withdrawal of all tracked venue liquidity before redeployment
 - deployment into one or more venues after withdrawal
+- optional total-value loss guard after rebalance execution
 - no-op or revert semantics when no funds can be moved
 
 This version does not include:
@@ -37,7 +38,7 @@ This version does not include:
 - statistical or annualized volatility calculation
 - keeper automation
 - partial in-place rebalancing
-- slippage optimization beyond adapter-level params
+- automatic slippage optimization beyond adapter-level params and the value-loss guard
 
 Notes:
 - rebalance is built on top of `_withdrawFromVenue(...)` and `_deployToVenue(...)`.
@@ -94,6 +95,7 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
   - purpose: execute an owner-supplied target allocation
   - behavior: withdraw all venues first, then deploy non-zero targets
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
+  - behavior: applies the configured value-loss guard after execution
 
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
@@ -103,6 +105,10 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 - `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure strategy-driven rebalance guards
+
+- `setMaxRebalanceValueLossBps(maxRebalanceValueLossBps)`
+  - purpose: configure the maximum total-value loss allowed during rebalance
+  - behavior: `0` disables the guard; non-zero values are basis points and apply only to downside loss
 
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
@@ -148,6 +154,8 @@ Flow:
 7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, but with empty withdrawal params.
 8. Vault updates `lastRebalance` only after successful execution.
 9. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
+
+If `maxRebalanceValueLossBps` is non-zero, strategy-driven rebalance also passes through the same post-execution value-loss guard.
 
 `MockRebalanceStrategy` is used in tests for preset plans. The concrete minimal strategies are `FixedWeightStrategy` and `VolatilityBucketStrategy`.
 
@@ -239,7 +247,10 @@ Flow:
 1. Validate the empty plan.
 2. Revert with `NoRebalanceNeeded` if `totalLiquidity == 0`.
 3. Withdraw all tracked liquidity from every registered venue.
-4. Leave all returned token balances idle in the vault.
+4. Check that share supply did not change and, if enabled, that total value did not fall below the configured loss threshold.
+5. Leave all returned token balances idle in the vault.
+
+The value-loss guard is downside-only. It should not reject a positive `totalAssets()` deviation because fees, donations, or price movement can legitimately increase vault value during execution. In tests without such sources, large positive deviations should be treated as a valuation/accounting signal rather than a revert condition.
 
 ### rebalance to one venue
 

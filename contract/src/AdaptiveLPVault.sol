@@ -77,6 +77,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Volatility recorded after the last successful strategy-driven rebalance.
     uint256 public lastRebalanceVolatilityBps;
+
+    /// @notice Maximum allowed total-value loss during rebalance, in basis points. Zero disables the check.
+    uint256 public maxRebalanceValueLossBps;
     
     /// @notice Venue configuration by caller-defined venue id.
     mapping(uint256 => VenueConfig) public venues;
@@ -117,6 +120,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Emitted when the owner registers or updates a venue.
     event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
+
+    /// @notice Emitted when the owner updates the rebalance value-loss guard.
+    event SetMaxRebalanceValueLossBps(uint256 maxRebalanceValueLossBps);
 
     /// @notice Emitted when the vault deploys idle funds into a venue.
     event DeployToVenue(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidity);
@@ -190,6 +196,15 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Thrown when volatility change is below the configured minimum.
     error VolatilityDeltaTooSmall();
 
+    /// @notice Thrown when a basis-points value exceeds 100%.
+    error InvalidBps();
+
+    /// @notice Thrown when rebalance unexpectedly changes total share supply.
+    error RebalanceShareSupplyChanged();
+
+    /// @notice Thrown when rebalance reduces total vault value beyond the configured guard.
+    error ExcessiveRebalanceValueLoss();
+
     // ============================================
     // Constructor
     // ============================================
@@ -254,7 +269,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
         // Calculate shares to mint using VaultMath.calculateShares.
         shares = VaultMath.calculateShares(assetsToDeposit, totalAssetsBefore, totalShares);
-        
+
         // Transfer token0 and token1 from the user into the vault.
         IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
         IERC20(token1).safeTransferFrom(msg.sender, address(this), amount1);
@@ -415,6 +430,15 @@ contract AdaptiveLPVault is ERC20, Ownable {
         emit SetRebalanceConfig(_minCooldown, _minVolatilityDelta, _maxGasPrice);
     }
 
+    /// @notice Sets the maximum total-value loss allowed during rebalance.
+    /// @dev A value of zero disables the value-loss guard. Values are expressed in basis points.
+    /// @param _maxRebalanceValueLossBps Maximum allowed rebalance value loss in basis points.
+    function setMaxRebalanceValueLossBps(uint256 _maxRebalanceValueLossBps) external onlyOwner {
+        if (_maxRebalanceValueLossBps > RebalanceTypes.BPS) revert InvalidBps();
+        maxRebalanceValueLossBps = _maxRebalanceValueLossBps;
+        emit SetMaxRebalanceValueLossBps(_maxRebalanceValueLossBps);
+    }
+
     /// @notice Registers or updates a venue adapter.
     /// @dev Existing venues can only be updated when the venue has no tracked liquidity and no adapter-reported position.
     /// @param _venueId Caller-defined venue id.
@@ -536,7 +560,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
         total0 = IERC20(token0).balanceOf(address(this));
         total1 = IERC20(token1).balanceOf(address(this));
-        
+
         for (uint256 i = 0; i < venueIds.length; i++) {
             uint256 venueId = venueIds[i];
             VenueConfig storage v = venues[venueId];
@@ -584,8 +608,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Shared internal withdraw flow for manual withdraws, rebalances, and redemptions.
-    /// @dev `params` is forwarded to the venue adapter. Internal callers pass empty params until
-    /// slippage-aware withdrawal data is plumbed through those entrypoints.
+    /// @dev `params` is forwarded to the venue adapter so each caller can apply its own slippage/deadline policy.
     function _withdrawFromVenue(
         uint256 venueId, 
         uint256 liquidity, 
@@ -662,6 +685,12 @@ contract AdaptiveLPVault is ERC20, Ownable {
         _checkUniqueVenueIds(targets);
         _validateRebalanceTargets(targets);
 
+        uint256 totalSharesBefore = totalSupply();
+        uint256 totalValueBefore;
+        if (maxRebalanceValueLossBps != 0) {
+            totalValueBefore = totalAssets();
+        }
+
         uint256 required0;
         uint256 required1;
         for (uint256 i = 0; i < targets.length; i++) {
@@ -677,19 +706,34 @@ contract AdaptiveLPVault is ERC20, Ownable {
         // Phase 1: pull all capital back to idle first.
         _withdrawAllVenues(withdrawalParams);
 
-        if (targets.length == 0) return;
+        if (targets.length != 0) {
+            uint256 idle0 = token0.balanceOf(address(this));
+            uint256 idle1 = token1.balanceOf(address(this));
 
-        uint256 idle0 = token0.balanceOf(address(this));
-        uint256 idle1 = token1.balanceOf(address(this));
+            if (required0 > idle0 || required1 > idle1) {
+                revert InsufficientBalances();
+            }
 
-        if (required0 > idle0 || required1 > idle1) {
-            revert InsufficientBalances();
+            for (uint256 i = 0; i < targets.length; i++) {
+                if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
+                _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
+            }
         }
 
-        for (uint256 i = 0; i < targets.length; i++) {
-            if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
-            _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
-        }
+        _checkRebalanceValueInvariant(totalSharesBefore, totalValueBefore);
+    }
+
+    /// @notice Checks that rebalance preserved share supply and did not exceed the configured value-loss guard.
+    /// @param totalSharesBefore Total share supply captured before rebalance execution.
+    /// @param totalValueBefore Total vault value captured before rebalance execution, or zero when the value guard is disabled.
+    function _checkRebalanceValueInvariant(uint256 totalSharesBefore, uint256 totalValueBefore) internal view {
+        if (totalSupply() != totalSharesBefore) revert RebalanceShareSupplyChanged();
+
+        if (maxRebalanceValueLossBps == 0) return;
+
+        uint256 minRemainValueBps = RebalanceTypes.BPS - maxRebalanceValueLossBps;
+        uint256 minValueAfter = totalValueBefore * minRemainValueBps / RebalanceTypes.BPS;
+        if (totalAssets() < minValueAfter) revert ExcessiveRebalanceValueLoss();
     }
 
     /// @notice Checks strategy rebalance guards and returns the current volatility if needed.

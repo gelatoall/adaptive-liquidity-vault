@@ -132,6 +132,10 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         });
 
         router.setNextRemoveLiquidityResult(amount0, amount1);
+        // Mock router mints LP but reserves are scripted separately for getPositionValue().
+        pair.setReserves(uint112(amount0), uint112(amount1));
+        vault.setMaxRebalanceValueLossBps(100);
+
         RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
         vault.rebalance(targets, withdrawalParams);
 
@@ -148,6 +152,29 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
     /// @notice Verifies rebalance to IDLE reverts when there is no DEPLOYED_V2 liquidity to withdraw.
     function test_Rebalance_Idle_RevertsWhenNoLiquidity() public {
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
+        _rebalanceToIdle(vault);
+    }
+
+    /// @notice Verifies the value-loss guard reverts when a rebalance returns materially less value.
+    function test_Rebalance_RevertsWhenValueLossExceedsLimit() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidityMinted = 5 ether;
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
+
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(vault.totalLiquidity(), liquidityMinted);
+
+        // Mock router mints LP but reserves are scripted separately for getPositionValue().
+        pair.setReserves(uint112(amount0), uint112(amount1));
+
+        vault.setMaxRebalanceValueLossBps(100);
+        router.setNextRemoveLiquidityResult(amount0 / 2, amount1 / 2);
+        vm.expectRevert(AdaptiveLPVault.ExcessiveRebalanceValueLoss.selector);
         _rebalanceToIdle(vault);
     }
 }
