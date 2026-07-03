@@ -1462,8 +1462,8 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
   - `token1`
   - `positionManager`
   - `pool`
-  - `tickLower`
-  - `tickUpper`
+  - `defaultTickLower`
+  - `defaultTickUpper`
 
 为什么 constructor 不校验 `tokenId`：
 - `tokenId` 是第一次 `mint()` 之后才产生的运行时状态。
@@ -1471,28 +1471,38 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 - 所以 `tokenId == 0` 应该表示“当前还没有 position”。
 
 ### addLiquidity 的 params 语义
-- 当前最小 V3 版本建议 `params` 只放执行参数：
+- 当前 V3 版本的 `params` 放执行参数和 mint range：
   - `amount0Min`
   - `amount1Min`
   - `deadline`
+- `tickLower`
+- `tickUpper`
 - `amount0/amount1` 本身已经由函数参数传入：
   - `addLiquidity(amount0, amount1, params)`
 - 所以不要再在 `params` 里重复放 `amount0Desired/amount1Desired`。
 
-最小 ABI 编码可以是：
-- `abi.encode(amount0Min, amount1Min, deadline)`
+当前 adapter 内部定义：
+- `LiquidityParams { amount0Min, amount1Min, deadline, tickLower, tickUpper }`
 
-如果用 struct，也可以在 adapter 内部定义：
-- `LiquidityParams { amount0Min, amount1Min, deadline }`
+空 `params` 会使用：
+- `amount0Min = 0`
+- `amount1Min = 0`
+- `deadline = block.timestamp`
+- constructor 里的默认 `defaultTickLower/defaultTickUpper`
 
-两种方式都可以：
-- struct 更清楚
-- tuple decode 更短
-- 关键是编码顺序和解码顺序必须一致
+非空 `params` 可以覆盖 mint 新 position 时的 tick range。
+如果已有 position，`params` 里的 tick range 必须和当前 NFT position 里存的 tick range 一致，否则 adapter 会 revert `TickRangeMismatch`。
+
+tick range 有两个基本约束：
+- `tickLower < tickUpper`
+- `tickLower/tickUpper` 必须对齐 pool 的 `tickSpacing()`
+
+这一步让 adapter 具备“执行动态 range”的能力。真正根据 volatility/current tick 自动计算 range，后面会放到 strategy 或 range calculator 里做。
 
 ### addLiquidity 最小流程
 - `addLiquidity()` 负责把 vault 的 idle token 部署进 V3 position。
-- 它不负责选 fee tier，不负责选 tick，不负责策略判断。
+- 它不负责选 fee tier，不负责策略判断。
+- 它可以执行 params 传入的 tick range，但不负责根据市场状态计算这个 range。
 
 流程是：
 1. 如果 `amount0 == 0 && amount1 == 0`，revert
@@ -1507,6 +1517,7 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 - position manager 的授权也必须按 pool 语义的 token 地址和数量来设置。
 - `mint/increaseLiquidity` 返回的 used amounts 也是 pool 语义。
 - 退 dust 时必须映射回 vault 语义。
+- V3 NFT 的 tick range 创建后不能通过 `increaseLiquidity()` 改变；如果目标 range 改了，应该先撤旧仓位再 mint 新仓位，而不是对旧 NFT 直接 increase。
 
 ### removeLiquidity 最小流程
 - `removeLiquidity(liquidity, params)` 负责从当前 V3 position 里撤出指定 liquidity。
@@ -1564,7 +1575,7 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 3. 先把 `tokensOwed0/tokensOwed1` 作为 owed component
 4. 如果 liquidity 非零：
    - 读取 `pool.slot0()` 的 `sqrtPriceX96`
-   - 用 `TickMath.getSqrtRatioAtTick(tickLower/tickUpper)` 得到区间边界
+   - 用 position NFT 里存储的 `tickLower/tickUpper` 调 `TickMath.getSqrtRatioAtTick(...)` 得到区间边界
    - 用 `LiquidityAmounts.getAmountsForLiquidity(...)` 算 principal
 5. principal + owed 得到 pool 语义 amount
 6. 映射回 vault 语义
@@ -1612,6 +1623,8 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
   - 分派 mint / increase 并返回 used amounts
 - `_mintPosition(...)`
   - 真正调用 `positionManager.mint(...)`
+- `_validateCurrentPositionTicks(...)`
+  - 已有 position 时，检查本次 params 里的 tick range 是否和当前 NFT position 的 tick range 一致
 - `_increasePosition(...)`
   - 真正调用 `positionManager.increaseLiquidity(...)`
 - `_refundDust(...)`
@@ -1665,12 +1678,14 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 - `addLiquidity()` 在零金额时 revert
 - `addLiquidity()` 首次 mint 后保存 `tokenId`
 - `addLiquidity()` 有已有 position 时走 `increaseLiquidity`
+- `addLiquidity()` 有已有 position 且 params 传入不同 tick range 时 revert
 - `addLiquidity()` 能退回 dust
 - `removeLiquidity()` 能撤出 token 并转回 vault
 - `removeLiquidity()` 在完全空仓后清掉 `tokenId`
 - `collectFees()` 能把 collected token 转回 vault
 - `getPositionValue()` 返回 zeroes without a position
 - `getPositionValue()` 包含 principal 和 position-manager-tracked owed tokens
+- `getPositionValue()` 使用 position NFT 自己存的 tick range，而不是 adapter 的默认 tick range
 - `getPositionValue()` 在只有 owed、没有 liquidity 时仍应返回非零值
 - 非 vault 调用状态变更函数会 revert
 

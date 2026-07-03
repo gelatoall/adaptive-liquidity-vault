@@ -13,12 +13,14 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
     uint24 public fee;
     int24 public currentTick;
     uint160 public sqrtPriceX96;
+    int24 public tickSpacing;
 
     /// @notice Creates a mock pool for the given token pair and fee tier.
     /// @dev The token addresses are sorted to match Uniswap V3 pool token ordering.
     constructor(address _token0, address _token1, uint24 _fee) {
         (token0, token1) = _token0 < _token1 ? (_token0, _token1) : (_token1, _token0);
         fee = _fee;
+        tickSpacing = 60;
         currentTick = 0;
         sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick); // 2^96
     }

@@ -51,6 +51,9 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
     uint256 public lastDecreaseAmount0Min;
     uint256 public lastDecreaseAmount1Min;
     uint256 public lastDecreaseDeadline;
+
+    int24 public lastMintTickLower;
+    int24 public lastMintTickUpper;
     
     /// @notice Sets the next mint result returned by the mock.
     function setNextMintResult(
@@ -135,6 +138,8 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
         lastMintAmount0Min = params.amount0Min;
         lastMintAmount1Min = params.amount1Min;
         lastMintDeadline = params.deadline;
+        lastMintTickLower = params.tickLower;
+        lastMintTickUpper = params.tickUpper;
 
         liquidity = nextMintLiquidity;
         amount0 = nextMintAmount0Used;

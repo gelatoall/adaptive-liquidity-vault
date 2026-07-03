@@ -11,7 +11,7 @@ import "../interfaces/IUniswapV3Pool.sol";
 
 /// @title Uniswap V3 adapter
 /// @notice Minimal venue adapter that manages a single Uniswap V3 position for one vault.
-/// @dev The adapter assumes a fixed token pair, fee tier, and tick range configured at deployment.
+/// @dev The adapter assumes a fixed token pair and fee tier. Constructor ticks are defaults that add-liquidity params can override when minting.
 contract UniswapV3Adapter is IVenueAdapter {
     using SafeERC20 for IERC20;
 
@@ -31,10 +31,10 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @notice Target Uniswap V3 pool for this adapter.
     IUniswapV3Pool public immutable pool;
 
-    /// @notice Lower tick bound of the managed position.
-    int24 public immutable tickLower;
-    /// @notice Upper tick bound of the managed position.
-    int24 public immutable tickUpper;
+    /// @notice Default lower tick bound used when add-liquidity params do not override the range.
+    int24 public immutable defaultTickLower;
+    /// @notice Default upper tick bound used when add-liquidity params do not override the range.
+    int24 public immutable defaultTickUpper;
 
     /// @notice Current active position tokenId, or zero when no position is active.
     uint256 public tokenId;
@@ -48,6 +48,10 @@ contract UniswapV3Adapter is IVenueAdapter {
         uint256 amount1Min;
         /// @notice Deadline for the mint/increase call.
         uint256 deadline;
+        /// @notice Lower tick bound used when minting a new position.
+        int24 tickLower;
+        /// @notice Upper tick bound used when minting a new position.
+        int24 tickUpper;
     }
 
     /// @notice Internal execution context for add-liquidity operations.
@@ -67,6 +71,10 @@ contract UniswapV3Adapter is IVenueAdapter {
         uint256 poolAmount1Min;
         /// @notice Deadline for the position manager call.
         uint256 deadline;
+        /// @notice Lower tick bound for a newly minted position.
+        int24 tickLower;
+        /// @notice Upper tick bound for a newly minted position.
+        int24 tickUpper;
     }
 
     // ============================================
@@ -94,6 +102,8 @@ contract UniswapV3Adapter is IVenueAdapter {
     error ZeroLiquidity();
     /// @notice Thrown when the configured tick range is invalid.
     error InvalidTicks();
+    /// @notice Thrown when a tick is not aligned to the pool tick spacing.
+    error InvalidTickSpacing();
     /// @notice Thrown when the configured pool does not match the configured tokens.
     error InvalidPool();
     /// @notice Thrown when no active or stale position exists for the requested operation.
@@ -102,6 +112,8 @@ contract UniswapV3Adapter is IVenueAdapter {
     error NoLiquidityToRemove();
     /// @notice Thrown when attempting to remove more liquidity than the position holds.
     error InsufficientPositionLiquidity();
+    /// @notice Thrown when increasing an existing position with a different tick range.
+    error TickRangeMismatch();
 
     // ============================================
     // Modifiers
@@ -121,9 +133,9 @@ contract UniswapV3Adapter is IVenueAdapter {
     /// @param _token1 Vault token 1.
     /// @param _positionManager Uniswap V3 position manager used for NFT position lifecycle operations.
     /// @param _pool Uniswap V3 pool associated with the configured token pair.
-    /// @param _tickLower Lower tick bound of the managed position.
-    /// @param _tickUpper Upper tick bound of the managed position.
-    /// @dev Reverts if any address is zero, if tick bounds are invalid, or if the pool token set does not match the configured tokens.
+    /// @param _tickLower Default lower tick bound used when params do not override the range.
+    /// @param _tickUpper Default upper tick bound used when params do not override the range.
+    /// @dev Reverts if any address is zero, if tick bounds are invalid or not spacing-aligned, or if the pool token set does not match the configured tokens.
     constructor(
         address _vault,
         address _token0,
@@ -139,17 +151,18 @@ contract UniswapV3Adapter is IVenueAdapter {
             revert ZeroAddress();
         }
 
-        // tick range check
-        if (_tickLower >= _tickUpper) revert InvalidTicks();
-
         // assign immutables 
         vault = _vault;
         token0 = IERC20(_token0);
         token1 = IERC20(_token1);
         positionManager = INonfungiblePositionManager(_positionManager);
         pool = IUniswapV3Pool(_pool);
-        tickLower = _tickLower;
-        tickUpper = _tickUpper;
+
+        // Validate the default range after `pool` is assigned because spacing is read from the pool.
+        _validateTicks(_tickLower, _tickUpper);
+
+        defaultTickLower = _tickLower;
+        defaultTickUpper = _tickUpper;
 
         // validate pool token set matches vault tokens
         // allow direct order or reverse order
@@ -199,7 +212,7 @@ contract UniswapV3Adapter is IVenueAdapter {
         
         if (tokenId == 0) revert NoPosition();
 
-        (uint128 currentLiquidity,,) = _getPositionMetadata(tokenId);
+        (,, uint128 currentLiquidity,,) = _getPositionMetadata(tokenId);
         if (currentLiquidity == 0) {
             revert NoLiquidityToRemove();
         }
@@ -250,13 +263,14 @@ contract UniswapV3Adapter is IVenueAdapter {
     function getPositionValue() external override view returns (uint256 amount0, uint256 amount1) {
         if (!_hasActivePosition(tokenId)) return (0, 0);
 
-        (uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(tokenId);
+        (int24 positionTickLower, int24 positionTickUpper, uint128 liquidity,
+            uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(tokenId);
         uint256 poolAmount0 = uint256(tokensOwed0);
         uint256 poolAmount1 = uint256(tokensOwed1);
         if (liquidity > 0) {
             (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
-            uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(tickLower);
-            uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(tickUpper);
+            uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(positionTickLower);
+            uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(positionTickUpper);
             (uint256 principal0, uint256 principal1) = LiquidityAmounts.getAmountsForLiquidity(
                 sqrtPriceX96,
                 sqrtRatioLowerX96,
@@ -279,16 +293,27 @@ contract UniswapV3Adapter is IVenueAdapter {
     // Internal Functions
     // ============================================
     // helper functions
+    /// @notice Reverts if tick bounds are invalid or not aligned to the pool tick spacing.
+    function _validateTicks(int24 positionTickLower, int24 positionTickUpper) internal view {
+        if (positionTickLower >= positionTickUpper) revert InvalidTicks();
+
+        int24 spacing = pool.tickSpacing();
+        if ((positionTickLower % spacing != 0) || (positionTickUpper % spacing != 0)) revert InvalidTickSpacing();
+    }
+
     /// @notice Decodes optional V3 liquidity execution parameters.
     function _decodeLiquidityParams(bytes calldata params) internal view returns (LiquidityParams memory p) {
         if (params.length == 0) {
             return LiquidityParams({
                 amount0Min: 0,
                 amount1Min: 0,
-                deadline: block.timestamp
+                deadline: block.timestamp,
+                tickLower: defaultTickLower,
+                tickUpper: defaultTickUpper
             });
         }
         p = abi.decode(params, (LiquidityParams));
+        _validateTicks(p.tickLower, p.tickUpper);
     }
 
     /// @notice Maps vault token order and amounts into pool token order and amounts.
@@ -348,15 +373,19 @@ contract UniswapV3Adapter is IVenueAdapter {
 
     /// @notice Reads the minimal position metadata required by this adapter.
     /// @param _tokenId Uniswap V3 position tokenId.
+    /// @return positionTickLower Lower tick bound stored on the position NFT.
+    /// @return positionTickUpper Upper tick bound stored on the position NFT.
     /// @return liquidity Current position liquidity.
     /// @return tokensOwed0 Amount of token 0 currently owed by the position manager.
     /// @return tokensOwed1 Amount of token 1 currently owed by the position manager.
     function _getPositionMetadata(uint256 _tokenId) internal view returns (
+        int24 positionTickLower,
+        int24 positionTickUpper,
         uint128 liquidity, 
         uint128 tokensOwed0, 
         uint128 tokensOwed1
     ) {
-        (,,,,,,, liquidity,,, tokensOwed0, tokensOwed1) = positionManager.positions(_tokenId);
+        (,,,,, positionTickLower, positionTickUpper, liquidity,,, tokensOwed0, tokensOwed1) = positionManager.positions(_tokenId);
     }
 
     /// @notice Returns true if the position has liquidity or any owed token amounts.
@@ -365,7 +394,7 @@ contract UniswapV3Adapter is IVenueAdapter {
     function _hasActivePosition(uint256 _tokenId) internal view returns (bool) {
         if (_tokenId == 0) return false;
 
-        (uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(_tokenId);
+        (,, uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(_tokenId);
         return (liquidity > 0 || tokensOwed0 > 0 || tokensOwed1 > 0);
     }
 
@@ -374,7 +403,7 @@ contract UniswapV3Adapter is IVenueAdapter {
     function  _cleanupEmptyPosition() internal {
         if (tokenId == 0) return;
 
-        (uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(tokenId);
+        (,, uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1) = _getPositionMetadata(tokenId);
         if (liquidity == 0 && tokensOwed0 == 0 && tokensOwed1 == 0) {
             positionManager.burn(tokenId);
             tokenId = 0;    
@@ -423,7 +452,8 @@ contract UniswapV3Adapter is IVenueAdapter {
         AddLiquidityContext memory ctx = _buildAddLiquidityContext(
             amount0, amount1, 
             p.amount0Min, p.amount1Min, 
-            p.deadline
+            p.deadline,
+            p.tickLower, p.tickUpper
         );
         
         // approve positionManager using pool-ordered tokens and amounts
@@ -458,7 +488,9 @@ contract UniswapV3Adapter is IVenueAdapter {
         uint256 vaultAmount1,
         uint256 vaultMin0,
         uint256 vaultMin1,
-        uint256 deadline
+        uint256 deadline,
+        int24 positionTickLower,
+        int24 positionTickUpper
     ) internal view returns (AddLiquidityContext memory ctx) {
         (
             ctx.poolToken0,
@@ -477,6 +509,8 @@ contract UniswapV3Adapter is IVenueAdapter {
         );
 
         ctx.deadline = deadline;
+        ctx.tickLower = positionTickLower;
+        ctx.tickUpper = positionTickUpper;
     }
 
     /// @notice Dispatches to mint or increase depending on whether a current tokenId exists.
@@ -492,6 +526,7 @@ contract UniswapV3Adapter is IVenueAdapter {
         if (tokenId == 0) {
             (liquidity, poolAmount0Used, poolAmount1Used) = _mintPosition(ctx);
         } else {
+            _validateCurrentPositionTicks(ctx.tickLower, ctx.tickUpper);
             (liquidity, poolAmount0Used, poolAmount1Used) = _increasePosition(tokenId, ctx);
         }
     }
@@ -510,8 +545,8 @@ contract UniswapV3Adapter is IVenueAdapter {
             token0: ctx.poolToken0,
             token1: ctx.poolToken1,
             fee: pool.fee(),
-            tickLower: tickLower,
-            tickUpper: tickUpper,
+            tickLower: ctx.tickLower,
+            tickUpper: ctx.tickUpper,
             amount0Desired: ctx.poolAmount0Desired,
             amount1Desired: ctx.poolAmount1Desired,
             amount0Min: ctx.poolAmount0Min,
@@ -520,6 +555,11 @@ contract UniswapV3Adapter is IVenueAdapter {
             deadline: ctx.deadline
         });
         (tokenId, liquidity, amount0Used, amount1Used) = positionManager.mint(mintParams);         
+    }
+
+    function _validateCurrentPositionTicks(int24 expectedTickLower, int24 expectedTickUpper) internal view {
+        (int24 currentTickLower, int24 currentTickUpper,,,) = _getPositionMetadata(tokenId);
+        if (expectedTickLower != currentTickLower || expectedTickUpper != currentTickUpper) revert TickRangeMismatch();
     }
 
     /// @notice Increases liquidity on the currently active Uniswap V3 position.

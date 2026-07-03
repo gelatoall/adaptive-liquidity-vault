@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../../src/AdaptiveLPVault.sol";
+import "../../src/adapters/UniswapV3Adapter.sol";
 import "../../src/libraries/v3/LiquidityAmounts.sol";
 import "../mocks/MockERC20.sol";
 import "../mocks/MockUniswapV2Router.sol";
@@ -21,8 +22,25 @@ abstract contract VenueTestHelper is Test {
     bytes32 internal constant V3_HIGH_LABEL = bytes32("V3_100");
 
     /// @notice Returns permissive V3 add-liquidity params for tests.
-    function _defaultV3Params() internal view returns (bytes memory) {
-        return abi.encode(0, 0, block.timestamp + 1);
+    function _defaultV3Params(int24 tickLower, int24 tickUpper) internal view returns (bytes memory) {
+        return _v3Params(0, 0, block.timestamp + 1, tickLower, tickUpper);
+    }
+
+    /// @notice Returns V3 liquidity params with explicit minimums, deadline, and tick range.
+    function _v3Params(
+        uint256 amount0Min,
+        uint256 amount1Min,
+        uint256 deadline,
+        int24 tickLower,
+        int24 tickUpper
+    ) internal pure returns (bytes memory) {
+        return abi.encode(UniswapV3Adapter.LiquidityParams({
+            amount0Min: amount0Min,
+            amount1Min: amount1Min,
+            deadline: deadline,
+            tickLower: tickLower,
+            tickUpper: tickUpper
+        }));
     }
 
     /// @notice Maps vault-ordered amounts to pool-ordered amounts.
@@ -137,7 +155,7 @@ abstract contract VenueTestHelper is Test {
             venueId,
             amount0,
             amount1,
-            _defaultV3Params()
+            _defaultV3Params(tickLower, tickUpper)
         );
     }
 

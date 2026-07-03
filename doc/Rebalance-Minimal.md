@@ -226,7 +226,7 @@ Current limitations:
 - the strategy does not calculate TWAP or statistical volatility itself
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
 - execution still withdraws all tracked venue liquidity before redeploying the target plan
-- stored V3 params must not rely on a deadline that will expire before execution; dynamic V3 params remain future work
+- stored V3 params must not rely on a deadline that will expire before execution; automatic strategy-side tick range calculation remains future work
 
 ### price-change volatility oracle
 

@@ -142,7 +142,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
                 new AdaptiveLPVault.VenueWithdrawalParams[](1);
         withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
             venueId: V3_LOW_VENUE_ID,
-            params: abi.encode(amount0Min, amount1Min, deadline)
+            params: _v3Params(amount0Min, amount1Min, deadline, tickLower, tickUpper)
         });
 
         // user -> vault

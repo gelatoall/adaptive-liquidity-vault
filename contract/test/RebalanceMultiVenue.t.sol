@@ -99,7 +99,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         RebalanceTypes.RebalanceTarget[] memory targets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
-            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
+            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params(tickLower, tickUpper)
         );
 
         vault.rebalance(targets, _emptyWithdrawalParams());
@@ -141,7 +141,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         RebalanceTypes.RebalanceTarget[] memory deployTargets = _buildTwoTargets(
             V2_VENUE_ID, v2Amount0, v2Amount1, "", 
-            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params()
+            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, _defaultV3Params(tickLower, tickUpper)
         );
 
         vault.rebalance(deployTargets, _emptyWithdrawalParams());

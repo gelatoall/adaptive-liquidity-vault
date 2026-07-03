@@ -81,7 +81,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
         _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
-        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params());
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params(tickLower, tickUpper));
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
@@ -102,7 +102,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         // vault -> adapter
         _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
-        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params());
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params(tickLower, tickUpper));
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
@@ -118,7 +118,7 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
         withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
             venueId: V3_LOW_VENUE_ID,
-            params: abi.encode(amount0Min, amount1Min, deadline)
+            params: _v3Params(amount0Min, amount1Min, deadline, tickLower, tickUpper)
         });
 
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);

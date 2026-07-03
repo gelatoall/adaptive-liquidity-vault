@@ -15,7 +15,9 @@ Build a minimal Uniswap V3 adapter that:
 This version includes:
 - one configured V3 pool
 - one fixed fee tier, implied by the configured pool
-- one fixed tick range
+- default constructor tick bounds used when params do not override the range
+- optional per-add-liquidity tick range override through `LiquidityParams`
+- tick range validation against the pool's `tickSpacing()`
 - one active position NFT managed by the adapter
 - minting a new V3 position when no position exists
 - increasing liquidity on the existing position
@@ -26,7 +28,7 @@ This version includes:
 This version does not include:
 - multiple V3 fee tiers in one adapter
 - multiple V3 position NFTs in one adapter
-- automatic tick range selection
+- automatic strategy-side tick range calculation
 - single-sided deposit optimization
 - swap-to-ratio logic
 - autonomous rebalancing
@@ -74,8 +76,8 @@ The adapter stores:
 - `token1` ERC20 reference, using vault token order
 - `positionManager` reference
 - `pool` reference
-- `tickLower`
-- `tickUpper`
+- `defaultTickLower`, the default lower tick bound
+- `defaultTickUpper`, the default upper tick bound
 - `tokenId`
 
 Notes:
@@ -84,6 +86,8 @@ Notes:
 - V3 position manager calls use pool token order.
 - Vault-facing return values use vault token order.
 - Only the vault should be allowed to trigger state-changing adapter functions.
+- Empty add-liquidity params use the default constructor ticks.
+- Non-empty add-liquidity params can override the mint tick range and must be aligned to `pool.tickSpacing()`.
 
 ## Design Choice
 
@@ -103,10 +107,11 @@ Reason:
 ## Public Functions
 
 - `constructor(vault, token0, token1, positionManager, pool, tickLower, tickUpper)`
-  - purpose: initialize immutable V3 venue configuration
+  - purpose: initialize immutable V3 venue configuration and default tick bounds
   - validation:
     - revert on zero addresses
     - revert if `tickLower >= tickUpper`
+    - revert if either default tick is not aligned to `pool.tickSpacing()`
     - revert if `pool.token0/token1` do not match the configured token set in either order
   - records:
     - the configured vault token pair
@@ -119,11 +124,14 @@ Reason:
     - only callable by `vault`
     - reverts when both amounts are zero
     - decodes V3-specific add-liquidity execution params
+    - empty params use zero minimums, `block.timestamp`, and the adapter's default tick bounds
+    - non-empty params can override tick bounds for a newly minted position
+    - reverts if supplied tick bounds are invalid or not aligned to `pool.tickSpacing()`
     - pulls tokens from the vault
     - approves the position manager using pool-ordered token addresses and amounts
     - builds internal execution context that maps vault order into pool order
     - mints a new position if `tokenId == 0`
-    - otherwise increases liquidity on the existing position
+    - otherwise validates the requested tick range against the existing NFT range, then increases liquidity on the existing position
     - returns unused dust to the vault
     - resets approvals back to zero
 
@@ -180,25 +188,33 @@ Reason:
 
 ## Params Encoding
 
-Minimal add/remove liquidity params:
+V3 liquidity params:
 
 ```solidity
-abi.encode(
-    uint256 amount0Min,
-    uint256 amount1Min,
-    uint256 deadline
-)
+struct LiquidityParams {
+    uint256 amount0Min;
+    uint256 amount1Min;
+    uint256 deadline;
+    int24 tickLower;
+    int24 tickUpper;
+}
 ```
 
 Where:
 - `amount0Min` is expressed in vault token0 order
 - `amount1Min` is expressed in vault token1 order
 - `deadline` is forwarded to the position manager
+- `tickLower` and `tickUpper` are used when minting a new position
+- when increasing an existing position, they must match the current NFT's stored tick range
+- both ticks must satisfy `tickLower < tickUpper`
+- both ticks must be multiples of `pool.tickSpacing()`
 
 Adapter behavior:
 - desired amounts come from `addLiquidity(amount0, amount1, params)` for add operations
 - minimum amounts come from `params`
 - desired and minimum amounts are mapped into pool token order before calling the position manager
+- empty params use default constructor ticks for minting
+- increase-liquidity calls keep the existing NFT range and revert with `TickRangeMismatch` if params request a different range
 - remove operations map the minimum amounts into pool token order before `decreaseLiquidity`
 
 ## Core Flows
@@ -206,12 +222,12 @@ Adapter behavior:
 ### addLiquidity
 
 1. Reject if both token amounts are zero.
-2. Decode `amount0Min`, `amount1Min`, and `deadline` from `params`.
+2. Decode `amount0Min`, `amount1Min`, `deadline`, `tickLower`, and `tickUpper` from `params`, or use default ticks when params are empty.
 3. Pull `token0` and `token1` from the vault.
 4. Build an internal execution context that maps vault amounts into pool amounts.
 5. Approve the position manager for the desired token amounts.
-6. If no active `tokenId` exists, call `mint(...)`.
-7. Otherwise call `increaseLiquidity(...)`.
+6. If no active `tokenId` exists, call `mint(...)` with the decoded or default tick range.
+7. Otherwise verify that decoded ticks match the existing position's stored ticks, then call `increaseLiquidity(...)`.
 8. Store the new `tokenId` after minting.
 9. Map used amounts back into vault token order.
 10. Return unused dust to the vault.
@@ -246,7 +262,7 @@ Adapter behavior:
 2. Read current position liquidity and owed tokens.
 3. Start with `tokensOwed0/1` as the owed component.
 4. If liquidity is non-zero, read current pool sqrt price from `slot0()`.
-5. Convert the configured ticks into sqrt ratios.
+5. Convert the position NFT's stored ticks into sqrt ratios.
 6. Use V3 liquidity math to compute principal token amounts.
 7. Add principal and owed amounts.
 8. Map pool token order back into vault token order.
@@ -273,11 +289,15 @@ The adapter can keep the public surface small by pushing V3-specific details int
 - `_cleanupEmptyPosition()`
   - burns the NFT and clears `tokenId` when the position is fully empty
 - `_buildAddLiquidityContext(...)`
-  - builds the execution context used by `addLiquidity()`
+  - builds the execution context used by `addLiquidity()`, including mint tick bounds
+- `_validateTicks(...)`
+  - checks tick ordering and `pool.tickSpacing()` alignment
 - `_executeAddLiquidity(...)`
   - dispatches to mint or increase and returns used amounts
 - `_mintPosition(...)`
   - performs the actual `positionManager.mint(...)` call
+- `_validateCurrentPositionTicks(...)`
+  - rejects increase-liquidity calls that request a tick range different from the current NFT range
 - `_increasePosition(...)`
   - performs the actual `positionManager.increaseLiquidity(...)` call
 - `_refundDust(...)`
@@ -288,6 +308,7 @@ The adapter can keep the public surface small by pushing V3-specific details int
 The adapter should revert when:
 - constructor receives a zero address
 - constructor receives invalid tick bounds
+- constructor receives ticks that are not aligned to pool tick spacing
 - constructor pool token set does not match configured vault tokens
 - both add-liquidity amounts are zero
 - a non-vault caller attempts a state-changing operation
@@ -295,6 +316,7 @@ The adapter should revert when:
 - remove liquidity is called without a position
 - remove liquidity exceeds current position liquidity
 - fee collection is requested without a position
+- add-liquidity tries to increase an existing position with a different tick range
 - token transfers fail
 - position manager calls fail
 
@@ -315,12 +337,15 @@ These conditions should always hold:
 ## Test Plan
 
 The first test set should cover:
-- constructor stores the expected addresses and ticks
+- constructor stores the expected addresses and default ticks
 - constructor rejects zero addresses
 - constructor rejects invalid tick bounds
 - constructor rejects pools with mismatched token sets
 - `addLiquidity()` reverts when both amounts are zero
 - `addLiquidity()` mints a new V3 position when no position exists
+- `addLiquidity()` can mint with tick bounds supplied through params
+- `addLiquidity()` reverts when increasing an existing position with a different tick range
+- `addLiquidity()` rejects params with invalid or spacing-unaligned ticks
 - `addLiquidity()` stores the returned `tokenId`
 - `addLiquidity()` increases liquidity when a position already exists
 - `addLiquidity()` maps amounts correctly for both token address orderings
@@ -338,6 +363,7 @@ The first test set should cover:
 - `hasPosition()` returns false after the position is fully cleared
 - `getPositionValue()` returns zeroes without a position
 - `getPositionValue()` includes principal and position-manager-tracked owed tokens
+- `getPositionValue()` uses the tick range stored on the position NFT rather than the adapter default ticks
 - non-vault callers cannot execute state-changing functions
 
 Notes on testing priorities:
@@ -375,7 +401,7 @@ This means each V3 fee tier can be represented by a separate adapter instance an
 
 Later versions may add:
 - V3 TWAP oracle integration
-- tick range updates
+- strategy-side tick range calculation from volatility and current pool tick
 - multiple adapter instances for multiple fee tiers
 - a venue registry or strategy manager
 - automated rebalance between V2, V3 0.05%, V3 0.30%, and V3 1.00%

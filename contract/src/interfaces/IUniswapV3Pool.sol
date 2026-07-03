@@ -13,8 +13,8 @@ interface IUniswapV3Pool {
     /// @notice Returns the pool fee tier.
     function fee() external view returns (uint24);
 
-    // /// @notice Returns the tick spacing for this pool.
-    // function tickSpacing() external view returns (int24);
+    /// @notice Returns the tick spacing for this pool.
+    function tickSpacing() external view returns (int24);
 
     /// @notice Returns current pool state, including the current square-root price and tick.
     /// @return sqrtPriceX96 Current sqrt price in Q64.96.

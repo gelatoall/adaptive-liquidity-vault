@@ -47,7 +47,9 @@ contract V3AdapterTest is Test, VenueTestHelper {
     function _initializePosition(
         uint256 mintAmount0,
         uint256 mintAmount1,
-        uint128 mintLiquidity
+        uint128 mintLiquidity,
+        int24 paramsTickLower,
+        int24 paramsTickUpper
     ) internal returns (uint256 liquidity){
         uint256 mintAmount0Used = mintAmount0;
         uint256 mintAmount1Used = mintAmount1;
@@ -70,11 +72,26 @@ contract V3AdapterTest is Test, VenueTestHelper {
         liquidity = adapter.addLiquidity(
             mintAmount0, 
             mintAmount1, 
-            abi.encode(0, 0, block.timestamp + 1)
+            _liquidityParams(0, 0, block.timestamp + 1, paramsTickLower, paramsTickUpper)
         );
         vm.stopPrank();
     }
 
+    function _liquidityParams(
+        uint256 amount0Min,
+        uint256 amount1Min,
+        uint256 deadline,
+        int24 paramsTickLower,
+        int24 paramsTickUpper
+    ) internal pure returns (bytes memory) {
+        return abi.encode(UniswapV3Adapter.LiquidityParams({
+            amount0Min: amount0Min,
+            amount1Min: amount1Min,
+            deadline: deadline,
+            tickLower: paramsTickLower,
+            tickUpper: paramsTickUpper
+        }));
+    }
 
     // unit tests
     function test_Constructor_SetsImmutableConfig() public {
@@ -83,8 +100,8 @@ contract V3AdapterTest is Test, VenueTestHelper {
         assertEq(address(adapter.token1()), address(token1));
         assertEq(address(adapter.positionManager()), address(positionManager));
         assertEq(address(adapter.pool()), address(pool));
-        assertEq(adapter.tickLower(), tickLower);
-        assertEq(adapter.tickUpper(), tickUpper);
+        assertEq(adapter.defaultTickLower(), tickLower);
+        assertEq(adapter.defaultTickUpper(), tickUpper);
         assertEq(adapter.tokenId(), 0);
     }
 
@@ -127,7 +144,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 amount0Min = amount0 / 2;
         uint256 amount1Min = amount1 / 2;
         uint256 deadline = block.timestamp + 1 hours;
-        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+        bytes memory params = _liquidityParams(amount0Min, amount1Min, deadline, tickLower, tickUpper);
 
         token0.mint(vault, amount0);
         token1.mint(vault, amount1);
@@ -161,6 +178,32 @@ contract V3AdapterTest is Test, VenueTestHelper {
         assertEq(positionManager.lastMintDeadline(), deadline);
     }
 
+    function test_AddLiquidity_RevertsWhenIncreasingWithDifferentTickRange() public {
+        uint256 mintAmount0 = 1 ether;
+        uint256 mintAmount1 = 2000e6;
+        uint128 mintLiquidity = 1234;
+
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
+
+        int24 differentTickLower = -1200;
+        int24 differentTickUpper = 1200;
+        bytes memory params = _liquidityParams(0, 0, block.timestamp + 1, differentTickLower, differentTickUpper);
+
+        uint256 amount0 = 0.1 ether;
+        uint256 amount1 = 200e6;
+
+        token0.mint(vault, amount0);
+        token1.mint(vault, amount1);
+
+        vm.startPrank(vault);
+        token0.approve(address(adapter), amount0);
+        token1.approve(address(adapter), amount1);
+
+        vm.expectRevert(UniswapV3Adapter.TickRangeMismatch.selector);
+        adapter.addLiquidity(amount0, amount1, params);
+        vm.stopPrank();
+    }
+
     function test_AddLiquidity_IncreasesWhenTokenIdExists() public {
         uint256 mintAmount0 = 1 ether;
         uint256 mintAmount1 = 2000e6;
@@ -177,7 +220,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 amount0Min = increaseAmount0 / 2;
         uint256 amount1Min = increaseAmount1 / 2;
         uint256 deadline = block.timestamp + 1 hours;
-        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+        bytes memory params = _liquidityParams(amount0Min, amount1Min, deadline, tickLower, tickUpper);
 
         token0.mint(vault, mintAmount0 + increaseAmount0);
         token1.mint(vault, mintAmount1 + increaseAmount1);
@@ -209,7 +252,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 firstLiquidity = adapter.addLiquidity(
             mintAmount0, 
             mintAmount1, 
-            abi.encode(0, 0, block.timestamp + 1)
+            _liquidityParams(0, 0, block.timestamp + 1, tickLower, tickUpper)
         );
         uint256 tokenIdBefore = adapter.tokenId();
         uint256 vault0Before = token0.balanceOf(vault);
@@ -250,9 +293,9 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 amount0Min = expectedVaultAmount0Out / 2;
         uint256 amount1Min = expectedVaultAmount1Out / 2;
         uint256 deadline = block.timestamp + 1 hours;
-        bytes memory params = abi.encode(amount0Min, amount1Min, deadline);
+        bytes memory params = _liquidityParams(amount0Min, amount1Min, deadline, tickLower, tickUpper);
 
-        uint256 liquidity = _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        uint256 liquidity = _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
 
         assertEq(liquidity, mintLiquidity);
         assertTrue(adapter.hasPosition());
@@ -299,7 +342,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 expectedVaultAmount0Out = 0.1 ether;
         uint256 expectedVaultAmount1Out = 200e6;
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
 
         uint256 vault0BeforeDecrease = token0.balanceOf(vault);
         uint256 vault1BeforeDecrease = token1.balanceOf(vault);
@@ -331,7 +374,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 mintAmount0 = 1 ether;
         uint256 mintAmount1 = 2000e6;
         uint128 mintLiquidity = 1234;
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
 
         uint256 vault0BeforeCollect = token0.balanceOf(vault);
         uint256 vault1BeforeCollect = token1.balanceOf(vault);
@@ -358,7 +401,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 fee0 = 0.1 ether;
         uint256 fee1 = 200e6;
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
         assertFalse(adapter.hasPosition());
 
         (uint256 feePoolAmount0, uint256 feePoolAmount1) = _mapPoolAmounts(token0, token1, fee0, fee1);
@@ -383,7 +426,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
 
         assertFalse(adapter.hasPosition());
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
 
@@ -417,7 +460,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 mintAmount1 = 2000e6;
         uint128 mintLiquidity = 1234;
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
         assertTrue(adapter.hasPosition());
 
         pool.setSlot0FromTick(0);
@@ -425,13 +468,11 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(tickLower);
         uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(tickUpper);
 
-        (, , , , , , , uint128 positionLiquidity, , , , ) = positionManager.positions(adapter.tokenId());
-
         (uint256 poolAmount0, uint256 poolAmount1) = LiquidityAmounts.getAmountsForLiquidity(
-            sqrtPriceX96, 
-            sqrtRatioLowerX96, 
-            sqrtRatioUpperX96, 
-            positionLiquidity
+            sqrtPriceX96,
+            sqrtRatioLowerX96,
+            sqrtRatioUpperX96,
+            mintLiquidity
         );
 
         (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(token0, token1, poolAmount0, poolAmount1);
@@ -450,7 +491,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 fee0 = 0.1 ether;
         uint256 fee1 = 200e6;
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
         assertTrue(adapter.hasPosition());
 
         pool.setSlot0FromTick(0);
@@ -458,13 +499,11 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(tickLower);
         uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(tickUpper);
 
-        (, , , , , , , uint128 positionLiquidity, , , , ) = positionManager.positions(adapter.tokenId());
-
         (uint256 principalPool0, uint256 principalPool1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96, 
             sqrtRatioLowerX96, 
             sqrtRatioUpperX96, 
-            positionLiquidity
+            mintLiquidity
         );
 
         (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
@@ -489,7 +528,7 @@ contract V3AdapterTest is Test, VenueTestHelper {
         uint256 fee0 = 0.1 ether;
         uint256 fee1 = 200e6;
 
-        _initializePosition(mintAmount0, mintAmount1, mintLiquidity);
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, tickLower, tickUpper);
         assertFalse(adapter.hasPosition());
 
         (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
@@ -500,5 +539,34 @@ contract V3AdapterTest is Test, VenueTestHelper {
         (uint256 amount0, uint256 amount1) = adapter.getPositionValue();
         assertEq(amount0, fee0);
         assertEq(amount1, fee1);
-    } 
+    }
+
+    function test_GetPositionValue_UsesPositionTickRange() public {
+        uint256 mintAmount0 = 1 ether;
+        uint256 mintAmount1 = 2000e6;
+        uint128 mintLiquidity = 1234;
+        int24 customTickLower = -1200;
+        int24 customTickUpper = 1200;
+
+        _initializePosition(mintAmount0, mintAmount1, mintLiquidity, customTickLower, customTickUpper);
+
+        pool.setSlot0FromTick(0);
+        (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
+        uint160 sqrtRatioLowerX96 = TickMath.getSqrtRatioAtTick(customTickLower);
+        uint160 sqrtRatioUpperX96 = TickMath.getSqrtRatioAtTick(customTickUpper);
+
+        (uint256 poolAmount0, uint256 poolAmount1) = LiquidityAmounts.getAmountsForLiquidity(
+            sqrtPriceX96, 
+            sqrtRatioLowerX96, 
+            sqrtRatioUpperX96, 
+            mintLiquidity
+        );
+
+        (uint256 expectedAmount0, uint256 expectedAmount1) = _mapPoolAmounts(token0, token1, poolAmount0, poolAmount1);
+
+        (uint256 amount0, uint256 amount1) = adapter.getPositionValue();
+
+        assertEq(amount0, expectedAmount0);
+        assertEq(amount1, expectedAmount1);
+    }
 }
