@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "./mocks/MockERC20.sol";
@@ -96,6 +97,14 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         vault.deployToVenue(1, 1 ether, 1e6, "");
     }
 
+    /// @notice Verifies venue deployment is disabled while the vault is paused.
+    function test_DeployToVenue_RevertsWhenPaused() public {
+        vault.pause();
+
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        vault.deployToVenue(1, 1 ether, 1e6, "");
+    }
+
     /// @notice Verifies deploying idle funds moves balances from the vault into the  LP position.
     function test_DeployToVenue_MovesIdleTokensIntoAdapterPosition() public {
         uint256 amount0 = 10 ether;
@@ -179,6 +188,43 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         // adapter'LP decreases to 0
         assertEq(pair.balanceOf(address(adapter)), adapterLpBefore - liquidityMinted);
         assertEq(pair.balanceOf(address(adapter)), 0);
+    }
+
+    /// @notice Verifies only the vault owner can trigger the emergency exit path.
+    function test_EmergencyExit_RevertsWhenCallerIsNotOwner() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vault.emergencyExit(_emptyWithdrawalParams());
+    }
+
+    /// @notice Verifies emergency exit withdraws active V2 liquidity to idle balances and pauses the vault.
+    function test_EmergencyExit_WithdrawsV2PositionAndPauses() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidityMinted = 5 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
+        pair.setReserves(uint112(amount0), uint112(amount1));
+
+        assertFalse(vault.paused());
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(vault.totalLiquidity(), liquidityMinted);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
+        assertTrue(adapter.hasPosition());
+
+        router.setNextRemoveLiquidityResult(amount0, amount1);
+        vault.emergencyExit(_emptyWithdrawalParams());
+
+        assertTrue(vault.paused());
+        assertEq(vault.totalLiquidity(), 0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertFalse(adapter.hasPosition());
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
     }
 
     /// @notice Verifies full redeem withdraws all active V2 liquidity and forwards withdrawal params.

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/strategies/FixedWeightStrategy.sol";
@@ -112,6 +113,14 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
     function test_RebalanceWithStrategy_RevertsWhenStrategyNotSet() public {
         vm.expectRevert(AdaptiveLPVault.StrategyNotSet.selector);
+        vault.rebalanceWithStrategy("");
+    }
+
+    /// @notice Verifies strategy-driven rebalance is disabled while the vault is paused.
+    function test_RebalanceWithStrategy_RevertsWhenPaused() public {
+        vault.pause();
+
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         vault.rebalanceWithStrategy("");
     }
 

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../src/AdaptiveLPVault.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
@@ -78,6 +79,18 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
             address(token0), address(token1),
             decimals0, 0
         );
+    }
+
+    // pause
+    /// @notice Verifies the owner can pause and unpause the vault.
+    function test_PauseAndUnpause_UpdatesPausedState() public {
+        assertFalse(vault.paused());
+
+        vault.pause();
+        assertTrue(vault.paused());
+
+        vault.unpause();
+        assertFalse(vault.paused());
     }
 
     // totalAssets
@@ -187,7 +200,44 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.stopPrank();
     }
 
+    /// @notice Verifies deposits are blocked while the vault is paused.
+    function test_Deposit_RevertsWhenPaused() public {
+        vault.pause();
+
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 2000e6;
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        vault.deposit(amount0, amount1);
+        vm.stopPrank();
+    }
+
     // redeem
+    /// @notice Verifies users can still redeem idle balances while the vault is paused.
+    function test_Redeem_WorksWhenPaused() public {
+        uint256 price0 = 1e18;
+        uint256 price1 = 5e14;
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 2000e6;
+        oracle.setPrices(price0, price1);
+
+        uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.pause();
+
+        vm.prank(alice);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, _emptyWithdrawalParams());
+
+        assertEq(amount0Out, amount0);
+        assertEq(amount1Out, amount1);
+        assertEq(vault.balanceOf(alice), 0);
+    }
+
     function test_Redeem_RevertsWhenUserRedeemsMoreSharesThanOwned() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;

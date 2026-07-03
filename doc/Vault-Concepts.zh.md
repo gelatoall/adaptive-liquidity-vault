@@ -163,6 +163,7 @@
 ### 重要细节
 - `deposit` 必须使用转账前的 `totalAssets`。
 - 否则用户自己的存款会先被算进 vault，总价值分母变大，导致新用户拿到的 shares 偏少。
+- 当 vault 处于 paused 状态时，`deposit` 会被禁止，因为暂停状态下不应该继续接受新资金。
 
 ### Redeem
 - `redeem` 的流程是：
@@ -195,6 +196,29 @@
 - `redeem` 必须使用 burn 前的 `totalSupply`。
 - 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会按 shares 比例调用内部 withdrawal flow，把用户对应比例的 liquidity 撤回后再转出 token。
 - `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
+- `redeem` 不受 paused 状态限制。这样在紧急情况下，即使 owner 暂停了正常运营，用户仍然可以退出。
+
+### Pause / Emergency Exit
+- `pause()` 是 owner 控制的安全开关。
+- paused 后会禁止正常运营动作：
+  - `deposit`
+  - `deployToVenue`
+  - `rebalance`
+  - `rebalanceWithStrategy`
+- paused 后仍然允许退出相关动作：
+  - `redeem`
+  - `withdrawFromVenue`
+  - `emergencyExit`
+
+`emergencyExit(withdrawalParams)` 的作用是：
+- 遍历所有 registered venue
+- 把有 tracked liquidity 的 active position 全部撤回 vault idle balance
+- 然后暂停 vault
+
+它和普通 `rebalance` 的区别是：
+- `rebalance` 是正常运营，用来调整资产分配
+- `emergencyExit` 是应急路径，只负责把资金从 venue 拉回 idle 并暂停
+- `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
 
 ## 4. 约束与 Revert
 
@@ -208,6 +232,8 @@
 - share 计算中的非法 vault 状态应该 revert。
 - 非零存款如果最终 mint 出 0 shares，应该 revert。
 - 用户赎回超过自己持有的 shares，应该 revert。
+- paused 状态下调用 `deposit`、`deployToVenue`、`rebalance`、`rebalanceWithStrategy` 应该 revert。
+- 非 owner 调用 `pause`、`unpause`、`emergencyExit` 或资本管理函数应该 revert。
 
 ### 关键规则
 - 业务输入检查通常属于 vault。

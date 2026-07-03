@@ -30,6 +30,8 @@ This version includes:
 - full withdrawal of all tracked venue liquidity before redeployment
 - deployment into one or more venues after withdrawal
 - optional total-value loss guard after rebalance execution
+- pause protection on normal rebalance entrypoints
+- emergency exit path that withdraws all venues to idle and pauses the vault
 - no-op or revert semantics when no funds can be moved
 
 This version does not include:
@@ -46,6 +48,8 @@ Notes:
 - per-venue liquidity is tracked in `venueLiquidity[venueId]`.
 - strategy logic should live outside the vault. The vault only asks the configured strategy for a target plan and then validates and executes it.
 - manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
+- normal `rebalance(...)` and `rebalanceWithStrategy(...)` are blocked while the vault is paused.
+- `emergencyExit(...)` is the paused-safe emergency path for pulling venue liquidity back to idle balances.
 
 ## Data Model
 
@@ -93,6 +97,7 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 - `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied target allocation
+  - behavior: blocked while the vault is paused
   - behavior: withdraw all venues first, then deploy non-zero targets
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
   - behavior: applies the configured value-loss guard after execution
@@ -112,6 +117,7 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
+  - behavior: blocked while the vault is paused
   - behavior: applies `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` before calling the strategy
 
 - `setVenue(venueId, adapter, label, enabled)`
@@ -120,10 +126,16 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: manually deploy idle funds into a specific venue
+  - behavior: blocked while the vault is paused
 
 - `withdrawFromVenue(venueId, liquidity, params)`
   - purpose: manually withdraw liquidity from a specific venue
+  - behavior: available while paused so the owner can reduce active venue exposure
   - behavior: forwards venue-specific removal params to the adapter
+
+- `emergencyExit(withdrawalParams)`
+  - purpose: withdraw all tracked venue liquidity to idle balances and pause the vault
+  - behavior: can be called while already paused and does not execute the normal rebalance target flow
 
 ## Core Flow
 
@@ -251,6 +263,19 @@ Flow:
 5. Leave all returned token balances idle in the vault.
 
 The value-loss guard is downside-only. It should not reject a positive `totalAssets()` deviation because fees, donations, or price movement can legitimately increase vault value during execution. In tests without such sources, large positive deviations should be treated as a valuation/accounting signal rather than a revert condition.
+
+### emergency exit
+
+`emergencyExit(withdrawalParams)` is separate from normal rebalance.
+
+Flow:
+1. Owner calls `emergencyExit(withdrawalParams)`.
+2. Vault iterates all registered venues.
+3. For each venue with tracked liquidity, vault forwards matching withdrawal params to the adapter and removes all tracked liquidity.
+4. Vault pauses normal operations.
+5. Users can still redeem after the emergency exit because `redeem` is not gated by `whenNotPaused`.
+
+This path intentionally bypasses target validation and redeployment. It is for reducing venue exposure during an incident, not for normal allocation changes.
 
 ### rebalance to one venue
 

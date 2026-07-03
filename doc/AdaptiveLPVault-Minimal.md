@@ -26,6 +26,9 @@ This version includes:
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
 - strategy-driven rebalance through `IRebalanceStrategy`
 - fixed-weight and volatility-bucket total-underlying allocation strategies
+- reentrancy protection on user and capital-moving entrypoints
+- owner-controlled pause and unpause
+- emergency exit that withdraws all venue liquidity to idle balances and pauses normal operations
 
 This version does not include:
 - automatic dynamic strategy selection
@@ -58,6 +61,7 @@ The vault stores:
 - ERC20 share supply and balances
 - configured rebalance strategy
 - strategy rebalance cooldown and gas price guard config
+- paused/unpaused state inherited from OpenZeppelin `Pausable`
 
 Venue state:
 - `venues[venueId]` stores the adapter, enabled flag, and optional label
@@ -99,6 +103,7 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 - `deposit(amount0, amount1)`
   - purpose: transfer tokens into the vault and mint shares to the depositor
+  - behavior: blocked while the vault is paused
   - returns: `uint256 shares`
 
 - `redeem(shares, withdrawalParams)`
@@ -109,16 +114,19 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: deploy idle funds into a registered venue adapter
+  - behavior: owner-only and blocked while the vault is paused
   - returns: `uint256 liquidity`
 
 - `withdrawFromVenue(venueId, liquidity, params)`
   - purpose: withdraw deployed liquidity from a specific venue back into idle balances
   - signature: `withdrawFromVenue(venueId, liquidity, params)`
+  - behavior: owner-only and available while paused so the owner can reduce venue exposure
   - behavior: forwards venue-specific removal params to the adapter
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied multi-venue target plan
+  - behavior: owner-only and blocked while the vault is paused
   - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase; `targets[i].params` controls deployment into the new venue
 
@@ -135,7 +143,20 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 - `rebalanceWithStrategy(data)`
   - purpose: ask the configured strategy for a target plan and execute it
+  - behavior: owner-only and blocked while the vault is paused
   - behavior: applies strategy guards, then reuses the same rebalance execution path
+
+- `pause()`
+  - purpose: pause deposits, venue deployment, and normal rebalance operations
+  - behavior: owner-only; redemptions and direct venue withdrawals remain available
+
+- `unpause()`
+  - purpose: resume deposits, venue deployment, and normal rebalance operations
+  - behavior: owner-only
+
+- `emergencyExit(withdrawalParams)`
+  - purpose: withdraw all tracked venue liquidity back to idle balances and pause the vault
+  - behavior: owner-only; can be called while already paused; forwards matching per-venue withdrawal params
 
 ## Core Flows
 
@@ -149,6 +170,8 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 6. Calculate shares to mint using `VaultMath.calculateShares`.
 7. Transfer `token0` and `token1` from the user into the vault.
 8. Mint shares to the depositor.
+
+Deposits are disabled while the vault is paused.
 
 ### redeem
 
@@ -164,6 +187,8 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 10. Transfer `token0` and `token1` to the user.
 
 When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
+
+Redemptions remain available while the vault is paused so users can exit.
 
 ### totalAssets
 
@@ -230,6 +255,23 @@ Both strategies operate on total vault underlying amounts reported by `getTotalU
 
 The current concrete volatility oracle is `PriceChangeVolatilityOracle`. It reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points. This is a simple price-change proxy, not a statistical volatility model.
 
+### pause and emergency exit
+
+The vault uses OpenZeppelin `Pausable` as an emergency operations switch.
+
+Paused state blocks normal capital entry and allocation operations:
+- `deposit`
+- `deployToVenue`
+- `rebalance`
+- `rebalanceWithStrategy`
+
+Paused state does not block exit-oriented operations:
+- `redeem`
+- `withdrawFromVenue`
+- `emergencyExit`
+
+`emergencyExit(withdrawalParams)` is an owner-only safety path. It iterates all registered venues, withdraws every venue with tracked liquidity, forwards matching withdrawal params to each adapter, and then pauses the vault. It intentionally does not call the normal `_rebalance(...)` path because emergency exit should not be blocked by normal rebalance semantics such as target validation or `NoRebalanceNeeded`.
+
 ## Failure Cases
 
 The vault should revert when:
@@ -238,6 +280,8 @@ The vault should revert when:
 - a non-zero deposit would mint zero shares
 - `redeem` is called with zero shares
 - `redeem` is called with more shares than the user owns
+- `deposit`, `deployToVenue`, `rebalance`, or `rebalanceWithStrategy` is called while paused
+- a non-owner calls `pause`, `unpause`, `emergencyExit`, or owner-only capital management functions
 - a non-owner calls owner-only functions
 - a venue operation references an unset venue
 - a venue operation references a disabled venue

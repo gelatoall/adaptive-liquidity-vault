@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
@@ -66,6 +67,15 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         _rebalanceToVenue(vault, V2_VENUE_ID, 10 ether, 5 ether, "");
+    }
+
+    /// @notice Verifies manual rebalance is disabled while the vault is paused.
+    function test_Rebalance_RevertsWhenPaused() public {
+        vault.pause();
+
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        vault.rebalance(targets, _emptyWithdrawalParams());
     }
 
     /// @notice Verifies rebalance moves all idle balances into the single supported V2 venue.

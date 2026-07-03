@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./libraries/VaultMath.sol";
 import "./libraries/RebalanceTypes.sol";
 import "./interfaces/IVenueAdapter.sol";
@@ -15,7 +17,7 @@ import "./interfaces/IRebalanceStrategy.sol";
 /// @title AdaptiveLPVault
 /// @notice Minimal two-asset vault that mints ERC20 shares against deposited assets.
 /// @dev The vault can keep assets idle or deploy them across registered venue adapters.
-contract AdaptiveLPVault is ERC20, Ownable {
+contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // ============================================
@@ -135,6 +137,9 @@ contract AdaptiveLPVault is ERC20, Ownable {
 
     /// @notice Emitted after a strategy-driven rebalance executes successfully.
     event RebalanceWithStrategy(address indexed caller, address indexed strategy, bytes data);
+
+    /// @notice Emitted after the owner pulls venue liquidity back to idle and pauses the vault.
+    event EmergencyExit(address indexed caller);
     
     // ============================================
     // Custom Errors
@@ -244,7 +249,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @param amount0 Raw token0 amount in token0's smallest unit.
     /// @param amount1 Raw token1 amount in token1's smallest unit.
     /// @return shares Amount of vault shares minted to the depositor.
-    function deposit(uint256 amount0, uint256 amount1) external returns (uint256 shares) {
+    function deposit(uint256 amount0, uint256 amount1) external whenNotPaused nonReentrant returns (uint256 shares) {
         // Reject if both deposit amounts are zero.
         if (amount0 == 0 && amount1 == 0) {
             revert ZeroAmounts();
@@ -289,7 +294,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     function redeem(
         uint256 shareToRedeem,
         VenueWithdrawalParams[] calldata withdrawalParams
-    ) external returns (uint256 amount0Out, uint256 amount1Out) {
+    ) external nonReentrant returns (uint256 amount0Out, uint256 amount1Out) {
         // Reject if shares is zero.
         if (shareToRedeem == 0) {
             revert ZeroShares();
@@ -386,6 +391,28 @@ contract AdaptiveLPVault is ERC20, Ownable {
     // ============================================
     // Admin Functions
     // ============================================
+    /// @notice Pauses deposits and normal rebalance operations.
+    /// @dev Redeems and direct venue withdrawals remain available so users and the owner can exit positions.
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Resumes deposits and normal rebalance operations.
+    /// @dev Only the owner can unpause after validating that the vault is safe to operate again.
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /// @notice Withdraws all venue liquidity back to the vault and pauses normal operations.
+    /// @dev Can be called even when the vault is already paused. Redeems remain available after emergency exit.
+    /// @param withdrawalParams Venue-specific remove-liquidity params used when exiting active positions.
+    function emergencyExit(VenueWithdrawalParams[] calldata withdrawalParams) external onlyOwner nonReentrant {
+        _withdrawAllVenues(withdrawalParams);
+        _pause();
+
+        emit EmergencyExit(msg.sender);
+    }
+
     /// @notice Sets the price oracle used by the vault for asset valuation.
     /// @dev The input address is stored as an `IPriceOracle` interface reference.
     /// @param _priceOracle Address of the price oracle contract.
@@ -483,7 +510,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         uint256 amount0, 
         uint256 amount1,
         bytes calldata params
-    ) external onlyOwner returns (uint256 liquidity) {
+    ) external onlyOwner whenNotPaused nonReentrant returns (uint256 liquidity) {
         return _deployToVenue(venueId, amount0, amount1, params);
     }
 
@@ -498,7 +525,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         uint256 venueId,
         uint256 liquidity, 
         bytes calldata params
-    ) external onlyOwner returns (
+    ) external onlyOwner nonReentrant returns (
         uint256 amount0Out, 
         uint256 amount1Out
     ) {
@@ -513,7 +540,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     function rebalance(
         RebalanceTypes.RebalanceTarget[] calldata targets,
         VenueWithdrawalParams[] calldata withdrawalParams
-    ) external onlyOwner {
+    ) external onlyOwner whenNotPaused nonReentrant {
         _rebalance(targets, withdrawalParams);
         emit Rebalance(msg.sender);
     }
@@ -521,7 +548,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     /// @notice Builds a target plan from the configured strategy and executes it.
     /// @dev Strategy-built targets control deployment params; withdrawal params are empty in this entrypoint for now.
     /// @param data Opaque strategy-specific data forwarded to `buildTargets`.
-    function rebalanceWithStrategy(bytes calldata data) external onlyOwner {
+    function rebalanceWithStrategy(bytes calldata data) external onlyOwner whenNotPaused nonReentrant {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
         uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();
@@ -608,7 +635,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Shared internal withdraw flow for manual withdraws, rebalances, and redemptions.
-    /// @dev `params` is forwarded to the venue adapter so each caller can apply its own slippage/deadline policy.
+    /// @dev `params` is forwarded to the venue adapter so each entrypoint can apply venue-specific exit constraints.
     function _withdrawFromVenue(
         uint256 venueId, 
         uint256 liquidity, 
@@ -625,7 +652,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity, params);
         venueLiquidity[venueId] -= liquidity;
         totalLiquidity -= liquidity;
-        
+
         emit WithdrawFromVenue(venueId, liquidity, amount0Out, amount1Out);
     }
 
@@ -706,6 +733,7 @@ contract AdaptiveLPVault is ERC20, Ownable {
         // Phase 1: pull all capital back to idle first.
         _withdrawAllVenues(withdrawalParams);
 
+        // Phase 2: redistribute from idle to venues.
         if (targets.length != 0) {
             uint256 idle0 = token0.balanceOf(address(this));
             uint256 idle1 = token1.balanceOf(address(this));
@@ -724,8 +752,6 @@ contract AdaptiveLPVault is ERC20, Ownable {
     }
 
     /// @notice Checks that rebalance preserved share supply and did not exceed the configured value-loss guard.
-    /// @param totalSharesBefore Total share supply captured before rebalance execution.
-    /// @param totalValueBefore Total vault value captured before rebalance execution, or zero when the value guard is disabled.
     function _checkRebalanceValueInvariant(uint256 totalSharesBefore, uint256 totalValueBefore) internal view {
         if (totalSupply() != totalSharesBefore) revert RebalanceShareSupplyChanged();
 
