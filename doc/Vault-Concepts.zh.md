@@ -1396,6 +1396,51 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 
 ## 16. Uniswap V3 Adapter
 
+### 相关概念
+
+#### Tick
+- `tick` 是 Uniswap V3 用来表示价格位置的离散编号。
+- 可以粗略理解成：连续价格曲线被切成很多很细的格子，每个格子编号就是一个 tick。
+- tick 越大，表示 token1 相对 token0 的价格越高；tick 越小，表示价格越低。
+- V3 pool 的 `slot0()` 会返回当前 active tick，也就是当前价格所在的 tick。
+
+#### Tick Range
+- V3 LP position 不是像 V2 那样覆盖所有价格。
+- 一个 V3 position 只在 `[tickLower, tickUpper]` 这个价格区间内提供流动性。
+- 如果当前 tick 在这个区间内，position 同时持有两种 token，并参与做市。
+- 如果当前 tick 跑到区间外，position 会变成几乎单边资产，并停止在当前价格附近赚取交易费。
+
+#### tickLower / tickUpper
+- `tickLower` 是 position 的下边界。
+- `tickUpper` 是 position 的上边界。
+- 必须满足：
+  - `tickLower < tickUpper`
+  - 两个 tick 都必须对齐 pool 的 `tickSpacing()`
+- V3 position NFT 创建后，这个 range 本身不能通过 `increaseLiquidity()` 改变。
+- 如果策略想换成新的 range，应该撤掉旧 position，再 mint 新 position。
+
+#### tickSpacing
+- `tickSpacing` 是某个 V3 pool 允许使用的 tick 间距。
+- 不是所有整数 tick 都能作为 position 边界。
+- 例如 `tickSpacing = 60` 时，合法边界只能是：
+  - `... -120, -60, 0, 60, 120 ...`
+- 常见 fee tier 和 spacing 的关系是：
+  - `0.05% fee`，fee tier 参数是 `500`，对应 `tickSpacing = 10`
+  - `0.30% fee`，fee tier 参数是 `3000`，对应 `tickSpacing = 60`
+  - `1.00% fee`，fee tier 参数是 `10000`，对应 `tickSpacing = 200`
+- 所以计算出来的 raw tick range 必须 round 到合法 spacing 后才能传给 V3 position manager。
+
+#### tickRange
+- 在 `V3TickCalculations` 里，`tickRange` 表示围绕当前 tick 左右展开的 raw 宽度。
+- 当前实现把 volatility 映射成三个宽度：
+  - 低波动：`200`
+  - 中波动：`500`
+  - 高波动：`1500`
+- 直觉是：
+  - 波动越低，可以使用更窄、更集中的 range
+  - 波动越高，需要更宽的 range，降低价格很快跑出区间的概率
+- 注意这里的 `tickRange` 不是最终合法边界，只是计算 raw lower/upper 的中间值。
+
 ### 当前阶段的目标
 - 当前 V3 adapter 的目标不是一次性实现多 fee tier 策略。
 - 当前最小目标是：
@@ -1497,7 +1542,37 @@ tick range 有两个基本约束：
 - `tickLower < tickUpper`
 - `tickLower/tickUpper` 必须对齐 pool 的 `tickSpacing()`
 
-这一步让 adapter 具备“执行动态 range”的能力。真正根据 volatility/current tick 自动计算 range，后面会放到 strategy 或 range calculator 里做。
+这一步让 adapter 具备“执行动态 range”的能力。adapter 仍然只负责执行和校验，不负责根据市场状态做策略判断。
+根据 volatility/current tick 自动计算 range 的逻辑放在独立的 `V3TickCalculations` 里；后续 strategy/rebalance 层可以调用它生成传给 adapter 的 `LiquidityParams.tickLower/tickUpper`。
+
+### V3TickCalculations
+`V3TickCalculations` 是 V3 tick range 的独立计算模块。
+
+算法逻辑是：
+1. 从 `v3Pool.slot0()` 读取当前 active tick，作为本次 range 的中心参考点。
+2. 根据 `volatilityBps` 映射到 raw tick width：
+   - `< 50 bps`: `200`
+   - `< 150 bps`: `500`
+   - `>= 150 bps`: `1500`
+3. 先计算未对齐的原始区间：
+   - `rawLower = currentTick - tickRange`
+   - `rawUpper = currentTick + tickRange`
+4. 从 `v3Pool.tickSpacing()` 读取当前池子的合法 tick 间距。
+5. 将 `rawLower` 向下 round 到合法 spacing，得到 `tickLower`。
+6. 将 `rawUpper` 向上 round 到合法 spacing，得到 `tickUpper`。
+
+这里的 rounding 原则是“向外扩”，不是“向内收”。
+也就是说，最终合法区间必须完整覆盖原始 raw range：
+- lower 只能往更小的 tick 方向调整
+- upper 只能往更大的 tick 方向调整
+
+不能把 lower 往上收，也不能把 upper 往下收；否则最终 position range 会比策略想要的 raw range 更窄，可能更容易掉出区间。
+
+这里也不能简单依赖 Solidity 整数除法截断，因为 Solidity 对负数除法会向 0 截断。
+例如 spacing 为 `60` 时，raw lower `-1` 应该变成 `-60`，raw upper `1` 应该变成 `60`。
+这样最终 range 才能完整覆盖 raw target range。
+
+当前它还没有被 strategy 自动调用；现阶段的作用是先把动态 tick range 的核心计算和边界测试固定下来。
 
 ### addLiquidity 最小流程
 - `addLiquidity()` 负责把 vault 的 idle token 部署进 V3 position。

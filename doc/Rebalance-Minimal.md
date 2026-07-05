@@ -226,7 +226,9 @@ Current limitations:
 - the strategy does not calculate TWAP or statistical volatility itself
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
 - execution still withdraws all tracked venue liquidity before redeploying the target plan
-- stored V3 params must not rely on a deadline that will expire before execution; automatic strategy-side tick range calculation remains future work
+- stored V3 params must not rely on a deadline that will expire before execution
+- `V3TickCalculations` can calculate volatility-based tick bounds, but rebalance strategies do not yet call it automatically
+- calculated V3 tick bounds are rounded outward to legal `tickSpacing()` values, so the executable range covers the raw strategy range instead of narrowing it
 
 ### price-change volatility oracle
 

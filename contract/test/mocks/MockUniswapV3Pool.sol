@@ -15,12 +15,14 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
     uint160 public sqrtPriceX96;
     int24 public tickSpacing;
 
+    error InvalidFee();
+
     /// @notice Creates a mock pool for the given token pair and fee tier.
     /// @dev The token addresses are sorted to match Uniswap V3 pool token ordering.
     constructor(address _token0, address _token1, uint24 _fee) {
         (token0, token1) = _token0 < _token1 ? (_token0, _token1) : (_token1, _token0);
         fee = _fee;
-        tickSpacing = 60;
+        tickSpacing = _tickSpacingForFee(_fee);
         currentTick = 0;
         sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick); // 2^96
     }
@@ -44,5 +46,12 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
         uint160, int24, uint16, uint16, uint16, uint8, bool
     ) {
         return (sqrtPriceX96, currentTick, 0, 0, 0, 0, true);
+    }
+
+    function _tickSpacingForFee(uint24 _fee) internal pure returns (int24) {
+        if (_fee == 500) return 10;     // 0.05% fee = 500   -> tickSpacing = 10
+        if (_fee == 3000) return 60;    // 0.30% fee = 3000  -> tickSpacing = 60
+        if (_fee == 10000) return 200;  // 1.00% fee = 10000 -> tickSpacing = 200
+        revert InvalidFee();
     }
 }

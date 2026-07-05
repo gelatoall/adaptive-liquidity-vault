@@ -28,7 +28,7 @@ This version includes:
 This version does not include:
 - multiple V3 fee tiers in one adapter
 - multiple V3 position NFTs in one adapter
-- automatic strategy-side tick range calculation
+- automatic strategy-side wiring of dynamic tick range calculation
 - single-sided deposit optimization
 - swap-to-ratio logic
 - autonomous rebalancing
@@ -43,6 +43,8 @@ Notes:
 - Multi-fee-tier selection belongs in a later strategy or venue manager layer.
 - The target `pool` is treated as known configuration, so this minimal version does not depend on a V3 factory.
 - The current `IVenueAdapter` can be reused because the adapter hides the V3 NFT details internally.
+- Dynamic tick range calculation lives outside the adapter in `V3TickCalculations`; the adapter only validates and executes the tick bounds passed in `LiquidityParams`.
+- `V3TickCalculations` rounds tick bounds outward: lower ticks round down and upper ticks round up so the legal V3 range covers, rather than shrinks, the raw target range.
 
 ## Responsibilities
 
@@ -401,7 +403,7 @@ This means each V3 fee tier can be represented by a separate adapter instance an
 
 Later versions may add:
 - V3 TWAP oracle integration
-- strategy-side tick range calculation from volatility and current pool tick
+- strategy-side integration with `V3TickCalculations` so rebalance targets can supply fresh V3 tick bounds
 - multiple adapter instances for multiple fee tiers
 - a venue registry or strategy manager
 - automated rebalance between V2, V3 0.05%, V3 0.30%, and V3 1.00%
