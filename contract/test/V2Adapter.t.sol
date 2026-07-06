@@ -130,10 +130,11 @@ contract V2AdapterTest is Test {
         );
     }
 
-    /// @notice Verifies explicit fee collection is unsupported for V2 LP positions.
-    function test_CollectFees_RevertsAsUnsupported() public {
-        vm.expectRevert(UniswapV2Adapter.UnsupportedOperation.selector);
-        adapter.collectFees();
+    /// @notice Verifies V2 fee collection is a no-op because fees accrue inside LP value.
+    function test_CollectFees_ReturnsZero() public {
+        (uint256 fees0, uint256 fees1) = adapter.collectFees();
+        assertEq(fees0, 0);
+        assertEq(fees1, 0);
     }
   
     /// @notice Verifies `hasPosition` returns false when the adapter holds no LP tokens.

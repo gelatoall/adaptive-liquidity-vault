@@ -96,9 +96,6 @@ contract UniswapV2Adapter is IVenueAdapter {
     /// @notice Thrown when a remove-liquidity request exceeds the adapter's LP balance.
     error InsufficientLpBalance();
 
-    /// @notice Thrown when a function is intentionally unsupported in the minimal implementation.
-    error UnsupportedOperation();
-
     // ============================================
     // Modifiers
     // ============================================
@@ -243,7 +240,7 @@ contract UniswapV2Adapter is IVenueAdapter {
     /// @inheritdoc IVenueAdapter
     /// @dev Uniswap V2 realizes fees inside LP position value rather than through a separate claim step.
     function collectFees() external pure override returns (uint256, uint256) {
-        revert UnsupportedOperation();
+        return (0, 0);
     }
 
     /// @inheritdoc IVenueAdapter

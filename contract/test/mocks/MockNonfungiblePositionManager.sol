@@ -239,9 +239,14 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
 
     /// @notice Adds owed amounts to an existing test position.
     function addFees(uint256 tokenId, uint128 amount0, uint128 amount1) external {
-        require(_positions[tokenId].exists, "NO_POSITION");
-        _positions[tokenId].tokensOwed0 += amount0;
-        _positions[tokenId].tokensOwed1 += amount1;
+        Position storage p = _positions[tokenId];
+        require(p.exists, "NO_POSITION");
+        
+        p.tokensOwed0 += amount0;
+        p.tokensOwed1 += amount1;
+
+        if (amount0 > 0) MockERC20(p.token0).mint(address(this), amount0);
+        if (amount1 > 0) MockERC20(p.token1).mint(address(this), amount1);
     }
     
     /// @notice Clears the preprogrammed mint result.

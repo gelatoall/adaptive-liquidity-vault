@@ -536,7 +536,7 @@
 - `addLiquidity()` 和 `removeLiquidity()` 是 `onlyVault`
 - `getPositionValue()` 是公开 `view`
 - `hasPosition()` 是公开 `view`
-- `collectFees()` 当前版本固定 revert，因为 Uniswap V2 没有独立的 fee claim 步骤
+- `collectFees()` 当前版本返回 `(0, 0)`，因为 Uniswap V2 没有独立的 fee claim 步骤，fees 已经体现在 LP position value 里
 
 ### 当前 V2 Adapter 已经实现的输入约束
 - constructor 会检查：
@@ -1631,7 +1631,7 @@ tick range 有两个基本约束：
 
 ### collectFees 最小流程
 - V3 和 V2 不同，V3 有显式 fee collection。
-- 所以 `collectFees()` 在 V3 adapter 里应该真实执行，而不是像 V2 adapter 那样 revert。
+- 所以 `collectFees()` 在 V3 adapter 里应该真实执行；V2 adapter 则返回 `(0, 0)` 作为 no-op。
 
 流程是：
 1. 如果没有 active position，revert
@@ -1790,7 +1790,8 @@ tick range 有两个基本约束：
   - partial redeem 会保留原 `tokenId`，只减少 position liquidity
   - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
   - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出对应比例 liquidity 并清理 fully redeemed position
-- 当前 vault 还没有公开的 V3 `collectFees()` 入口，所以 fee harvest 先留在 adapter 单测里覆盖
+- 当前 vault 在撤出 venue liquidity 前会先调用 adapter `collectFees()`，所以 V3 fees 会在 withdraw / redeem / rebalance 撤仓路径中先回到 vault。
+- 当前还没有单独的 public fee-harvest 入口；如果后续要 keeper 定期 harvest，可以再加 `collectFeesFromVenue(...)`。
 
 ### V3 集成测试边界
 - 当前 mock 版本里，token 余额最终会落在 `MockNonfungiblePositionManager`，这是简化实现，不是链上真实 V3 的最终托管位置

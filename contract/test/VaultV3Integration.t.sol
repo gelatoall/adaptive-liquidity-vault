@@ -98,10 +98,12 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token0.balanceOf(address(positionManager)), amount0);
     }
     
-    /// @notice Verifies deployed V3 funds can be withdrawn back to the vault.
-    function test_WithdrawFromVenue_ReturnsFundsFromV3() public {
+    /// @notice Verifies deployed V3 funds and explicit fees can be withdrawn back to the vault.
+    function test_WithdrawFromVenue_ReturnsFundsAndCollectsFeesFromV3() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
+        uint256 fee0 = 0.1 ether;
+        uint256 fee1 = 200e6;
         
         // user -> vault
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
@@ -119,15 +121,19 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         (uint256 poolAmount0Desired, uint256 poolAmount1Desired) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Desired, poolAmount1Desired);
-        (uint256 amount0Out, uint256 amount1Out) = vault.withdrawFromVenue(2, deployedLiquidity, "");
+
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
+
+        (uint256 amount0Out, uint256 amount1Out) = vault.withdrawFromVenue(V3_LOW_VENUE_ID, deployedLiquidity, "");
 
         assertEq(amount0Out, amount0);
         assertEq(amount1Out, amount1);
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);
 
-        assertEq(token0.balanceOf(address(vault)), amount0);
-        assertEq(token1.balanceOf(address(vault)), amount1);
+        assertEq(token0.balanceOf(address(vault)), amount0 + fee0);
+        assertEq(token1.balanceOf(address(vault)), amount1 + fee1);
     }
 
     /// @notice Verifies full redeem withdraws all active V3 liquidity and forwards withdrawal params.

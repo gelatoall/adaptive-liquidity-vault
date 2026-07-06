@@ -217,8 +217,9 @@ Redemptions remain available while the vault is paused so users can exit.
 1. Require the venue to be registered and configured with an adapter.
 2. Reject zero liquidity.
 3. Require enough tracked liquidity for that venue.
-4. Call `adapter.removeLiquidity(liquidity, params)`.
-5. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
+4. Call `adapter.collectFees()` so explicit venue fees are returned to idle vault balances before liquidity is removed.
+5. Call `adapter.removeLiquidity(liquidity, params)`.
+6. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
 User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances still use empty withdrawal params in this entrypoint; strategy-side withdrawal params are a separate interface design task.
 

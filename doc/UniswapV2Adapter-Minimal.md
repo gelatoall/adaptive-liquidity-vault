@@ -51,7 +51,7 @@ Notes:
 - approve router usage when needed
 - add liquidity into the target V2 pair
 - remove liquidity from the pair
-- reject explicit fee collection because plain Uniswap V2 LPs do not expose a separate fee-claim step
+- return zero for explicit fee collection because plain Uniswap V2 LPs do not expose a separate fee-claim step
 - return unused tokens and withdrawn tokens back to the vault
 - expose current deployed position balances
 
@@ -89,7 +89,7 @@ Current code status:
 - `onlyVault` currently protects `addLiquidity()` and `removeLiquidity()`
 - `getPositionValue()` is intentionally public `view`
 - `hasPosition()` remains publicly readable
-- `collectFees()` is implemented as `pure` and always reverts with `UnsupportedOperation`
+- `collectFees()` is implemented as `pure` and returns `(0, 0)` because V2 fees accrue inside LP value
 - add/remove events exist for observability, but current tests treat them as secondary to state and asset-flow verification
 - `AdaptiveLPVault` is now minimally integrated with the adapter through:
   - `setVenue(venueId, adapter, label, enabled)`
@@ -127,7 +127,7 @@ Current code status:
 - `collectFees()`
   - purpose: collect fees for venues that support explicit fee collection
   - returns: `uint256 fees0, uint256 fees1`
-  - current minimal implementation: always reverts with `UnsupportedOperation`
+  - current V2 implementation: returns `(0, 0)` because there is no separate fee-claim step
 
 - `getPositionValue()`
   - purpose: report the underlying token amounts represented by the adapter's LP position
@@ -172,9 +172,9 @@ Current code status:
 
 ### collectFees
 
-1. If the venue supports explicit fee collection, claim the pending fees.
-2. Return the collected token amounts.
-3. For V2, this function should normally revert with an unsupported-operation style error because fee collection is realized through LP position value rather than a separate claim step.
+1. Return `(0, 0)`.
+2. V2 swap fees are realized through LP position value, so removing liquidity naturally realizes them with the withdrawn underlying assets.
+3. Returning zero keeps the shared vault withdrawal flow compatible with venues that do not expose explicit fee claims.
 
 ### getPositionValue
 
@@ -191,7 +191,6 @@ The adapter should revert when:
 - liquidity to withdraw is zero
 - liquidity exceeds the adapter's LP balance
 - a state-changing function is called by a non-vault address
-- `collectFees()` is called on a venue that does not support explicit fee collection
 - LP balance is non-zero while the pair reports zero total supply
 - token transfer or router interaction fails
 - constructor configuration does not match the pair's token set
@@ -212,7 +211,7 @@ The first test set should cover:
 - constructor stores the expected addresses
 - `addLiquidity()` reverts when both amounts are zero
 - `addLiquidity()` can mint LP tokens
-- `collectFees()` reverts for the minimal V2 implementation
+- `collectFees()` returns zero for V2
 - `removeLiquidity()` reverts when liquidity is zero
 - `removeLiquidity()` reverts when liquidity exceeds position size
 - `removeLiquidity()` returns `token0` and `token1` to the vault

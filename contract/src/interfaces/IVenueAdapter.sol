@@ -23,7 +23,7 @@ interface IVenueAdapter {
         bytes calldata params
     ) external returns (uint256 amount0, uint256 amount1);
 
-    /// @notice Collect any accumulated fees if the venue supports explicit fee collection
+    /// @notice Collect any accumulated fees; venues without explicit fee claims should return zero.
     function collectFees() external returns (uint256 fees0, uint256 fees1);
 
     /// @notice Get the underlying token balances represented by the current position

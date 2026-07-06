@@ -649,6 +649,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         if (liquidity == 0) revert ZeroLiquidity();
         if (venueLiquidity[venueId] < liquidity) revert InsufficientLiquidity();
 
+        v.adapter.collectFees();
+
         (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity, params);
         venueLiquidity[venueId] -= liquidity;
         totalLiquidity -= liquidity;

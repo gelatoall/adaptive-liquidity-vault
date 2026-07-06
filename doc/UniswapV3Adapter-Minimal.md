@@ -385,7 +385,7 @@ That integration layer should verify:
 - `totalAssets()` includes `adapter.getPositionValue()`
 - redemption can clear the active V3 position when the user redeems all shares
 
-Keep `collectFees()` coverage in the adapter unit tests for now, since the vault does not yet expose a dedicated public fee-harvest entrypoint for V3.
+The vault withdraw path calls `collectFees()` before `removeLiquidity(...)`, so explicit V3 fees are returned to idle vault balances during manual withdraw, redeem, rebalance, and emergency-exit withdrawals. There is still no dedicated public fee-harvest entrypoint; adapter unit tests keep direct `collectFees()` coverage for the V3-specific behavior.
 
 ## Current Vault Integration
 
