@@ -5,6 +5,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../interfaces/IVolatilityOracle.sol";
+import "../adapters/UniswapV3Adapter.sol";
+import "./V3TickCalculations.sol";
 
 /// @notice Builds total-underlying allocations from configured volatility buckets.
 contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
@@ -26,12 +28,18 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
 
     /// @notice Venue allocations configured for each bucket.
     mapping(Bucket => RebalanceTypes.TargetConfig[]) public bucketTargets;
+    
+    /// @notice Optional dynamic V3 tick calculator per venue.
+    mapping(uint256 => V3TickCalculations) public v3TickCalculations;
 
     /// @notice Emitted when volatility thresholds are updated.
     event SetThresholds(uint256 lowVolatilityThresholdBps, uint256 highVolatilityThresholdBps);
 
     /// @notice Emitted when a bucket's venue allocations are replaced.
     event SetBucketTargets(Bucket indexed bucket, uint256 count);
+
+    /// @notice Emitted when a venue's dynamic V3 tick calculator is configured.
+    event SetV3TickCalculations(uint256 indexed venueId, address indexed calculator);
     
     error ZeroAddress();
     error ZeroWeight();
@@ -99,7 +107,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
                 venueId: configs[i].venueId,
                 amount0: amount0,
                 amount1: amount1,
-                params: configs[i].params
+                params: _buildTargetParams(configs[i], volatilityBps)
             });
         }
     }
@@ -153,6 +161,14 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         emit SetBucketTargets(bucket, length);
     }
 
+    /// @notice Sets the dynamic V3 tick calculator for a venue.
+    function setV3TickCalculations(uint256 venueId, address calculator) external onlyOwner {
+        if (calculator == address(0)) revert ZeroAddress();
+        v3TickCalculations[venueId] = V3TickCalculations(calculator);
+
+        emit SetV3TickCalculations(venueId, calculator);
+    }
+
     // ============================================
     // Internal Functions
     // ============================================
@@ -162,5 +178,25 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
 
         lowVolatilityThresholdBps = lowThresholdBps;
         highVolatilityThresholdBps = highThresholdBps;
+    }
+
+    /// @notice Returns static params or generated dynamic V3 tick params for a target config.
+    function _buildTargetParams(
+        RebalanceTypes.TargetConfig memory config, 
+        uint256 volatilityBps
+    ) internal view returns (bytes memory) {
+        V3TickCalculations calculator = v3TickCalculations[config.venueId];
+        if (address(calculator) == address(0)) {
+            return config.params;
+        }
+
+        (int24 tickLower, int24 tickUpper) = calculator.calculateTickRange(volatilityBps);
+        return abi.encode(UniswapV3Adapter.LiquidityParams({
+            amount0Min: 0,
+            amount1Min: 0,
+            deadline: block.timestamp,
+            tickLower: tickLower,
+            tickUpper: tickUpper
+        }));
     }
 }

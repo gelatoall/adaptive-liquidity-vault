@@ -249,9 +249,11 @@ The value-loss guard is downside-only. A rebalance that increases `totalAssets()
 
 The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
-- `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value
+- `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value and can generate dynamic V3 tick-range params for configured V3 venues
 
 Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+
+`VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`. The generated params currently leave `amount0Min` and `amount1Min` at zero; TWAP-based dynamic slippage calculation is still a separate future component.
 
 The current concrete volatility oracle is `PriceChangeVolatilityOracle`. It reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points. This is a simple price-change proxy, not a statistical volatility model.
 
@@ -343,6 +345,7 @@ Rebalance coverage:
 - rebalance reverts when there is no liquidity to move
 - strategy-driven rebalance executes a fixed-weight plan
 - strategy-driven rebalance executes a volatility-selected plan
+- volatility-selected plans can generate dynamic V3 tick-range params for configured V3 venues
 - strategy-driven rebalance can move already-deployed capital from one venue to another
 - strategy-driven rebalance enforces cooldown and max gas price guards
 

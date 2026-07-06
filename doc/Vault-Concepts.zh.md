@@ -1199,13 +1199,20 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   4. 调用 vault 的 `getTotalUnderlying()`
   5. 按权重拆分 vault 当前 total underlying
   6. 把 rounding dust 分给最后一个 target
+  7. 如果某个 target venue 配置了 `V3TickCalculations`，则动态生成该 V3 target 的 `LiquidityParams`
 - `rebalanceWithStrategy(data)` 仍然会把 `data` 透传给 strategy，但当前 `VolatilityBucketStrategy` 不使用这个参数。
 - 它不再是 idle-only：
   - 会通过 `getTotalUnderlying()` 读取 idle + deployed amounts
   - 可以在 vault 已有 tracked liquidity 时生成新 plan
   - 但不计算 in-place delta，执行层仍然是先全撤再部署
 - 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”。
-- V3 的 `params` 如果长期保存绝对 deadline，执行时可能过期；动态生成 V3 参数属于后续工作。
+- 当前它还可以通过 `setV3TickCalculations(venueId, calculator)` 给特定 V3 venue 配置动态 tick calculator。
+- 如果 target 的 `venueId` 配了 calculator，strategy 会：
+  - 调 `calculator.calculateTickRange(volatilityBps)`
+  - 把返回的 `tickLower/tickUpper` 编码进 `UniswapV3Adapter.LiquidityParams`
+  - 使用 `deadline = block.timestamp`
+  - 暂时使用 `amount0Min = 0`、`amount1Min = 0`
+- 这表示 V3 动态 range 已经接入 strategy 层；但动态 slippage min amount 仍然是后续独立模块。
 
 ### 当前 PriceChangeVolatilityOracle
 - 当前已经实现了 [PriceChangeVolatilityOracle.sol](../contract/src/oracles/PriceChangeVolatilityOracle.sol)。
@@ -1572,7 +1579,11 @@ tick range 有两个基本约束：
 例如 spacing 为 `60` 时，raw lower `-1` 应该变成 `-60`，raw upper `1` 应该变成 `60`。
 这样最终 range 才能完整覆盖 raw target range。
 
-当前它还没有被 strategy 自动调用；现阶段的作用是先把动态 tick range 的核心计算和边界测试固定下来。
+当前 `VolatilityBucketStrategy` 可以按 `venueId` 配置 `V3TickCalculations`。
+当 strategy 生成 rebalance target 时，如果某个 V3 venue 配置了 calculator，它会自动调用 `calculateTickRange(volatilityBps)`，再把结果编码进 `UniswapV3Adapter.LiquidityParams.tickLower/tickUpper`。
+
+这一步已经把“动态 tick range 计算”从独立模块接到了 strategy 层。
+还没有完成的是 TWAP-based slippage controller：当前 strategy 生成的 V3 params 仍然把 `amount0Min/amount1Min` 设为 `0`，只负责动态 tick range。
 
 ### addLiquidity 最小流程
 - `addLiquidity()` 负责把 vault 的 idle token 部署进 V3 position。

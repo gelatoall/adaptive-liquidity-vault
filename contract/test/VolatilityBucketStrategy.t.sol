@@ -2,14 +2,17 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
+import "../src/adapters/UniswapV3Adapter.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
+import "../src/strategies/V3TickCalculations.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockVolatilityOracle.sol";
+import "./mocks/MockUniswapV3Pool.sol";
 import "./helpers/VaultTestHelper.sol";
 import "./helpers/VenueTestHelper.sol";
 
-/// @notice Covers volatility bucket selection and idle-only target construction.
+/// @notice Covers volatility bucket selection and strategy-built rebalance targets.
 contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper {
     MockERC20 public token0;
     MockERC20 public token1;
@@ -110,6 +113,39 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
         assertEq(targets[3].amount0, 0.5 ether);
         assertEq(targets[3].amount1, 1e6);
+    }
+
+    /// @notice Configured V3 venues receive dynamic tick params instead of their static target params.
+    function test_BuildTargets_BuildsDynamicV3TickParams() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint24 fee = 3000; // fee tier: 3000 = 0.30%, tickSpacing = 60
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        _setLowBucketTargets();
+
+        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), fee);
+        pool.setSlot0FromTick(199);
+
+        V3TickCalculations calculations = new V3TickCalculations(address(pool));
+        strategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
+
+        volatilityOracle.setVolatilityBps(49); // low volatility => tickRange = 200
+
+        RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
+
+        // _buildFourTargetConfigs orders V3_LOW at index 1; assert it before decoding V3 params.
+        assertEq(targets[1].venueId, V3_LOW_VENUE_ID);
+        UniswapV3Adapter.LiquidityParams memory params = abi.decode(targets[1].params, (UniswapV3Adapter.LiquidityParams));
+
+        assertEq(params.amount0Min, 0);
+        assertEq(params.amount1Min, 0);
+        assertEq(params.deadline, block.timestamp);
+        // currentTick = 199 and low-volatility tickRange = 200 gives raw bounds [-1, 399].
+        // With spacing 60, outward rounding produces [-60, 420].
+        assertEq(params.tickLower, -60);
+        assertEq(params.tickUpper, 420);
     }
 
     /// @notice Medium volatility selects the configured medium-bucket allocation.

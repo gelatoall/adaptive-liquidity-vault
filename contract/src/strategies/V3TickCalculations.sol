@@ -5,11 +5,13 @@ import "../interfaces/IUniswapV3Pool.sol";
 
 /// @notice Calculates Uniswap V3 position tick ranges from pool state and volatility signals.
 contract V3TickCalculations {
+    /// @notice V3 pool whose current tick and tick spacing are used for range calculation.
     IUniswapV3Pool public immutable v3Pool;
 
     error ZeroAddress();
     error InvalidTickSpacing();
 
+    /// @notice Initializes the calculator for one V3 pool.
     constructor(address _v3Pool) {
         if (_v3Pool == address(0)) revert ZeroAddress();
         v3Pool = IUniswapV3Pool(_v3Pool);
@@ -34,7 +36,7 @@ contract V3TickCalculations {
             tickRange = 1500; // ~15% price range width
         }
 
-        // 3. Round bounds to nearest valid tick spacing (Essential V3 invariant)
+        // 3. Round bounds to nearest valid tick spacing (essential V3 invariant).
         int24 tickSpacing = v3Pool.tickSpacing();
         if (tickSpacing <= 0) revert InvalidTickSpacing();
 
@@ -43,6 +45,7 @@ contract V3TickCalculations {
         tickUpper = _roundUpToSpacing(currentTick + tickRange, tickSpacing);
     }
 
+    /// @notice Rounds a tick down to the nearest spacing-aligned tick.
     function _roundDownToSpacing(int24 tick, int24 spacing) internal pure returns (int24) {
         int24 compressed = tick / spacing;
         // Solidity division truncates toward zero, so negative unaligned ticks need one extra step down.
@@ -52,6 +55,7 @@ contract V3TickCalculations {
         return compressed * spacing;
     }
 
+    /// @notice Rounds a tick up to the nearest spacing-aligned tick.
     function _roundUpToSpacing(int24 tick, int24 spacing) internal pure returns (int24) {
         int24 compressed = tick / spacing;
         // Positive unaligned ticks need one extra step up to keep the range covering the raw bound.
