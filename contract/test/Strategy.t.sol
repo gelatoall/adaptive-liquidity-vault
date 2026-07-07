@@ -8,6 +8,8 @@ import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/strategies/FixedWeightStrategy.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
 import "../src/oracles/PriceChangeVolatilityOracle.sol";
+import "../src/oracles/V3TwapVolatilityOracle.sol";
+import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockRebalanceStrategy.sol";
@@ -320,6 +322,50 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token0.balanceOf(address(pairV2)), amount0);
         assertEq(token1.balanceOf(address(pairV2)), amount1);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
+    }
+
+    /// @notice rebalanceWithStrategy can use V3 TWAP volatility to build and execute a bucket plan.
+    function test_RebalanceWithStrategy_ExecutesPlanFromV3TwapVolatilityOracle() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint32 twapWindow = 1800;
+        vm.warp(twapWindow);
+
+        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        pool.setTwapTick(0);
+        pool.setSlot0FromTick(0);
+
+        V3TwapVolatilityOracle v3Oracle = new V3TwapVolatilityOracle(address(pool), twapWindow);
+        assertEq(v3Oracle.getVolatilityBps(), 0);
+
+        VolatilityBucketStrategy v3OracleStrategy =
+            new VolatilityBucketStrategy(address(v3Oracle), lowThresholdBps, highThresholdBps);
+
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: V2_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+
+        v3OracleStrategy.setBucketTargets(VolatilityBucketStrategy.Bucket.LOW, configs);
+        vault.setStrategy(address(v3OracleStrategy));
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        vault.rebalanceWithStrategy("");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(token0.balanceOf(address(pairV2)), amount0);
+        assertEq(token1.balanceOf(address(pairV2)), amount1);
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
+        assertEq(vault.totalLiquidity(), liquidity);
     }
 
     /// @notice rebalanceWithStrategy reverts when volatility guard is enabled without an oracle.

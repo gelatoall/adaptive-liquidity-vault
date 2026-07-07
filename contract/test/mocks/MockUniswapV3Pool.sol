@@ -12,10 +12,12 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
     address public token1;
     uint24 public fee;
     int24 public currentTick;
+    int24 public twapTick;
     uint160 public sqrtPriceX96;
     int24 public tickSpacing;
 
     error InvalidFee();
+    error ObservationTooOld();
 
     /// @notice Creates a mock pool for the given token pair and fee tier.
     /// @dev The token addresses are sorted to match Uniswap V3 pool token ordering.
@@ -24,6 +26,7 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
         fee = _fee;
         tickSpacing = _tickSpacingForFee(_fee);
         currentTick = 0;
+        twapTick = currentTick;
         sqrtPriceX96 = TickMath.getSqrtRatioAtTick(currentTick); // 2^96
     }
 
@@ -41,11 +44,32 @@ contract MockUniswapV3Pool is IUniswapV3Pool {
         currentTick = _tick;
     }
 
+    /// @notice Sets the average tick returned by observe for TWAP tests.
+    function setTwapTick(int24 _twapTick) external {
+        twapTick = _twapTick;
+    }
+
     /// @inheritdoc IUniswapV3Pool
     function slot0() external view returns (
         uint160, int24, uint16, uint16, uint16, uint8, bool
     ) {
         return (sqrtPriceX96, currentTick, 0, 0, 0, 0, true);
+    }
+
+    /// @inheritdoc IUniswapV3Pool
+    function observe(uint32[] calldata secondsAgos) external view returns (
+        int56[] memory tickCumulatives,
+        uint160[] memory secondsPerLiquidityCumulativeX128s
+    ) {
+        tickCumulatives = new int56[](secondsAgos.length);
+        secondsPerLiquidityCumulativeX128s = new uint160[](secondsAgos.length);
+
+        for (uint256 i = 0; i < secondsAgos.length; i++) {
+            if (secondsAgos[i] > block.timestamp) revert ObservationTooOld();
+
+            uint56 observationTime = uint56(block.timestamp - secondsAgos[i]);
+            tickCumulatives[i] = int56(twapTick) * int56(observationTime);
+        }
     }
 
     function _tickSpacingForFee(uint24 _fee) internal pure returns (int24) {

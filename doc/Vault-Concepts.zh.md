@@ -1242,6 +1242,46 @@ volatilityBps = max(change0Bps, change1Bps)
   - 不维护多周期历史窗口
 - 它是当前最小实现里的 price-change proxy，用来给 `VolatilityBucketStrategy` 提供可测试的链上波动率输入。
 
+### 当前 V3TwapVolatilityOracle
+- 当前还实现了 [V3TwapVolatilityOracle.sol](../contract/src/oracles/V3TwapVolatilityOracle.sol)。
+- 它也是一个 `IVolatilityOracle`，但它的 volatility 来源不是两次价格快照，而是同一个 Uniswap V3 pool 的 spot price 和 TWAP price 之间的偏离。
+- 它依赖两个概念：
+  - `slot0()`：读取当前 spot price，也就是“现在这一刻”的池子价格
+  - `observe([twapWindow, 0])`：读取过去一段时间的 tick cumulative，用来计算 TWAP
+- 它的计算心智模型是：
+
+```text
+spotPrice = 当前 pool.slot0() 对应的价格
+twapPrice = 过去 twapWindow 秒的平均价格
+volatilityBps = abs(spotPrice - twapPrice) * 10_000 / twapPrice
+```
+
+- 这不是严格统计学 volatility：
+  - 不计算标准差
+  - 不计算年化波动率
+  - 不维护多周期历史收益率序列
+- 它更准确地说是“spot 相对 TWAP 的偏离程度”。
+- 这个信号对策略有用，因为：
+  - 如果 spot 和 TWAP 很接近，说明当前价格没有明显偏离近期平均价格
+  - 如果 spot 明显偏离 TWAP，说明市场可能正在快速波动，或者 spot 被短期交易影响
+  - 用 TWAP 做锚点，可以降低单区块 spot manipulation 直接驱动 rebalance 的风险
+- `VolatilityBucketStrategy` 不关心这个数字是怎么来的：
+  - 可以来自 `MockVolatilityOracle`
+  - 可以来自 `PriceChangeVolatilityOracle`
+  - 也可以来自 `V3TwapVolatilityOracle`
+- 它只读取统一接口：
+
+```solidity
+uint256 volatilityBps = volatilityOracle.getVolatilityBps();
+```
+
+- 当前测试已经覆盖：
+  - `V3TwapVolatilityOracle` 能从 V3 mock pool 算出 TWAP price
+  - spot 和 TWAP 相等时 volatility 为 `0`
+  - spot 和 TWAP 不同时 volatility 大于 `0`
+  - `VolatilityBucketStrategy` 能直接使用 `V3TwapVolatilityOracle` 驱动 LOW bucket target selection
+  - `rebalanceWithStrategy(...)` 能执行由 `V3TwapVolatilityOracle` 驱动的 bucket plan
+
 ### manual rebalance 和 strategy rebalance 的区别
 - `rebalance(targets, withdrawalParams)`：
   - owner 手动传入 plan
@@ -1350,24 +1390,32 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
   - adapter 切换后，vault 里的部署会计和真实仓位脱节
   - rebalance 读到的状态和实际资产流不一致
 
-### 为什么当前还不直接从 TWAP 计算 volatility
-- 当前已经有 strategy hook、固定权重策略、volatility bucket 策略、`IVolatilityOracle` 接口和 `PriceChangeVolatilityOracle`。
-- 也就是说：
-  - vault 能执行“把多少钱放到哪些 venue”
-  - strategy 接口已经能返回 targets
-  - `FixedWeightStrategy` 能按静态权重拆分 total underlying
-  - `VolatilityBucketStrategy` 能按 `IVolatilityOracle` 返回的波动率选择 LOW / MEDIUM / HIGH 权重
-  - `MockRebalanceStrategy` 只是测试用的预设 plan
-  - `MockVolatilityOracle` 只是测试用的可控波动率来源
-- `PriceChangeVolatilityOracle` 已经提供了一个最小真实 volatility source：
-  - 读取 `IPriceOracle`
-  - 比较当前价格和上一次价格快照
-  - 输出统一精度的 `volatilityBps`
-- 后续如果要更贴近真实市场，可以继续增强：
-  - 用 V3 TWAP 实现一个新的 `IPriceOracle`
-  - 在 volatility oracle 里维护多周期窗口
-  - 增加价格数据更新时间和过期检查
-- vault 仍然只负责验证和执行这个 plan。
+### 当前 oracle / strategy 的职责边界
+- `V2TWAPOracle`：
+  - 是 `IPriceOracle`
+  - 给 vault 的 `totalAssets()`、deposit/share 计算提供 token 价格
+  - 返回的是 `(price0, price1)`
+- `PriceChangeVolatilityOracle`：
+  - 是 `IVolatilityOracle`
+  - 读取 `IPriceOracle` 的价格快照变化
+  - 输出 `volatilityBps`
+- `V3TWAPOracle`：
+  - 是 V3 TWAP reader 基类
+  - 从 V3 pool 的 `observe(...)` 计算 TWAP price
+  - 不直接做 bucket selection
+- `V3TwapVolatilityOracle`：
+  - 是 `IVolatilityOracle`
+  - 使用 V3 pool 的 `slot0()` 和 `observe(...)`
+  - 输出 spot-vs-TWAP deviation 的 `volatilityBps`
+- `VolatilityBucketStrategy`：
+  - 不直接读 AMM pool
+  - 不自己计算 TWAP
+  - 只消费 `IVolatilityOracle.getVolatilityBps()`
+  - 根据 LOW / MEDIUM / HIGH bucket 生成 rebalance targets
+- vault：
+  - 不负责决定 volatility 怎么算
+  - 不负责决定 bucket 怎么选
+  - 只负责验证和执行 strategy 生成的 rebalance plan
 
 ### 当前测试覆盖的对应关系
 - 当前 rebalance 相关测试覆盖：

@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/adapters/UniswapV3Adapter.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
 import "../src/strategies/V3TickCalculations.sol";
+import "../src/oracles/V3TwapVolatilityOracle.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockVolatilityOracle.sol";
@@ -234,5 +235,54 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
         assertEq(targets[3].amount0, 1);
         assertEq(targets[3].amount1, 1);
+    }
+
+    /// @notice A V3 TWAP volatility oracle can drive low-bucket target selection.
+    function test_BuildTargets_UsesV3TwapVolatilityOracle() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint32 twapWindow = 1800;
+        vm.warp(twapWindow);
+        
+        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        pool.setTwapTick(0);
+        pool.setSlot0FromTick(0);
+        
+        V3TwapVolatilityOracle v3Oracle = new V3TwapVolatilityOracle(address(pool), twapWindow);
+        
+        VolatilityBucketStrategy v3OracleStrategy = new VolatilityBucketStrategy(address(v3Oracle), lowThresholdBps, highThresholdBps);
+        v3OracleStrategy.setBucketTargets(
+            VolatilityBucketStrategy.Bucket.LOW, 
+            _buildFourTargetConfigs(
+                1000, // V2: 10%
+                6000, // V3 0.05%: 60%
+                2500, // V3 0.30%: 25%
+                500   // V3 1.00%: 5%
+            )
+        );
+        assertEq(v3Oracle.getVolatilityBps(), 0);
+        
+        RebalanceTypes.RebalanceTarget[] memory targets = v3OracleStrategy.buildTargets(address(vault), "");
+
+        assertEq(targets.length, 4);
+
+        assertEq(targets[0].venueId, V2_VENUE_ID);
+        assertEq(targets[0].amount0, 1 ether);
+        assertEq(targets[0].amount1, 2e6);
+
+        assertEq(targets[1].venueId, V3_LOW_VENUE_ID);
+        assertEq(targets[1].amount0, 6 ether);
+        assertEq(targets[1].amount1, 12e6);
+
+        assertEq(targets[2].venueId, V3_MID_VENUE_ID);
+        assertEq(targets[2].amount0, 2.5 ether);
+        assertEq(targets[2].amount1, 5e6);
+
+        assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
+        assertEq(targets[3].amount0, 0.5 ether);
+        assertEq(targets[3].amount1, 1e6);
     }
 }

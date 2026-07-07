@@ -43,7 +43,8 @@ Notes:
 - `MockPriceOracle` is a test helper that exposes `setPrices(...)`
 - `IPriceOracle` itself is read-only and only defines `getPrices()`
 - a production version should replace the mock oracle with a real oracle implementation
-- TWAP implementation details are documented in `doc/V2TWAPOracle-Minimal.md`
+- V2 price TWAP implementation details are documented in `doc/V2TWAPOracle-Minimal.md`
+- V3 spot-vs-TWAP volatility details are documented in `doc/V3TwapVolatilityOracle-Minimal.md`
 - rebalance details are documented in `doc/Rebalance-Minimal.md`
 
 ## State
@@ -256,7 +257,11 @@ Both strategies operate on total vault underlying amounts reported by `getTotalU
 
 `VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`. The generated params currently leave `amount0Min` and `amount1Min` at zero; TWAP-based dynamic slippage calculation is still a separate future component.
 
-The current concrete volatility oracle is `PriceChangeVolatilityOracle`. It reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points. This is a simple price-change proxy, not a statistical volatility model.
+Current concrete volatility oracle implementations include:
+- `PriceChangeVolatilityOracle`, which reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points
+- `V3TwapVolatilityOracle`, which reads a Uniswap V3 pool's spot price from `slot0()`, reads a time-weighted average price through `observe(...)`, and reports the spot-vs-TWAP deviation in basis points
+
+Both implementations expose the same `IVolatilityOracle.getVolatilityBps()` interface. `VolatilityBucketStrategy` does not need to know how the volatility value was produced.
 
 ### pause and emergency exit
 

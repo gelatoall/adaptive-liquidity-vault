@@ -33,4 +33,13 @@ interface IUniswapV3Pool {
         uint8 feeProtocol,
         bool unlocked
     );
-  }
+
+    /// @notice Returns cumulative oracle values for each requested lookback.
+    /// @param secondsAgos Seconds before the current block timestamp to observe.
+    /// @return tickCumulatives Cumulative tick values at each requested lookback.
+    /// @return secondsPerLiquidityCumulativeX128s Cumulative seconds-per-liquidity values.
+    function observe(uint32[] calldata secondsAgos) external view returns (
+        int56[] memory tickCumulatives,
+        uint160[] memory secondsPerLiquidityCumulativeX128s
+    );
+}
