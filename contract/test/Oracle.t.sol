@@ -2,17 +2,17 @@
 pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
-import "../src/oracles/TWAPOracle.sol";
+import "../src/oracles/V2TWAPOracle.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 
 /// @title OracleTest
-/// @notice Unit tests for TWAPOracle constructor validation, update windows, scaling, and token-order mapping.
+/// @notice Unit tests for V2TWAPOracle constructor validation, update windows, scaling, and token-order mapping.
 contract OracleTest is Test {
     MockERC20 public token0;
     MockERC20 public token1;
     MockUniswapV2Pair public pair;
-    TWAPOracle public oracle;
+    V2TWAPOracle public oracle;
     uint32 public minUpdateInterval = 300; // 5 minutes
     
     /// @notice Deploys token mocks, pair mock, and oracle fixture for each test.
@@ -24,7 +24,7 @@ contract OracleTest is Test {
         pair.setReserves(1_000_000, 2_000_000);
         pair.setCumulativePrices(1_000_000e18, 2_000_000e18);
 
-        oracle = new TWAPOracle(
+        oracle = new V2TWAPOracle(
             address(pair), 
             address(token0), 
             address(token1),
@@ -34,8 +34,8 @@ contract OracleTest is Test {
 
     /// @notice Reverts when the pair address is zero.
     function test_Constructor_RevertsWhenPairIsZeroAddress() public {
-        vm.expectRevert(TWAPOracle.ZeroAddress.selector);
-        new TWAPOracle(
+        vm.expectRevert(V2TWAPOracle.ZeroAddress.selector);
+        new V2TWAPOracle(
             address(0),
             address(token0), 
             address(token1),
@@ -45,8 +45,8 @@ contract OracleTest is Test {
 
     /// @notice Reverts when token0 address is zero.
     function test_Constructor_RevertsWhenToken0IsZeroAddress() public {
-        vm.expectRevert(TWAPOracle.ZeroAddress.selector);
-        new TWAPOracle(
+        vm.expectRevert(V2TWAPOracle.ZeroAddress.selector);
+        new V2TWAPOracle(
             address(pair),
             address(0), 
             address(token1),
@@ -56,8 +56,8 @@ contract OracleTest is Test {
 
     /// @notice Reverts when token1 address is zero.
     function test_Constructor_RevertsWhenToken1IsZeroAddress() public {
-        vm.expectRevert(TWAPOracle.ZeroAddress.selector);
-        new TWAPOracle(
+        vm.expectRevert(V2TWAPOracle.ZeroAddress.selector);
+        new V2TWAPOracle(
             address(pair),
             address(token0), 
             address(0),
@@ -67,8 +67,8 @@ contract OracleTest is Test {
 
     /// @notice Reverts when the minimum update interval is zero.
     function test_Constructor_RevertsWhenIntervalIsZero() public {
-        vm.expectRevert(TWAPOracle.InvalidInterval.selector);
-        new TWAPOracle(
+        vm.expectRevert(V2TWAPOracle.InvalidInterval.selector);
+        new V2TWAPOracle(
             address(pair),
             address(token0), 
             address(token1),
@@ -81,8 +81,8 @@ contract OracleTest is Test {
         MockERC20 other = new MockERC20("Other", "OTH", 18);
         MockUniswapV2Pair badPair = new MockUniswapV2Pair(address(token0), address(other));
 
-        vm.expectRevert(TWAPOracle.InvalidPairTokens.selector);
-        new TWAPOracle(
+        vm.expectRevert(V2TWAPOracle.InvalidPairTokens.selector);
+        new V2TWAPOracle(
             address(badPair),
             address(token0), 
             address(token1),
@@ -101,13 +101,13 @@ contract OracleTest is Test {
 
     /// @notice Reverts before the first valid update initializes an average.
     function test_GetPrices_RevertsBeforeFirstValidUpdate() public {
-        vm.expectRevert(TWAPOracle.NotInitialized.selector);
+        vm.expectRevert(V2TWAPOracle.NotInitialized.selector);
         oracle.getPrices();
     }
 
     /// @notice Reverts when no time has elapsed since last snapshot.
     function test_Update_RevertsWhenNoTimeElapsed() public {
-        vm.expectRevert(TWAPOracle.ZeroTimeElapsed.selector);
+        vm.expectRevert(V2TWAPOracle.ZeroTimeElapsed.selector);
         oracle.update();
     }
 
@@ -115,7 +115,7 @@ contract OracleTest is Test {
     function test_Update_RevertsWhenIntervalTooShort() public {
         vm.warp(block.timestamp + minUpdateInterval - 1);
         pair.setReserves(1_000_001, 2_000_001);
-        vm.expectRevert(TWAPOracle.IntervalTooShort.selector);
+        vm.expectRevert(V2TWAPOracle.IntervalTooShort.selector);
         oracle.update();
     }
 
@@ -197,7 +197,7 @@ contract OracleTest is Test {
         reversedPair.setReserves(1_000_000, 2_000_000);
         reversedPair.setCumulativePrices(1_000_000e18, 2_000_000e18);
         
-        TWAPOracle reversedOracle = new TWAPOracle(
+        V2TWAPOracle reversedOracle = new V2TWAPOracle(
             address(reversedPair),
             address(token0),
             address(token1),

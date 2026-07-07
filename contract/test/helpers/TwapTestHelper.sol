@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import "../mocks/MockERC20.sol";
 import "../mocks/MockUniswapV2Pair.sol";
-import "../../src/oracles/TWAPOracle.sol";
+import "../../src/oracles/V2TWAPOracle.sol";
 import "../../src/AdaptiveLPVault.sol";
 
 abstract contract TwapTestHelper is Test {
@@ -14,14 +14,14 @@ abstract contract TwapTestHelper is Test {
         MockERC20 token1,
         AdaptiveLPVault vault,
         uint32 interval
-    ) internal returns (MockUniswapV2Pair twapPair, TWAPOracle twapOracle) {
+    ) internal returns (MockUniswapV2Pair twapPair, V2TWAPOracle twapOracle) {
         twapPair = new MockUniswapV2Pair(address(token0), address(token1));
         
         // Set baseline values to ensure the Oracle constructor captures non-zero data for its initial snapshot
         twapPair.setReserves(1_000_000, 2_000_000);
         twapPair.setCumulativePrices(1_000_000e18, 2_000_000e18);
 
-        twapOracle = new TWAPOracle(address(twapPair), address(token0), address(token1), interval);
+        twapOracle = new V2TWAPOracle(address(twapPair), address(token0), address(token1), interval);
         
         // Link the newly deployed oracle to the vault to override any existing mock oracles
         vault.setPriceOracle(address(twapOracle));
@@ -30,7 +30,7 @@ abstract contract TwapTestHelper is Test {
     /** @dev Advances time and primes oracle. Formula: CumNow = CumLast + (avgPriceX112 * dt) */
     function _primeTwap(
         MockUniswapV2Pair _twapPair,
-        TWAPOracle _twapOracle,
+        V2TWAPOracle _twapOracle,
         uint32 dt, 
         uint256 avg0X112, 
         uint256 avg1X112

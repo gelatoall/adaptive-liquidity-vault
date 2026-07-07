@@ -30,7 +30,7 @@ Notes:
 - This adapter is an execution module, not a strategy module.
 - The vault decides when assets remain idle or are deployed.
 - The adapter only interacts with the venue.
-- Price formation is handled by the oracle layer (`doc/TWAPOracle-Minimal.md`), not by this adapter.
+- Price formation is handled by the oracle layer (`doc/V2TWAPOracle-Minimal.md`), not by this adapter.
 - The target `pair` is treated as known configuration, so this minimal version does not depend on a V2 factory.
 - The current implementation validates that `pair` contains exactly `token0` and `token1`, allowing either pair ordering.
 

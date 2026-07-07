@@ -943,10 +943,10 @@
 - `vault shares` = 对整个 vault 的份额
 - 这两种“份额”都叫份额，但属于完全不同的系统，不能混用
 
-## 14. TWAP Oracle（当前实现）
+## 14. V2 TWAP Oracle（当前实现）
 
 ### 这一层负责什么
-- `TWAPOracle` 负责“价格形成”，不负责“资产执行”。
+- `V2TWAPOracle` 负责“价格形成”，不负责“资产执行”。
 - 更准确地说：
   - adapter 负责把钱部署/撤回
   - oracle 负责给出 `price0/price1`

@@ -1,4 +1,4 @@
-# TWAPOracle Minimal Design
+# V2TWAPOracle Minimal Design
 
 ## Goal
 
@@ -27,7 +27,7 @@ This version does not include:
 
 ## Interface and Output Contract
 
-`TWAPOracle` implements:
+`V2TWAPOracle` implements:
 - `IPriceOracle.getPrices() -> (uint256 price0, uint256 price1)`
 
 Output contract:

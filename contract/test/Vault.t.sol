@@ -327,7 +327,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     // ============================================
     function test_Integration_Deposit_RevertsBeforeTwapIsInitialized() public {
         uint32 interval = 300;
-        (, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+        (, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
             token1,
             vault,
@@ -343,7 +343,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         token0.approve(address(vault), amount0);
         token1.approve(address(vault), amount1);
 
-        vm.expectRevert(TWAPOracle.NotInitialized.selector);
+        vm.expectRevert(V2TWAPOracle.NotInitialized.selector);
         vault.deposit(amount0, amount1);
         vm.stopPrank();
     }
@@ -354,7 +354,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 avg0X112 = 2 * q112; // expect 2e18
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
-        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+        (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
             token1,
             vault,
@@ -382,7 +382,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 avg0X112 = 2 * q112; // expect 2e18
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
-        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+        (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
             token1,
             vault,

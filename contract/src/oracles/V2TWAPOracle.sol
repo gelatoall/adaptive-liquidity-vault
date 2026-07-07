@@ -5,10 +5,10 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 import "../interfaces/IPriceOracle.sol";
 import "../interfaces/IUniswapV2Pair.sol";
 
-/// @title TWAPOracle
+/// @title V2TWAPOracle
 /// @notice Minimal Uniswap V2 TWAP oracle that returns token prices in 1e18 precision.
 /// @dev Computes a windowed average from cumulative prices and elapsed time.
-contract TWAPOracle is IPriceOracle {
+contract V2TWAPOracle is IPriceOracle {
     // ============================================
     // Constants
     // ============================================

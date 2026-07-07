@@ -304,7 +304,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
     }
 
     // ============================================
-    // Integration Tests for User & vault & V2 adapter & TWAP Oracle
+    // Integration Tests for User & vault & V2 adapter & V2 TWAP Oracle
     // ============================================
     function test_TotalAssets_IncludesDeployedPositionWithTwapOracle() public {
         uint32 interval = 300;
@@ -312,7 +312,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         uint256 avg0X112 = 2 * q112; // expect 2e18
         uint256 avg1X112 = 3 * q112; // expect 3e18
 
-        (MockUniswapV2Pair twapPair, TWAPOracle twap) = _deployTwapOracleButNotUpdate(
+        (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
             token1,
             vault,
