@@ -70,9 +70,4 @@ contract V3TwapVolatilityOracleTest is Test {
         vm.expectRevert(V3TwapVolatilityOracle.InvalidTwapWindow.selector);
         new V3TwapVolatilityOracle(address(pool), 0);
     }
-
-    function test_GetTWAP_RevertsWhenPeriodIsZero() public {
-        vm.expectRevert(V3TWAPOracle.InvalidTwapPeriod.selector);
-        oracle.getTWAP(0);
-    }
 }

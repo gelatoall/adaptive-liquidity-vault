@@ -1211,8 +1211,30 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 调 `calculator.calculateTickRange(volatilityBps)`
   - 把返回的 `tickLower/tickUpper` 编码进 `UniswapV3Adapter.LiquidityParams`
   - 使用 `deadline = block.timestamp`
-  - 暂时使用 `amount0Min = 0`、`amount1Min = 0`
-- 这表示 V3 动态 range 已经接入 strategy 层；但动态 slippage min amount 仍然是后续独立模块。
+  - 如果配置了 `TwapSlippageController` 和该 venue 的 slippage params，则动态计算 `amount0Min/amount1Min`
+  - 如果没有配置 slippage controller 或该 venue 的 slippage params，则保持兼容默认值 `amount0Min = 0`、`amount1Min = 0`
+- 这表示 V3 动态 range 和 V3 add-liquidity 的 TWAP slippage min amount 都已经接入 strategy 层。
+
+### 当前 TwapSlippageController
+- 当前已经实现了 [TwapSlippageController.sol](../contract/src/slippage/TwapSlippageController.sol)。
+- 它实现 `ISlippageController`，作用是给 strategy 生成 V3 add-liquidity 的最低可接受 token 数量。
+- 它不是一个 venue adapter，不直接移动资产。
+- 它的职责是：
+  1. 通过 `targetVenueId` 查出该 venue 绑定的 V3 pool
+  2. 确认传入 params 里的 pool 和 venue 绑定 pool 一致
+  3. 用 `V3TwapLib` 读取 spot price 和 TWAP price
+  4. 计算 spot-vs-TWAP deviation
+  5. 如果 deviation 超过 `maxSlippageBps`，revert
+  6. 如果 deviation 在允许范围内，返回：
+
+```text
+amount0Min = amount0 * (10_000 - maxSlippageBps) / 10_000
+amount1Min = amount1 * (10_000 - maxSlippageBps) / 10_000
+```
+
+- `targetVenueId -> pool` 的检查是为了避免真实 fork 配置里把 V3 0.05%、0.30%、1.00% 的 pool 搞混。
+- 当前 controller 保护的是 strategy 生成的 V3 add-liquidity params。
+- strategy-driven withdrawal 阶段仍然使用空 withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
 
 ### 当前 PriceChangeVolatilityOracle
 - 当前已经实现了 [PriceChangeVolatilityOracle.sol](../contract/src/oracles/PriceChangeVolatilityOracle.sol)。
@@ -1631,7 +1653,7 @@ tick range 有两个基本约束：
 当 strategy 生成 rebalance target 时，如果某个 V3 venue 配置了 calculator，它会自动调用 `calculateTickRange(volatilityBps)`，再把结果编码进 `UniswapV3Adapter.LiquidityParams.tickLower/tickUpper`。
 
 这一步已经把“动态 tick range 计算”从独立模块接到了 strategy 层。
-还没有完成的是 TWAP-based slippage controller：当前 strategy 生成的 V3 params 仍然把 `amount0Min/amount1Min` 设为 `0`，只负责动态 tick range。
+当前 strategy 还可以接入 `TwapSlippageController`，在生成 V3 add-liquidity params 时同时填入 TWAP 校验后的 `amount0Min/amount1Min`。
 
 ### addLiquidity 最小流程
 - `addLiquidity()` 负责把 vault 的 idle token 部署进 V3 position。

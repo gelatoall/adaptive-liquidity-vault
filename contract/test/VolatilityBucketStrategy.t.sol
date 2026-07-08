@@ -6,6 +6,8 @@ import "../src/adapters/UniswapV3Adapter.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
 import "../src/strategies/V3TickCalculations.sol";
 import "../src/oracles/V3TwapVolatilityOracle.sol";
+import "../src/interfaces/ISlippageController.sol";
+import "../src/slippage/TwapSlippageController.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockVolatilityOracle.sol";
@@ -128,11 +130,25 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
 
         MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), fee);
         pool.setSlot0FromTick(199);
+        pool.setTwapTick(199);
+        vm.warp(1800);
 
         V3TickCalculations calculations = new V3TickCalculations(address(pool));
         strategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
 
         volatilityOracle.setVolatilityBps(49); // low volatility => tickRange = 200
+
+        TwapSlippageController slippageController = new TwapSlippageController();
+        slippageController.setVenuePool(V3_LOW_VENUE_ID, address(pool));
+        strategy.setSlippageController(address(slippageController));
+        strategy.setVenueSlippageParams(
+            V3_LOW_VENUE_ID, 
+            ISlippageController.SlippageParams({
+                maxSlippageBps: 50,
+                twapWindow: 1800,
+                pool: address(pool)
+            })
+        );
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
 
@@ -140,8 +156,9 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[1].venueId, V3_LOW_VENUE_ID);
         UniswapV3Adapter.LiquidityParams memory params = abi.decode(targets[1].params, (UniswapV3Adapter.LiquidityParams));
 
-        assertEq(params.amount0Min, 0);
-        assertEq(params.amount1Min, 0);
+        // V3_LOW receives 60% of the LOW bucket allocation, then applies a 50 bps haircut.
+        assertEq(params.amount0Min, 6 ether * 9_950 / 10_000);
+        assertEq(params.amount1Min, 12e6 * 9_950 / 10_000);
         assertEq(params.deadline, block.timestamp);
         // currentTick = 199 and low-volatility tickRange = 200 gives raw bounds [-1, 399].
         // With spacing 60, outward rounding produces [-60, 420].

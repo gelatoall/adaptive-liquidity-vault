@@ -255,7 +255,9 @@ The current concrete strategies are:
 
 Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
-`VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`. The generated params currently leave `amount0Min` and `amount1Min` at zero; TWAP-based dynamic slippage calculation is still a separate future component.
+`VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`.
+
+The strategy can also use a configured `TwapSlippageController` plus per-venue slippage params to generate `amount0Min` and `amount1Min`. The controller validates that the target venue id matches the configured V3 pool, checks current spot price against TWAP, rejects excessive spot/TWAP deviation, and applies the configured bps haircut to desired token amounts. If no slippage controller or no venue slippage params are configured, the strategy preserves the legacy zero-minimum behavior.
 
 Current concrete volatility oracle implementations include:
 - `PriceChangeVolatilityOracle`, which reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points

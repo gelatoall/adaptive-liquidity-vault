@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../interfaces/IVolatilityOracle.sol";
+import "../interfaces/ISlippageController.sol";
 import "../adapters/UniswapV3Adapter.sol";
 import "./V3TickCalculations.sol";
 
@@ -20,6 +21,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     /// @notice Volatility source used for bucket selection.
     IVolatilityOracle public immutable volatilityOracle;
 
+    /// @notice Optional controller used to compute V3 add-liquidity minimum amounts.
+    ISlippageController public slippageController;
+
     /// @notice Upper bound of the low-volatility bucket.
     uint256 public lowVolatilityThresholdBps;
 
@@ -32,6 +36,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     /// @notice Optional dynamic V3 tick calculator per venue.
     mapping(uint256 => V3TickCalculations) public v3TickCalculations;
 
+    /// @notice Optional slippage inputs used by the controller for each venue id.
+    mapping(uint256 => ISlippageController.SlippageParams) public venueSlippageParams;
+
     /// @notice Emitted when volatility thresholds are updated.
     event SetThresholds(uint256 lowVolatilityThresholdBps, uint256 highVolatilityThresholdBps);
 
@@ -40,6 +47,12 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
 
     /// @notice Emitted when a venue's dynamic V3 tick calculator is configured.
     event SetV3TickCalculations(uint256 indexed venueId, address indexed calculator);
+
+    /// @notice Emitted when the slippage controller is configured.
+    event SetSlippageController(address indexed controller);
+
+    /// @notice Emitted when a venue's slippage inputs are configured.
+    event SetVenueSlippageParams(uint256 indexed venueId, uint256 maxSlippageBps, uint32 twapWindow, address indexed pool);
     
     error ZeroAddress();
     error ZeroWeight();
@@ -47,6 +60,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     error InvalidTotalWeight();
     error EmptyTargets();
     error DuplicateVenue();
+    error InvalidBps();
+    error InvalidTwapWindow();
+    error SlippageParamsNotSet();
 
     // ============================================
     // Constructor
@@ -107,7 +123,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
                 venueId: configs[i].venueId,
                 amount0: amount0,
                 amount1: amount1,
-                params: _buildTargetParams(configs[i], volatilityBps)
+                params: _buildTargetParams(configs[i], volatilityBps, amount0, amount1)
             });
         }
     }
@@ -169,6 +185,27 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         emit SetV3TickCalculations(venueId, calculator);
     }
 
+    /// @notice Sets the optional controller used to compute V3 target minimum amounts.
+    function setSlippageController(address controller) external onlyOwner {
+        if (controller == address(0)) revert ZeroAddress();
+        slippageController = ISlippageController(controller);
+
+        emit SetSlippageController(controller);
+    }
+
+    /// @notice Sets slippage inputs for a venue used when the slippage controller is enabled.
+    function setVenueSlippageParams(
+        uint256 venueId, 
+        ISlippageController.SlippageParams calldata params
+    ) external onlyOwner {
+        if (params.maxSlippageBps > RebalanceTypes.BPS) revert InvalidBps();
+        if (params.twapWindow == 0) revert InvalidTwapWindow();
+        if (params.pool == address(0)) revert ZeroAddress();
+        venueSlippageParams[venueId] = params;
+        
+        emit SetVenueSlippageParams(venueId, params.maxSlippageBps, params.twapWindow, params.pool); 
+    }
+
     // ============================================
     // Internal Functions
     // ============================================
@@ -180,23 +217,44 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         highVolatilityThresholdBps = highThresholdBps;
     }
 
-    /// @notice Returns static params or generated dynamic V3 tick params for a target config.
+    /// @notice Returns static params or generated dynamic V3 tick and slippage params for a target config.
     function _buildTargetParams(
         RebalanceTypes.TargetConfig memory config, 
-        uint256 volatilityBps
+        uint256 volatilityBps,
+        uint256 amount0,
+        uint256 amount1
     ) internal view returns (bytes memory) {
         V3TickCalculations calculator = v3TickCalculations[config.venueId];
         if (address(calculator) == address(0)) {
             return config.params;
         }
 
+        (uint256 amount0Min, uint256 amount1Min) = _calculateMinAmounts(config.venueId, amount0, amount1);
         (int24 tickLower, int24 tickUpper) = calculator.calculateTickRange(volatilityBps);
         return abi.encode(UniswapV3Adapter.LiquidityParams({
-            amount0Min: 0,
-            amount1Min: 0,
+            amount0Min: amount0Min,
+            amount1Min: amount1Min,
             deadline: block.timestamp,
             tickLower: tickLower,
             tickUpper: tickUpper
         }));
+    }
+
+    /// @notice Returns controller-computed minimum amounts, or zero minimums when slippage control is not configured.
+    function _calculateMinAmounts(
+        uint256 venueId, 
+        uint256 amount0, 
+        uint256 amount1
+    ) internal view returns (uint256, uint256) {
+        if (address(slippageController) == address(0)) {
+            return (0, 0);
+        }
+
+        ISlippageController.SlippageParams memory params = venueSlippageParams[venueId];
+        if (params.pool == address(0)) {
+            revert SlippageParamsNotSet();
+        }
+
+        return slippageController.calculateMinAmounts(venueId, amount0, amount1, params);  
     }
 }

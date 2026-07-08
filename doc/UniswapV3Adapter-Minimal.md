@@ -399,12 +399,14 @@ The current vault can integrate this adapter without changing `IVenueAdapter`:
 
 This means each V3 fee tier can be represented by a separate adapter instance and registered as a separate venue while preserving the current vault abstraction.
 
+`VolatilityBucketStrategy` can now generate V3 add-liquidity params with dynamic tick bounds and controller-computed `amount0Min/amount1Min`. The adapter still only executes the encoded params; it does not decide ranges, volatility buckets, or slippage policy.
+
 ## Future Extensions
 
 Later versions may add:
-- V3 TWAP oracle integration
 - multiple adapter instances for multiple fee tiers
 - a venue registry or strategy manager
 - automated rebalance between V2, V3 0.05%, V3 0.30%, and V3 1.00%
-- TWAP-based dynamic slippage minimum generation for V3 params
+- strategy-generated withdrawal minimums for V3 remove-liquidity params
+- more exact V3 quote-aware min amount calculation using tick range and liquidity math
 - exact uncollected fee valuation using V3 fee-growth accounting
