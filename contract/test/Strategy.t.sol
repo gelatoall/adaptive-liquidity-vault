@@ -112,6 +112,40 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(maxGasPrice, _maxGasPrice);
     }
 
+    /// @notice System health is normal when pause and oracle health checks are disabled.
+    function test_CheckSystemHealth_ReturnsNormalByDefault() public {
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.NORMAL));
+    }
+
+    /// @notice System health reports PAUSED when the vault is paused.
+    function test_CheckSystemHealth_ReturnsPausedWhenVaultIsPaused() public {
+        vault.pause();
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.PAUSED));
+    }
+
+    /// @notice Enabled oracle health check reports ORACLE_STALE when no volatility oracle is configured.
+    function test_CheckSystemHealth_ReturnsOracleStaleWhenEnabledWithoutOracle() public {
+        vault.setOracleHealthCheckEnabled(true);
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.ORACLE_STALE));
+    }
+
+    /// @notice rebalanceWithStrategy reverts when oracle health check requires a missing volatility oracle.
+    function test_RebalanceWithStrategy_RevertsWhenOracleHealthCheckEnabledWithoutOracle() public {
+        vault.setStrategy(address(strategy));
+        vault.setOracleHealthCheckEnabled(true);
+
+        vm.expectRevert(AdaptiveLPVault.VolatilityOracleNotSet.selector);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+    }
+
+    /// @notice Configuring the volatility oracle restores NORMAL health when oracle health check is enabled.
+    function test_CheckSystemHealth_ReturnsNormalWhenOracleHealthCheckHasOracle() public {
+        vault.setOracleHealthCheckEnabled(true);
+        vault.setVolatilityOracle(address(volatilityOracle));
+
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.NORMAL));
+    }
+
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
     function test_RebalanceWithStrategy_RevertsWhenStrategyNotSet() public {
         vm.expectRevert(AdaptiveLPVault.StrategyNotSet.selector);

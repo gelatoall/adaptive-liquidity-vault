@@ -25,6 +25,7 @@ This version includes:
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
 - strategy-driven rebalance through `IRebalanceStrategy`
+- minimal oracle health circuit breaker for strategy-driven rebalances
 - fixed-weight and volatility-bucket total-underlying allocation strategies
 - reentrancy protection on user and capital-moving entrypoints
 - owner-controlled pause and unpause
@@ -34,7 +35,6 @@ This version does not include:
 - automatic dynamic strategy selection
 - autonomous keepers
 - threshold-based rebalance conditions
-- automatic TWAP-based slippage calculation
 - deposit ratio optimization
 - the full ERC4626 interface
 
@@ -141,6 +141,15 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - purpose: configure the maximum total-value loss allowed during rebalance
   - behavior: `0` disables the guard; non-zero values are interpreted in basis points
   - behavior: only limits downside loss and does not reject value increases
+
+- `setOracleHealthCheckEnabled(enabled)`
+  - purpose: require a configured volatility oracle before strategy-driven rebalances
+  - behavior: when enabled, `rebalanceWithStrategy(...)` reverts if `volatilityOracle` is not set
+
+- `checkSystemHealth()`
+  - purpose: expose a simple status for keepers and monitoring
+  - returns: `NORMAL`, `ORACLE_STALE`, or `PAUSED`
+  - behavior: in this minimal version, `ORACLE_STALE` means the oracle health check is enabled but no volatility oracle is configured
 
 - `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy for a target plan and execute it

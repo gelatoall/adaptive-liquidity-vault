@@ -218,6 +218,19 @@
 它和普通 `rebalance` 的区别是：
 - `rebalance` 是正常运营，用来调整资产分配
 - `emergencyExit` 是应急路径，只负责把资金从 venue 拉回 idle 并暂停
+
+### Oracle Circuit Breaker
+- `checkSystemHealth()` 是给 keeper / monitoring 看的健康状态接口。
+- 当前返回三种状态：
+  - `NORMAL`：vault 没暂停，并且当前启用的 oracle 健康要求都满足
+  - `ORACLE_STALE`：当前最小实现里，表示启用了 oracle health check，但还没有配置 `volatilityOracle`
+  - `PAUSED`：vault 已暂停
+- `setOracleHealthCheckEnabled(true)` 后，`rebalanceWithStrategy(...)` 会要求 vault 已经配置 `volatilityOracle`。
+- 这一步的意义是：
+  - 防止策略 rebalance 在缺少关键 volatility oracle 的情况下继续执行
+  - 给后续 keeper 判断 `canRebalance` / `checkSystemHealth` 留出稳定接口
+- 当前还没有实现完整的 timestamp stale 检测。
+- 也就是说，现在的 `ORACLE_STALE` 更准确地说是“必须依赖的 oracle 未配置或不可用”，不是已经读取 oracle 时间戳后判断过期。
 - `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
 
 ## 4. 约束与 Revert

@@ -48,6 +48,13 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         uint256 maxGasPrice;
     }
 
+    /// @notice Coarse operational health status exposed for keepers and monitoring.
+    enum SystemStatus {
+        NORMAL,
+        ORACLE_STALE,
+        PAUSED
+    }
+
     // ============================================
     // State
     // ============================================
@@ -82,6 +89,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Maximum allowed total-value loss during rebalance, in basis points. Zero disables the check.
     uint256 public maxRebalanceValueLossBps;
+
+    /// @notice Whether strategy rebalances require a configured volatility oracle.
+    bool public oracleHealthCheckEnabled;
     
     /// @notice Venue configuration by caller-defined venue id.
     mapping(uint256 => VenueConfig) public venues;
@@ -125,6 +135,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when the owner updates the rebalance value-loss guard.
     event SetMaxRebalanceValueLossBps(uint256 maxRebalanceValueLossBps);
+
+    /// @notice Emitted when strategy rebalance oracle health checks are toggled.
+    event SetOracleHealthCheckEnabled(bool enabled);
 
     /// @notice Emitted when the vault deploys idle funds into a venue.
     event DeployToVenue(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidity);
@@ -388,6 +401,18 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         (total0, total1) = _getTotalUnderlying();
     }
 
+    /// @notice Returns the current vault health status used by offchain keepers and monitoring.
+    /// @dev In this minimal circuit breaker, ORACLE_STALE means the required volatility oracle is not configured.
+    function checkSystemHealth() external view returns (SystemStatus) {
+        if (paused()) return SystemStatus.PAUSED;
+
+        if (oracleHealthCheckEnabled && address(volatilityOracle) == address(0)) {
+            return SystemStatus.ORACLE_STALE;
+        }
+
+        return SystemStatus.NORMAL;
+    }
+
     // ============================================
     // Admin Functions
     // ============================================
@@ -464,6 +489,14 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         if (_maxRebalanceValueLossBps > RebalanceTypes.BPS) revert InvalidBps();
         maxRebalanceValueLossBps = _maxRebalanceValueLossBps;
         emit SetMaxRebalanceValueLossBps(_maxRebalanceValueLossBps);
+    }
+
+    /// @notice Toggles the volatility-oracle health requirement for strategy-driven rebalances.
+    /// @dev When enabled, `rebalanceWithStrategy` requires a configured volatility oracle even if delta guards are disabled.
+    /// @param enabled Whether the oracle health check is enabled.
+    function setOracleHealthCheckEnabled(bool enabled) external onlyOwner {
+        oracleHealthCheckEnabled = enabled;
+        emit SetOracleHealthCheckEnabled(enabled);
     }
 
     /// @notice Registers or updates a venue adapter.
@@ -779,12 +812,16 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             revert GasPriceTooHigh();
         }
 
-        if (rebalanceConfig.minVolatilityDelta != 0) {
+        bool needsVolatilityOracle = rebalanceConfig.minVolatilityDelta != 0 || oracleHealthCheckEnabled;
+        if (needsVolatilityOracle) {
             if (address(volatilityOracle) == address(0)) revert VolatilityOracleNotSet();
 
-            currentVolatilityBps = volatilityOracle.getVolatilityBps();
-            uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
-            if (delta < rebalanceConfig.minVolatilityDelta) revert VolatilityDeltaTooSmall();
+            if (rebalanceConfig.minVolatilityDelta != 0) {
+                currentVolatilityBps = volatilityOracle.getVolatilityBps();
+
+                uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
+                if (delta < rebalanceConfig.minVolatilityDelta) revert VolatilityDeltaTooSmall();
+            }
         }
     }
 

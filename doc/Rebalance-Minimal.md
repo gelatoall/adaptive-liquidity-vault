@@ -24,6 +24,7 @@ This version includes:
 - `FixedWeightStrategy` for bps-based total-underlying allocation
 - `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
 - `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` guards for strategy-driven rebalances
+- optional oracle health check for strategy-driven rebalances
 - `PriceChangeVolatilityOracle` as a minimal on-chain volatility source
 - `TwapSlippageController` for TWAP-validated V3 add-liquidity minimum amounts
 - duplicate venue target validation
@@ -116,11 +117,21 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
   - purpose: configure the maximum total-value loss allowed during rebalance
   - behavior: `0` disables the guard; non-zero values are basis points and apply only to downside loss
 
+- `setOracleHealthCheckEnabled(enabled)`
+  - purpose: toggle the minimal oracle health circuit breaker for strategy-driven rebalances
+  - behavior: when enabled, strategy-driven rebalances require a configured volatility oracle
+
+- `checkSystemHealth()`
+  - purpose: expose coarse vault health for keepers and monitoring
+  - behavior: returns `PAUSED` when the vault is paused
+  - behavior: returns `ORACLE_STALE` when oracle health checks are enabled but no volatility oracle is configured
+  - behavior: returns `NORMAL` otherwise
+
 - `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
   - behavior: blocked while the vault is paused
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
-  - behavior: applies `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` before calling the strategy
+  - behavior: applies `minCooldown`, `minVolatilityDelta`, `maxGasPrice`, and oracle health checks before calling the strategy
 
 - `setVenue(venueId, adapter, label, enabled)`
   - purpose: register or update a venue adapter
@@ -163,11 +174,12 @@ Flow:
 2. Vault checks that a strategy is configured.
 3. Vault checks `minCooldown` if it is non-zero.
 4. Vault checks `maxGasPrice` if it is non-zero.
-5. Vault checks `minVolatilityDelta` if it is non-zero.
-6. Vault calls `strategy.buildTargets(address(this), data)`.
-7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the owner-supplied withdrawal params to active venues.
-8. Vault updates `lastRebalance` only after successful execution.
-9. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
+5. Vault requires a configured volatility oracle if `minVolatilityDelta` or oracle health checks are enabled.
+6. Vault checks `minVolatilityDelta` if it is non-zero.
+7. Vault calls `strategy.buildTargets(address(this), data)`.
+8. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the owner-supplied withdrawal params to active venues.
+9. Vault updates `lastRebalance` only after successful execution.
+10. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
 If `maxRebalanceValueLossBps` is non-zero, strategy-driven rebalance also passes through the same post-execution value-loss guard.
 
@@ -238,6 +250,7 @@ Current limitations:
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
 - execution still withdraws all tracked venue liquidity before redeploying the target plan
 - strategy-driven withdrawal params are owner-supplied through `rebalanceWithStrategy(data, withdrawalParams)`; automatic remove-side min amount generation remains out of scope
+- oracle health checks currently detect missing required oracle configuration, not timestamp-based oracle staleness
 - calculated V3 tick bounds are rounded outward to legal `tickSpacing()` values, so the executable range covers the raw strategy range instead of narrowing it
 
 ### volatility oracle implementations
