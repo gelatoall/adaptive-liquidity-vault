@@ -546,18 +546,20 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Builds a target plan from the configured strategy and executes it.
-    /// @dev Strategy-built targets control deployment params; withdrawal params are empty in this entrypoint for now.
+    /// @dev Strategy-built targets control deployment params; withdrawalParams control venue exits.
     /// @param data Opaque strategy-specific data forwarded to `buildTargets`.
-    function rebalanceWithStrategy(bytes calldata data) external onlyOwner whenNotPaused nonReentrant {
+    /// @param withdrawalParams Venue-specific remove-liquidity params used when strategy rebalance withdraws active positions.
+    function rebalanceWithStrategy(
+        bytes calldata data, 
+        VenueWithdrawalParams[] calldata withdrawalParams
+    ) external onlyOwner whenNotPaused nonReentrant {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
         uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(this), data);
 
-        VenueWithdrawalParams[] memory emptyWithdrawalParams = new VenueWithdrawalParams[](0);
-
-        _rebalance(targets, emptyWithdrawalParams);
+        _rebalance(targets, withdrawalParams);
         lastRebalance = block.timestamp;
 
         if (rebalanceConfig.minVolatilityDelta != 0) {

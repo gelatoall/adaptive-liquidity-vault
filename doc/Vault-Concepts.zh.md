@@ -1051,7 +1051,7 @@
   - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
   - `withdrawFromVenue(venueId, liquidity, params)` 负责把指定 venue 仓位撤回成 idle balances
   - `rebalance(targets, withdrawalParams)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
-  - `rebalanceWithStrategy(data)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
+  - `rebalanceWithStrategy(data, withdrawalParams)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
 
 ### 当前 multi-venue 模型
 - 当前 vault 不再用 `IDLE / DEPLOYED_V2 / DEPLOYED_V3` 这种 enum 表示目标状态。
@@ -1096,7 +1096,7 @@ struct RebalanceTarget {
   - `params`：透传给 adapter 的部署参数，也就是 addLiquidity params
 
 ### VenueWithdrawalParams
-- manual `rebalance` 额外接收 withdrawal params：
+- `rebalance` 和 `rebalanceWithStrategy` 都可以接收 withdrawal params：
 
 ```solidity
 struct VenueWithdrawalParams {
@@ -1108,7 +1108,7 @@ struct VenueWithdrawalParams {
 - 含义是：
   - `venueId`：要撤出的旧 venue
   - `params`：透传给 adapter 的 withdrawal 参数，也就是 removeLiquidity params
-- 所以 manual rebalance 现在有两组 params：
+- 所以 rebalance 现在有两组 params：
   - `targets[i].params`：进入新 venue 时用
   - `withdrawalParams[i].params`：从旧 venue 撤出时用
 - 如果某个 active venue 没有匹配的 `withdrawalParams`，vault 会向 adapter 传空 `params`。
@@ -1124,13 +1124,13 @@ function buildTargets(address vault, bytes calldata data)
     returns (RebalanceTypes.RebalanceTarget[] memory targets);
 ```
 
-- `rebalanceWithStrategy(data)` 的流程是：
+- `rebalanceWithStrategy(data, withdrawalParams)` 的流程是：
   1. 检查 strategy 是否已配置
   2. 检查 `minCooldown`，如果不为 0
   3. 检查 `maxGasPrice`，如果不为 0
   4. 检查 `minVolatilityDelta`，如果不为 0
   5. 调用 strategy 的 `buildTargets(...)`
-  6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行，但 withdrawal params 暂时为空
+  6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行，并把调用方传入的 withdrawal params 转发给旧 venue
   7. 成功后更新 `lastRebalance`
   8. 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
 - 这表示 strategy 只负责“生成 plan”，vault 仍然负责校验和执行。
@@ -1200,7 +1200,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   5. 按权重拆分 vault 当前 total underlying
   6. 把 rounding dust 分给最后一个 target
   7. 如果某个 target venue 配置了 `V3TickCalculations`，则动态生成该 V3 target 的 `LiquidityParams`
-- `rebalanceWithStrategy(data)` 仍然会把 `data` 透传给 strategy，但当前 `VolatilityBucketStrategy` 不使用这个参数。
+- `rebalanceWithStrategy(data, withdrawalParams)` 仍然会把 `data` 透传给 strategy，但当前 `VolatilityBucketStrategy` 不使用这个参数。
 - 它不再是 idle-only：
   - 会通过 `getTotalUnderlying()` 读取 idle + deployed amounts
   - 可以在 vault 已有 tracked liquidity 时生成新 plan
@@ -1234,7 +1234,7 @@ amount1Min = amount1 * (10_000 - maxSlippageBps) / 10_000
 
 - `targetVenueId -> pool` 的检查是为了避免真实 fork 配置里把 V3 0.05%、0.30%、1.00% 的 pool 搞混。
 - 当前 controller 保护的是 strategy 生成的 V3 add-liquidity params。
-- strategy-driven withdrawal 阶段仍然使用空 withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
+- strategy-driven withdrawal 阶段现在可以接收 owner-supplied withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
 
 ### 当前 PriceChangeVolatilityOracle
 - 当前已经实现了 [PriceChangeVolatilityOracle.sol](../contract/src/oracles/PriceChangeVolatilityOracle.sol)。
@@ -1311,9 +1311,9 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 如果配置了 `maxRebalanceValueLossBps`，执行结束后会检查 vault 总价值没有跌破允许下限
   - 适合测试、治理操作、emergency override
   - 不受 strategy cooldown / max gas price 限制
-- `rebalanceWithStrategy(data)`：
+- `rebalanceWithStrategy(data, withdrawalParams)`：
   - owner 触发 strategy 生成 plan
-  - 当前 withdrawal 阶段使用空 params，strategy-side withdrawal params 需要后续单独设计
+  - withdrawal 阶段可以转发调用方传入的 per-venue params；strategy-side 自动生成 withdrawal params 仍需要后续单独设计
   - 仍然会复用同一套 rebalance value-loss guard
   - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
   - 成功后更新 `lastRebalance`

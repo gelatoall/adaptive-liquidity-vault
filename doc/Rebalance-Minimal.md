@@ -20,7 +20,7 @@ This version includes:
 - owner-only rebalance entrypoint
 - `RebalanceTarget[]` plan input
 - `IRebalanceStrategy.buildTargets(...)` strategy hook
-- `rebalanceWithStrategy(data)` for strategy-driven plan execution
+- `rebalanceWithStrategy(data, withdrawalParams)` for strategy-driven plan execution
 - `FixedWeightStrategy` for bps-based total-underlying allocation
 - `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
 - `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` guards for strategy-driven rebalances
@@ -116,9 +116,10 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
   - purpose: configure the maximum total-value loss allowed during rebalance
   - behavior: `0` disables the guard; non-zero values are basis points and apply only to downside loss
 
-- `rebalanceWithStrategy(data)`
+- `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
   - behavior: blocked while the vault is paused
+  - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
   - behavior: applies `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` before calling the strategy
 
 - `setVenue(venueId, adapter, label, enabled)`
@@ -158,13 +159,13 @@ function buildTargets(address vault, bytes calldata data)
 ```
 
 Flow:
-1. Owner calls `rebalanceWithStrategy(data)`.
+1. Owner calls `rebalanceWithStrategy(data, withdrawalParams)`.
 2. Vault checks that a strategy is configured.
 3. Vault checks `minCooldown` if it is non-zero.
 4. Vault checks `maxGasPrice` if it is non-zero.
 5. Vault checks `minVolatilityDelta` if it is non-zero.
 6. Vault calls `strategy.buildTargets(address(this), data)`.
-7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, but with empty withdrawal params.
+7. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the owner-supplied withdrawal params to active venues.
 8. Vault updates `lastRebalance` only after successful execution.
 9. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
@@ -215,7 +216,7 @@ For the current minimal version, the strategy reads volatility from `IVolatility
 uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 ```
 
-`rebalanceWithStrategy(data)` still forwards opaque strategy data, but `VolatilityBucketStrategy` currently ignores that parameter.
+`rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque strategy data, but `VolatilityBucketStrategy` currently ignores that parameter.
 
 Bucket selection is:
 - `volatilityBps <= lowThreshold`: `LOW`
@@ -236,7 +237,7 @@ Current limitations:
 - the strategy does not calculate TWAP or statistical volatility itself
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
 - execution still withdraws all tracked venue liquidity before redeploying the target plan
-- strategy-driven withdrawal still uses empty withdrawal params in `rebalanceWithStrategy(...)`
+- strategy-driven withdrawal params are owner-supplied through `rebalanceWithStrategy(data, withdrawalParams)`; automatic remove-side min amount generation remains out of scope
 - calculated V3 tick bounds are rounded outward to legal `tickSpacing()` values, so the executable range covers the raw strategy range instead of narrowing it
 
 ### volatility oracle implementations

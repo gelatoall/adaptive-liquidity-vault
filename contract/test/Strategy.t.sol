@@ -115,7 +115,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
     function test_RebalanceWithStrategy_RevertsWhenStrategyNotSet() public {
         vm.expectRevert(AdaptiveLPVault.StrategyNotSet.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice Verifies strategy-driven rebalance is disabled while the vault is paused.
@@ -123,7 +123,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.pause();
 
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice rebalanceWithStrategy executes a single-venue strategy plan.
@@ -139,7 +139,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -164,7 +164,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
         vm.warp(1234);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.lastRebalance(), 1234);
     }
@@ -185,10 +185,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
         vm.warp(1000);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         vm.expectRevert(AdaptiveLPVault.CooldownNotElapsed.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice rebalanceWithStrategy enforces the configured max gas price.
@@ -198,7 +198,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         
         vm.txGasPrice(51 gwei);
         vm.expectRevert(AdaptiveLPVault.GasPriceTooHigh.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice strategy-built plans still go through venue validation.
@@ -212,7 +212,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         strategy.setSingleTarget(999, amount0, amount1, "");
         
         vm.expectRevert(AdaptiveLPVault.VenueNotSet.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice rebalanceWithStrategy can execute a real fixed-weight strategy plan.
@@ -236,7 +236,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -267,7 +267,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
         volatilityOracle.setVolatilityBps(50);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -315,7 +315,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -357,7 +357,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -374,7 +374,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.setRebalanceConfig(0, 100, 0);
 
         vm.expectRevert(AdaptiveLPVault.VolatilityOracleNotSet.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice rebalanceWithStrategy reverts when volatility change is below the configured minimum.
@@ -386,7 +386,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         volatilityOracle.setVolatilityBps(50);
 
         vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
     /// @notice successful strategy rebalance records the current volatility.
@@ -406,7 +406,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
         routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.lastRebalanceVolatilityBps(), 150);
     }
@@ -442,7 +442,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextRemoveLiquidityResult(amount0, amount1);
         routerV2B.setNextAddLiquidityResult(amount0, amount1, secondLiquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
@@ -487,7 +487,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         routerV2.setNextRemoveLiquidityResult(amount0, amount1);
         routerV2B.setNextAddLiquidityResult(amount0, amount1, secondLiquidity);
 
-        vault.rebalanceWithStrategy("");
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
@@ -498,6 +498,76 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         assertEq(token0.balanceOf(address(pairV2B)), amount0);
         assertEq(token1.balanceOf(address(pairV2B)), amount1);
+    }
+
+    /// @notice rebalanceWithStrategy forwards owner-supplied withdrawal params when exiting a V3 position.
+    function test_RebalanceWithStrategy_ForwardsWithdrawalParamsToV3Remove() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 v2Liquidity = 20 ether;
+        int24 tickLower = -600;
+        int24 tickUpper = 600;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        MockNonfungiblePositionManager positionManager = new MockNonfungiblePositionManager();
+
+        UniswapV3Adapter adapterV3 = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(pool),
+            tickLower,
+            tickUpper
+        );
+
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
+
+        uint256 v3Liquidity = _deployVaultToV3(
+            vault,
+            token0,
+            token1,
+            pool,
+            positionManager,
+            V3_LOW_VENUE_ID,
+            tickLower,
+            tickUpper,
+            amount0,
+            amount1
+        );
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        
+        uint256 amount0Min = 9 ether;
+        uint256 amount1Min = 18e6;
+        uint256 deadline = block.timestamp + 300;
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: _v3Params(amount0Min, amount1Min, deadline, tickLower, tickUpper)
+        });
+
+        strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
+        vault.setStrategy(address(strategy));
+
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        positionManager.setNextDecreaseResult(poolAmount0, poolAmount1);
+        routerV2.setNextAddLiquidityResult(amount0, amount1, v2Liquidity);
+
+        vault.rebalanceWithStrategy("", withdrawalParams);
+
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
+        assertEq(positionManager.lastDecreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastDecreaseDeadline(), deadline);
+
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
+        assertEq(vault.totalLiquidity(), v2Liquidity);
     }
 
 }

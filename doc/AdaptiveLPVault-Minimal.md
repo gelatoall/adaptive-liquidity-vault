@@ -142,10 +142,10 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - behavior: `0` disables the guard; non-zero values are interpreted in basis points
   - behavior: only limits downside loss and does not reject value increases
 
-- `rebalanceWithStrategy(data)`
+- `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy for a target plan and execute it
   - behavior: owner-only and blocked while the vault is paused
-  - behavior: applies strategy guards, then reuses the same rebalance execution path
+  - behavior: applies strategy guards, then reuses the same rebalance execution path with matching withdrawal params
 
 - `pause()`
   - purpose: pause deposits, venue deployment, and normal rebalance operations
@@ -222,7 +222,7 @@ Redemptions remain available while the vault is paused so users can exit.
 5. Call `adapter.removeLiquidity(liquidity, params)`.
 6. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances still use empty withdrawal params in this entrypoint; strategy-side withdrawal params are a separate interface design task.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass owner-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
 ### rebalance
 
@@ -245,7 +245,7 @@ The value-loss guard is downside-only. A rebalance that increases `totalAssets()
 1. Require a configured strategy.
 2. Enforce `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` when configured.
 3. Call `strategy.buildTargets(address(this), data)`.
-4. Execute the returned targets through the same internal rebalance flow.
+4. Execute the returned targets through the same internal rebalance flow, forwarding matching withdrawal params while exiting active venues.
 5. Update `lastRebalance` only after successful execution.
 6. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` after successful execution.
 
@@ -253,7 +253,7 @@ The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
 - `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value and can generate dynamic V3 tick-range params for configured V3 venues
 
-Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
 `VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`.
 
