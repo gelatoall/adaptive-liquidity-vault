@@ -18,6 +18,7 @@ This version includes:
 - `redeem`
 - `totalAssets`
 - share minting and burning
+- ERC4626-style receiver/owner semantics for deposit and redeem
 - oracle-based asset valuation
 - venue registration through `setVenue(...)`
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
@@ -36,13 +37,14 @@ This version does not include:
 - autonomous keepers
 - threshold-based rebalance conditions
 - deposit ratio optimization
-- the full ERC4626 interface
+- full single-underlying-asset ERC4626 compliance
 
 Notes:
 - the vault depends on `IPriceOracle` for prices
 - `MockPriceOracle` is a test helper that exposes `setPrices(...)`
 - `IPriceOracle` itself is read-only and only defines `getPrices()`
 - a production version should replace the mock oracle with a real oracle implementation
+- the vault is a dual-asset share vault; it adopts ERC4626-style receiver/owner/allowance semantics, but does not implement the full ERC4626 standard because ERC4626 assumes a single underlying asset
 - V2 price TWAP implementation details are documented in `doc/V2TWAPOracle-Minimal.md`
 - V3 spot-vs-TWAP volatility details are documented in `doc/V3TwapVolatilityOracle-Minimal.md`
 - rebalance details are documented in `doc/Rebalance-Minimal.md`
@@ -102,14 +104,15 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - purpose: return raw `token0` and `token1` amounts across idle balances and adapter-reported venue positions
   - returns: `uint256 total0, uint256 total1`
 
-- `deposit(amount0, amount1)`
-  - purpose: transfer tokens into the vault and mint shares to the depositor
+- `deposit(amount0, amount1, receiver)`
+  - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
   - behavior: blocked while the vault is paused
   - returns: `uint256 shares`
 
-- `redeem(shares, withdrawalParams)`
-  - purpose: burn shares and return proportional token balances across idle assets and active venue positions
-  - behavior: withdraws the caller's proportional tracked liquidity from each active venue before transferring tokens
+- `redeem(shares, receiver, owner, withdrawalParams)`
+  - purpose: burn `owner` shares and return proportional token balances across idle assets and active venue positions to `receiver`
+  - behavior: if the caller is not `owner`, the caller must have sufficient ERC20 share allowance from `owner`
+  - behavior: withdraws the redeemed share ratio of tracked liquidity from each active venue before transferring tokens
   - behavior: forwards matching per-venue withdrawal params to adapters; venues without a matching entry receive empty params
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
@@ -183,23 +186,25 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 4. Read `totalSupply()` before the deposit.
 5. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
 6. Calculate shares to mint using `VaultMath.calculateShares`.
-7. Transfer `token0` and `token1` from the user into the vault.
-8. Mint shares to the depositor.
+7. Transfer `token0` and `token1` from the caller into the vault.
+8. Mint shares to `receiver`.
 
 Deposits are disabled while the vault is paused.
 
 ### redeem
 
 1. Reject if `shareToRedeem` is zero.
-2. Revert if `shareToRedeem` exceeds the caller's balance.
-3. Read `totalSupply()` before burning.
-4. Read idle `token0` and `token1` balances held by the vault.
-5. Compute the proportional idle token amounts owed to the user.
-6. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
-7. For each venue withdrawal, forward the matching `VenueWithdrawalParams.params` entry to the adapter; if no entry matches the venue id, forward empty params.
-8. Add the tokens returned from venue withdrawals to the user's output amounts.
-9. Burn the user's shares.
-10. Transfer `token0` and `token1` to the user.
+2. Reject if `receiver` or `owner` is the zero address.
+3. Revert if `shareToRedeem` exceeds `owner`'s share balance.
+4. If the caller is not `owner`, spend the caller's ERC20 share allowance from `owner`.
+5. Read `totalSupply()` before burning.
+6. Read idle `token0` and `token1` balances held by the vault.
+7. Compute the proportional idle token amounts owed for the redeemed shares.
+8. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
+9. For each venue withdrawal, forward the matching `VenueWithdrawalParams.params` entry to the adapter; if no entry matches the venue id, forward empty params.
+10. Add the tokens returned from venue withdrawals to the output amounts.
+11. Burn `owner`'s shares.
+12. Transfer `token0` and `token1` to `receiver`.
 
 When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
 
@@ -236,7 +241,7 @@ Redemptions remain available while the vault is paused so users can exit.
 5. Call `adapter.removeLiquidity(liquidity, params)`.
 6. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass owner-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass owner-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
 ### rebalance
 

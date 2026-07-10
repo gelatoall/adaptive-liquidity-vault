@@ -253,7 +253,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         router.setNextRemoveLiquidityResult(amount0Used, amount1Used);
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, withdrawalParams);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams);
         
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
@@ -291,7 +291,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         router.setNextRemoveLiquidityResult(amount0, amount1);
         vm.prank(alice);
-        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, _emptyWithdrawalParams());
+        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
 
         assertEq(redeem0, amount0);
         assertEq(redeem1, amount1);

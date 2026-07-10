@@ -147,6 +147,11 @@
   - `amount0/amount1 -> assetsToDeposit -> sharesToMint`
 - vault 先把不同 token 的数量换算成统一价值。
 - 然后根据当前 vault 定价计算应该 mint 多少 shares。
+- 当前签名是 `deposit(amount0, amount1, receiver)`。
+- `msg.sender` 提供 `token0/token1`，`receiver` 接收新 mint 出来的 vault shares。
+- 所以 caller 和 receiver 可以不同：
+  - Alice 可以出 token
+  - Bob 可以收到 shares
 
 ### Deposit 的份额公式
 - 对已经初始化的 vault：
@@ -169,6 +174,11 @@
 - `redeem` 的流程是：
   - `shares -> ownership ratio -> amount0Out/amount1Out`
 - `redeem` 会按 shares 占比返还底层 token。
+- 当前签名是 `redeem(shares, receiver, owner, withdrawalParams)`。
+- `owner` 是 shares 被 burn 的地址。
+- `receiver` 是最终收到 `token0/token1` 的地址。
+- `msg.sender` 是发起 redeem 的地址。
+- 如果 `msg.sender != owner`，则 `msg.sender` 必须先获得 `owner` 对 vault shares 的 ERC20 allowance。
 - 在当前集成里，`redeem` 会同时处理：
   - vault 里直接持有的 idle token
   - 已注册 venue 里按 vault 记账追踪的 deployed liquidity

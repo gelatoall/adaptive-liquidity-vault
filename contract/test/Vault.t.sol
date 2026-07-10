@@ -128,7 +128,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     function test_Deposit_RevertsWhenBothAmountsAreZero() public {
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.ZeroAmounts.selector);
-        vault.deposit(0, 0);
+        vault.deposit(0, 0, alice);
     }
 
     function test_Deposit_MintsSharesEqualToAssetValueOnInitialDeposit() public {
@@ -162,7 +162,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.startPrank(bob);
         token0.approve(address(vault), amount0);
         token1.approve(address(vault), 0);
-        uint256 shares = vault.deposit(amount0, 0);
+        uint256 shares = vault.deposit(amount0, 0, bob);
         vm.stopPrank();
 
         uint256 assetsToDeposit = 2e18;
@@ -196,7 +196,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         token0.approve(address(vault), smallAmount0);
         token1.approve(address(vault), smallAmount1);
         vm.expectRevert(VaultMath.ZeroShares.selector);
-        vault.deposit(smallAmount0, smallAmount1);
+        vault.deposit(smallAmount0, smallAmount1, bob);
         vm.stopPrank();
     }
 
@@ -213,8 +213,31 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         token0.approve(address(vault), amount0);
         token1.approve(address(vault), amount1);
         vm.expectRevert(Pausable.EnforcedPause.selector);
-        vault.deposit(amount0, amount1);
+        vault.deposit(amount0, amount1, alice);
         vm.stopPrank();
+    }
+
+    /// @notice Verifies deposit pulls tokens from the caller while minting shares to a separate receiver.
+    function test_Deposit_MintsSharesToReceiver() public {
+        uint256 price0 = 1e18;
+        uint256 price1 = 5e14;
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 2000e6;
+        oracle.setPrices(price0, price1);
+
+        uint256 shares = _mintAndDepositToReceiver(token0, token1, vault, alice, bob, amount0, amount1);
+
+        assertEq(shares, 2e18);
+        
+        // Alice supplies the underlying tokens to the vault.
+        assertEq(token0.balanceOf(alice), 0);
+        assertEq(token1.balanceOf(alice), 0);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+
+        // Bob receives the minted shares.
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.balanceOf(bob), shares);
     }
 
     // redeem
@@ -231,7 +254,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vault.pause();
 
         vm.prank(alice);
-        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, _emptyWithdrawalParams());
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams());
 
         assertEq(amount0Out, amount0);
         assertEq(amount1Out, amount1);
@@ -255,14 +278,14 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.startPrank(alice);
         uint256 shares = 3e18;
         vm.expectRevert(AdaptiveLPVault.InsufficientShares.selector);
-        vault.redeem(shares, _emptyWithdrawalParams());
+        vault.redeem(shares, alice, alice, _emptyWithdrawalParams());
         vm.stopPrank();
     }
 
     function test_Redeem_RevertsWhenSharesIsZero() public {
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.ZeroShares.selector);
-        vault.redeem(0, _emptyWithdrawalParams());
+        vault.redeem(0, alice, alice, _emptyWithdrawalParams());
     }
 
     function test_Redeem_BurnsUserShares() public {
@@ -276,7 +299,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = 1e18;
         vm.prank(alice);
-        vault.redeem(shares, _emptyWithdrawalParams());
+        vault.redeem(shares, alice, alice, _emptyWithdrawalParams());
         assertEq(vault.balanceOf(alice), 1e18);
     }
 
@@ -297,7 +320,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = 1e18;
         vm.prank(alice);
-        vault.redeem(shares, _emptyWithdrawalParams());
+        vault.redeem(shares, alice, alice, _emptyWithdrawalParams());
 
         assertEq(vault.balanceOf(alice), 1e18);
         assertEq(vault.totalSupply(), 3e18);
@@ -315,10 +338,49 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         
         uint256 shares = 1e18;
         vm.prank(alice);
-        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, _emptyWithdrawalParams());
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams());
 
         assertEq(amount0Out, 0.5e18);
         assertEq(amount1Out, 1000e6);
+    }
+
+    /// @notice Verifies an approved operator can burn owner shares and send underlying tokens to a separate receiver.
+    function test_Redeem_AllowsApprovedOperatorToRedeemOwnerSharesToReceiver() public {
+        uint256 price0 = 1e18;
+        uint256 price1 = 5e14;
+        uint256 amount0 = 1e18;
+        uint256 amount1 = 2000e6;
+        oracle.setPrices(price0, price1);
+
+        uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        address operator = makeAddr("operator");
+
+        vm.prank(alice);
+        vault.approve(operator, shares);
+        assertEq(vault.allowance(alice, operator), shares);
+
+        vm.prank(operator);
+        (uint256 amount0Out, uint256 amount1Out) =
+            vault.redeem(shares, bob, alice, _emptyWithdrawalParams());
+
+        assertEq(amount0Out, amount0);
+        assertEq(amount1Out, amount1);
+
+        // Alice's shares are burned.
+        assertEq(vault.balanceOf(alice), 0);
+
+        // Operator only initiated the redeem; it receives neither shares nor tokens.
+        assertEq(vault.balanceOf(operator), 0);
+        assertEq(token0.balanceOf(operator), 0);
+        assertEq(token1.balanceOf(operator), 0);
+
+        // Bob receives the underlying tokens.
+        assertEq(token0.balanceOf(bob), amount0);
+        assertEq(token1.balanceOf(bob), amount1);
+
+        // Allowance was consumed.
+        assertEq(vault.allowance(alice, operator), 0);
     }
 
 
@@ -344,7 +406,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         token1.approve(address(vault), amount1);
 
         vm.expectRevert(V2TWAPOracle.NotInitialized.selector);
-        vault.deposit(amount0, amount1);
+        vault.deposit(amount0, amount1, alice);
         vm.stopPrank();
     }
 

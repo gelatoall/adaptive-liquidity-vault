@@ -167,7 +167,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, withdrawalParams);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams);
 
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
@@ -209,7 +209,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
 
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, _emptyWithdrawalParams());
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
 
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
