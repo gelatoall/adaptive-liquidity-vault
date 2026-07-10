@@ -41,6 +41,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
+    address public keeper = makeAddr("keeper");
 
     uint8 public decimals0 = 18;
     uint8 public decimals1 = 6;
@@ -199,6 +200,36 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.pause();
 
         vm.expectRevert(Pausable.EnforcedPause.selector);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+    }
+
+    /// @notice Configured keeper can execute the existing strategy rebalance flow without admin permissions.
+    function test_RebalanceWithStrategy_AllowsKeeper() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2e6;
+        uint256 liquidity = 1 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.setKeeper(keeper);
+        vault.setStrategy(address(strategy));
+        strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
+
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        vm.prank(keeper);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
+        assertEq(vault.totalLiquidity(), liquidity);
+    }
+
+    /// @notice Non-owner, non-keeper callers cannot trigger strategy rebalances.
+    function test_RebalanceWithStrategy_RevertsForUnauthorizedCaller() public {
+        vault.setKeeper(keeper);
+
+        vm.prank(bob);
+        vm.expectRevert(AdaptiveLPVault.NotOwnerOrKeeper.selector);
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 

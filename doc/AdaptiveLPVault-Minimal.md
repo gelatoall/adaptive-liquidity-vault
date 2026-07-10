@@ -26,6 +26,7 @@ This version includes:
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
 - strategy-driven rebalance through `IRebalanceStrategy`
+- keeper-triggered strategy rebalance through a configured `keeper`
 - minimal oracle health circuit breaker for strategy-driven rebalances
 - fixed-weight and volatility-bucket total-underlying allocation strategies
 - reentrancy protection on user and capital-moving entrypoints
@@ -34,7 +35,7 @@ This version includes:
 
 This version does not include:
 - automatic dynamic strategy selection
-- autonomous keepers
+- autonomous keeper resolver integration or keeper rewards
 - threshold-based rebalance conditions
 - deposit ratio optimization
 - full single-underlying-asset ERC4626 compliance
@@ -63,6 +64,7 @@ The vault stores:
 - total tracked liquidity across all venues
 - ERC20 share supply and balances
 - configured rebalance strategy
+- configured keeper for strategy-driven rebalance execution
 - strategy rebalance cooldown and gas price guard config
 - paused/unpaused state inherited from OpenZeppelin `Pausable`
 
@@ -137,6 +139,11 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
 
+- `setKeeper(keeper)`
+  - purpose: configure the non-admin address allowed to execute `rebalanceWithStrategy(...)`
+  - behavior: owner-only; rejects the zero address
+  - behavior: does not grant permission to configure venues, strategies, or manual capital-management functions
+
 - `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure cooldown, volatility delta, and gas price guards for strategy-driven rebalances
 
@@ -161,7 +168,7 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
 
 - `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy for a target plan and execute it
-  - behavior: owner-only and blocked while the vault is paused
+  - behavior: callable by the owner or configured keeper and blocked while the vault is paused
   - behavior: applies strategy guards, then reuses the same rebalance execution path with matching withdrawal params
 
 - `pause()`
@@ -241,7 +248,7 @@ Redemptions remain available while the vault is paused so users can exit.
 5. Call `adapter.removeLiquidity(liquidity, params)`.
 6. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass owner-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
 ### rebalance
 
@@ -261,12 +268,15 @@ The value-loss guard is downside-only. A rebalance that increases `totalAssets()
 
 ### rebalanceWithStrategy
 
-1. Require a configured strategy.
-2. Enforce `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` when configured.
-3. Call `strategy.buildTargets(address(this), data)`.
-4. Execute the returned targets through the same internal rebalance flow, forwarding matching withdrawal params while exiting active venues.
-5. Update `lastRebalance` only after successful execution.
-6. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` after successful execution.
+1. Require the caller to be the owner or configured keeper.
+2. Require a configured strategy.
+3. Enforce `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` when configured.
+4. Call `strategy.buildTargets(address(this), data)`.
+5. Execute the returned targets through the same internal rebalance flow, forwarding matching withdrawal params while exiting active venues.
+6. Update `lastRebalance` only after successful execution.
+7. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` after successful execution.
+
+The keeper role is execution-only. It can trigger the already configured strategy path, but it cannot change oracles, strategies, venues, manual target plans, pause state, or emergency-exit behavior.
 
 The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
@@ -312,6 +322,7 @@ The vault should revert when:
 - `deposit`, `deployToVenue`, `rebalance`, or `rebalanceWithStrategy` is called while paused
 - a non-owner calls `pause`, `unpause`, `emergencyExit`, or owner-only capital management functions
 - a non-owner calls owner-only functions
+- a caller that is neither owner nor keeper calls `rebalanceWithStrategy`
 - a venue operation references an unset venue
 - a venue operation references a disabled venue
 - a venue withdrawal requests zero liquidity
@@ -374,6 +385,8 @@ Rebalance coverage:
 - strategy-driven rebalance executes a volatility-selected plan
 - volatility-selected plans can generate dynamic V3 tick-range params for configured V3 venues
 - strategy-driven rebalance can move already-deployed capital from one venue to another
+- configured keeper can execute strategy-driven rebalance
+- unauthorized callers cannot execute strategy-driven rebalance
 - strategy-driven rebalance enforces cooldown and max gas price guards
 
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.

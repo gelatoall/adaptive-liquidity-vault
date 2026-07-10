@@ -84,6 +84,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Strategy used to build target plans for strategy-driven rebalances.
     IRebalanceStrategy public strategy;
 
+    /// @notice Address allowed to execute strategy-driven rebalances without admin permissions.
+    address public keeper;
+
     /// @notice Guard configuration for strategy-driven rebalances.
     RebalanceConfig public rebalanceConfig;
 
@@ -136,6 +139,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Emitted when the owner updates the rebalance strategy.
     event SetStrategy(address indexed strategy);
 
+    /// @notice Emitted when the owner updates the keeper address.
+    event SetKeeper(address indexed keeper);
+
     /// @notice Emitted when the owner updates strategy rebalance guards.
     event SetRebalanceConfig(uint256 minCooldown, uint256 minVolatilityDelta, uint256 maxGasPrice);
 
@@ -180,6 +186,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when a caller tries to withdraw zero venue liquidity.
     error ZeroLiquidity();
+
+    /// @notice Thrown when a caller is neither the owner nor the keeper.
+    error NotOwnerOrKeeper();
 
     /// @notice Thrown when a caller tries to withdraw more liquidity than tracked for a venue.
     error InsufficientLiquidity();
@@ -231,6 +240,16 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when rebalance reduces total vault value beyond the configured guard.
     error ExcessiveRebalanceValueLoss();
+
+    // ============================================
+    // Modifiers
+    // ============================================
+    modifier onlyOwnerOrKeeper() {
+        if (msg.sender != owner() && msg.sender != keeper) {
+            revert NotOwnerOrKeeper();
+        }
+        _;
+    }
 
     // ============================================
     // Constructor
@@ -487,6 +506,17 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit SetStrategy(_strategy);
     }
 
+    /// @notice Sets the keeper allowed to execute strategy-driven rebalances.
+    /// @param _keeper Keeper address.
+    function setKeeper(address _keeper) external onlyOwner {
+        if (_keeper == address(0)) {
+            revert ZeroAddress();
+        }
+
+        keeper = _keeper;
+        emit SetKeeper(_keeper);
+    }
+
     /// @notice Sets cooldown, volatility delta, and gas price guards for strategy-driven rebalances.
     /// @param _minCooldown Minimum time between successful strategy-driven rebalances.
     /// @param _minVolatilityDelta Minimum volatility change required, or zero to disable.
@@ -603,7 +633,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     function rebalanceWithStrategy(
         bytes calldata data, 
         VenueWithdrawalParams[] calldata withdrawalParams
-    ) external onlyOwner whenNotPaused nonReentrant {
+    ) external onlyOwnerOrKeeper whenNotPaused nonReentrant {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
         uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();

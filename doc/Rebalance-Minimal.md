@@ -21,6 +21,7 @@ This version includes:
 - `RebalanceTarget[]` plan input
 - `IRebalanceStrategy.buildTargets(...)` strategy hook
 - `rebalanceWithStrategy(data, withdrawalParams)` for strategy-driven plan execution
+- configured keeper address for executing strategy-driven rebalances
 - `FixedWeightStrategy` for bps-based total-underlying allocation
 - `VolatilityBucketStrategy` for LOW, MEDIUM, and HIGH allocation profiles
 - `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` guards for strategy-driven rebalances
@@ -40,7 +41,7 @@ This version does not include:
 - automatic venue recommendation
 - TWAP-driven target weighting
 - statistical or annualized volatility calculation
-- keeper automation
+- keeper resolver integration or keeper rewards
 - partial in-place rebalancing
 - strategy-generated withdrawal slippage params
 
@@ -50,6 +51,7 @@ Notes:
 - per-venue liquidity is tracked in `venueLiquidity[venueId]`.
 - strategy logic should live outside the vault. The vault only asks the configured strategy for a target plan and then validates and executes it.
 - manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
+- `rebalanceWithStrategy(data, withdrawalParams)` can be called by the owner or configured keeper; the keeper cannot configure strategy, venues, or manual target plans.
 - normal `rebalance(...)` and `rebalanceWithStrategy(...)` are blocked while the vault is paused.
 - `emergencyExit(...)` is the paused-safe emergency path for pulling venue liquidity back to idle balances.
 
@@ -107,6 +109,11 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 - `setStrategy(strategy)`
   - purpose: configure the strategy used by `rebalanceWithStrategy(...)`
 
+- `setKeeper(keeper)`
+  - purpose: configure the non-admin address allowed to execute `rebalanceWithStrategy(...)`
+  - behavior: owner-only; rejects the zero address
+  - behavior: grants execution permission only, not configuration or emergency permissions
+
 - `setVolatilityOracle(volatilityOracle)`
   - purpose: configure the volatility oracle used by volatility delta guards
 
@@ -159,7 +166,7 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 
 `rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault only validates and executes that plan. This path is useful for manual operations, emergency overrides, and tests. It is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
 
-`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner calls the vault, the vault asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies strategy guards such as cooldown, gas price, volatility delta, and oracle health checks.
+`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies strategy guards such as cooldown, gas price, volatility delta, and oracle health checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
 
 Both paths ultimately reuse the same internal withdraw-all-then-deploy execution logic.
 
@@ -183,14 +190,14 @@ function buildTargets(address vault, bytes calldata data)
 ```
 
 Flow:
-1. Owner calls `rebalanceWithStrategy(data, withdrawalParams)`.
+1. Owner or configured keeper calls `rebalanceWithStrategy(data, withdrawalParams)`.
 2. Vault checks that a strategy is configured.
 3. Vault checks `minCooldown` if it is non-zero.
 4. Vault checks `maxGasPrice` if it is non-zero.
 5. Vault requires a configured volatility oracle if `minVolatilityDelta` or oracle health checks are enabled.
 6. Vault checks `minVolatilityDelta` if it is non-zero.
 7. Vault calls `strategy.buildTargets(address(this), data)`.
-8. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the owner-supplied withdrawal params to active venues.
+8. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the caller-supplied withdrawal params to active venues.
 9. Vault updates `lastRebalance` only after successful execution.
 10. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
@@ -399,7 +406,7 @@ Because strategies build targets from `getTotalUnderlying()`, they can request a
 
 The rebalance layer should revert when:
 - a non-owner calls `rebalance`
-- a non-owner calls `rebalanceWithStrategy`
+- a caller that is neither owner nor keeper calls `rebalanceWithStrategy`
 - `rebalanceWithStrategy` is called before a strategy is configured
 - `rebalanceWithStrategy` is called during cooldown
 - `rebalanceWithStrategy` is called above the configured gas price limit
@@ -427,6 +434,8 @@ These conditions should always hold:
 
 Core tests should cover:
 - owner-only rebalance
+- keeper execution of strategy-driven rebalance
+- unauthorized strategy-driven rebalance rejection
 - strategy configuration
 - strategy-driven rebalance
 - fixed-weight strategy target generation

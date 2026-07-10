@@ -243,6 +243,22 @@
 - 也就是说，现在的 `ORACLE_STALE` 更准确地说是“必须依赖的 oracle 未配置或不可用”，不是已经读取 oracle 时间戳后判断过期。
 - `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
 
+### Keeper 执行权限
+- 当前 vault 支持配置一个 `keeper` 地址。
+- `keeper` 的职责很窄：只能触发已经配置好的 `rebalanceWithStrategy(data, withdrawalParams)`。
+- `keeper` 不能配置：
+  - oracle
+  - strategy
+  - venue
+  - pause / unpause
+  - emergencyExit
+  - manual `rebalance(targets, withdrawalParams)`
+  - manual `deployToVenue` / `withdrawFromVenue`
+- 这样设计的原因是把“配置权”和“执行权”拆开：
+  - `owner` 负责治理和系统配置
+  - `keeper` 负责按当前策略触发执行
+- 这不是完整 autonomous keeper 系统。当前还没有实现 keeper reward、Gelato/Chainlink resolver、自动生成 withdrawal params，或者链上激励结算。
+
 ### canRebalance / Recommended Targets
 - `canRebalanceWithStrategy()` 是 vault 层的只读预检查。
 - 它回答的是：“现在调用 `rebalanceWithStrategy(...)` 会不会被 vault 自己的 guard 拦住？”
@@ -1351,7 +1367,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 适合测试、治理操作、emergency override
   - 不受 strategy cooldown / max gas price 限制
 - `rebalanceWithStrategy(data, withdrawalParams)`：
-  - owner 触发 strategy 生成 plan
+  - owner 或配置好的 keeper 触发 strategy 生成 plan
   - withdrawal 阶段可以转发调用方传入的 per-venue params；strategy-side 自动生成 withdrawal params 仍需要后续单独设计
   - 仍然会复用同一套 rebalance value-loss guard
   - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
@@ -1443,6 +1459,8 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 
 ### 权限和边界
 - `rebalance()` 是 owner-only 策略入口
+- `rebalanceWithStrategy()` 可以由 owner 或 configured keeper 调用
+- keeper 是 execution-only，不能修改 strategy、oracle、venue，也不能执行 emergency 管理操作
 - `setVenue()` 在目标 venue 仍有 tracked liquidity 或 adapter-reported position 时会 revert
 - `rebalance()` 会拒绝 duplicate venue target
 - `rebalance()` 会拒绝 unset 或 disabled venue
@@ -1491,6 +1509,8 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
   - 没有可移动资金时会 revert `NoRebalanceNeeded`
   - active venue 存在时禁止更新对应 venue adapter
   - strategy 未配置时会 revert
+  - configured keeper 可以执行 `rebalanceWithStrategy`
+  - 非 owner 且非 keeper 的地址调用 `rebalanceWithStrategy` 会 revert
   - strategy-driven rebalance 会更新 `lastRebalance`
   - cooldown / max gas price guard 会限制 strategy-driven rebalance
   - volatility oracle 未配置时启用 volatility guard 会 revert
