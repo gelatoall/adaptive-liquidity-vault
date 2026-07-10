@@ -233,6 +233,22 @@
 - 也就是说，现在的 `ORACLE_STALE` 更准确地说是“必须依赖的 oracle 未配置或不可用”，不是已经读取 oracle 时间戳后判断过期。
 - `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
 
+### canRebalance / Recommended Targets
+- `canRebalanceWithStrategy()` 是 vault 层的只读预检查。
+- 它回答的是：“现在调用 `rebalanceWithStrategy(...)` 会不会被 vault 自己的 guard 拦住？”
+- 它会检查：
+  - strategy 是否配置
+  - vault 是否 paused
+  - cooldown 是否结束
+  - gas price 是否超过上限
+  - 需要 volatility oracle 时是否已配置
+  - volatility delta 是否达到阈值
+- 它不会调用 `strategy.buildTargets(...)`。
+- 所以它不保证 strategy 一定能成功生成 plan，也不保证 adapter 执行一定成功。
+- `VolatilityBucketStrategy.getRecommendedTargets()` 是 strategy 层的推荐结果。
+- 因为当前项目不是单一 venue 模型，而是多 venue 权重模型，所以返回的是 `TargetConfig[]`，包含 `venueId + weightBps + params`。
+- 这相当于 guidance 里 `getRecommendedVenue()` 的多 venue 版本。
+
 ## 4. 约束与 Revert
 
 ### 为什么 Revert 很重要

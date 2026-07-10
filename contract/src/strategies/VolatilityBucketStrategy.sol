@@ -135,6 +135,21 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         return Bucket.HIGH;
     }
 
+    /// @notice Returns target configs configured for the current volatility bucket.
+    function getRecommendedTargets() external view returns (RebalanceTypes.TargetConfig[] memory targets) {
+        uint256 volatilityBps = volatilityOracle.getVolatilityBps();
+        Bucket bucket = getBucket(volatilityBps);
+
+        RebalanceTypes.TargetConfig[] storage configs = bucketTargets[bucket];
+        uint256 length = configs.length;
+        if (length == 0) revert EmptyTargets();
+
+        targets = new RebalanceTypes.TargetConfig[](length);
+        for (uint256 i = 0; i < length; i++) {
+            targets[i] = configs[i];
+        }
+    }
+
     /// @notice Returns the number of configured targets for a bucket.
     function bucketTargetCount(Bucket bucket) external view returns (uint256) {
         return bucketTargets[bucket].length;

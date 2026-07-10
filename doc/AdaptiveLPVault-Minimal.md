@@ -151,6 +151,11 @@ These ids are not hardcoded protocol semantics. They become meaningful only afte
   - returns: `NORMAL`, `ORACLE_STALE`, or `PAUSED`
   - behavior: in this minimal version, `ORACLE_STALE` means the oracle health check is enabled but no volatility oracle is configured
 
+- `canRebalanceWithStrategy()`
+  - purpose: expose whether strategy-driven rebalance currently passes vault-level guards
+  - behavior: checks strategy configuration, pause state, cooldown, gas price, oracle health, and volatility delta guards
+  - behavior: does not call `strategy.buildTargets(...)` and does not guarantee the strategy plan can be built or executed
+
 - `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy for a target plan and execute it
   - behavior: owner-only and blocked while the vault is paused

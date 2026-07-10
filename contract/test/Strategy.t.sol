@@ -146,6 +146,48 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.NORMAL));
     }
 
+    /// @notice canRebalanceWithStrategy reports a missing strategy before execution.
+    function test_CanRebalanceWithStrategy_ReturnsFalseWhenStrategyNotSet() public {
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertFalse(allowed);
+        assertEq(reason, "Rebalance strategy not set");
+    }
+
+    /// @notice canRebalanceWithStrategy reports true when vault-level guards pass.
+    function test_CanRebalanceWithStrategy_ReturnsTrueWhenGuardsPass() public {
+        vault.setStrategy(address(strategy));
+
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertTrue(allowed);
+        assertEq(reason, "");
+    }
+
+    /// @notice canRebalanceWithStrategy mirrors the oracle health requirement.
+    function test_CanRebalanceWithStrategy_ReturnsFalseWhenVolatilityOracleNotSet() public {
+        vault.setStrategy(address(strategy));
+        vault.setOracleHealthCheckEnabled(true);
+
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertFalse(allowed);
+        assertEq(reason, "Volatility oracle not set");
+    }
+
+    /// @notice canRebalanceWithStrategy reports when volatility movement is below the configured threshold.
+    function test_CanRebalanceWithStrategy_ReturnsFalseWhenVolatilityDeltaTooSmall() public {
+        vault.setStrategy(address(strategy));
+        vault.setRebalanceConfig(0, 100, 0);
+        vault.setVolatilityOracle(address(volatilityOracle));
+        volatilityOracle.setVolatilityBps(50);
+
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertFalse(allowed);
+        assertEq(reason, "Volatility delta too small");
+    }
+
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
     function test_RebalanceWithStrategy_RevertsWhenStrategyNotSet() public {
         vm.expectRevert(AdaptiveLPVault.StrategyNotSet.selector);

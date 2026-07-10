@@ -127,6 +127,11 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
   - behavior: returns `ORACLE_STALE` when oracle health checks are enabled but no volatility oracle is configured
   - behavior: returns `NORMAL` otherwise
 
+- `canRebalanceWithStrategy()`
+  - purpose: expose whether strategy-driven rebalance currently passes vault-level guards
+  - behavior: returns a boolean and human-readable reason for keeper and frontend checks
+  - behavior: checks only vault-owned preconditions and does not call `strategy.buildTargets(...)`
+
 - `rebalanceWithStrategy(data, withdrawalParams)`
   - purpose: ask the configured strategy to build a target plan, then execute that plan
   - behavior: blocked while the vault is paused
@@ -149,6 +154,14 @@ These ids are caller-defined and are not hardcoded protocol semantics. They beco
 - `emergencyExit(withdrawalParams)`
   - purpose: withdraw all tracked venue liquidity to idle balances and pause the vault
   - behavior: can be called while already paused and does not execute the normal rebalance target flow
+
+## Manual vs Strategy Rebalance
+
+`rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault only validates and executes that plan. This path is useful for manual operations, emergency overrides, and tests. It is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
+
+`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner calls the vault, the vault asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies strategy guards such as cooldown, gas price, volatility delta, and oracle health checks.
+
+Both paths ultimately reuse the same internal withdraw-all-then-deploy execution logic.
 
 ## Core Flow
 
@@ -236,6 +249,8 @@ Bucket selection is:
 - `volatilityBps > highThreshold`: `HIGH`
 
 The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, the last target receives rounding dust.
+
+`getRecommendedTargets()` exposes the current bucket's configured `TargetConfig[]` for keepers, frontends, and monitoring. This is the multi-venue equivalent of a single `getRecommendedVenue()` helper: it reports the selected venue ids and weights, but it does not calculate token amounts or execute a rebalance.
 
 For venues with a configured `V3TickCalculations` contract, `buildTargets(...)` replaces the stored static params with freshly encoded `UniswapV3Adapter.LiquidityParams`. The generated params use:
 - `amount0Min` and `amount1Min` from the configured slippage controller when configured, otherwise zero

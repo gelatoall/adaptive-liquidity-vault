@@ -302,4 +302,25 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[3].amount0, 0.5 ether);
         assertEq(targets[3].amount1, 1e6);
     }
+
+    /// @notice Recommended targets come from the currently selected volatility bucket.
+    function test_GetRecommendedTargets_ReturnsCurrentBucketWeights() public {
+        _setLowBucketTargets();
+
+        volatilityOracle.setVolatilityBps(50);
+        RebalanceTypes.TargetConfig[] memory targets = strategy.getRecommendedTargets();
+        assertEq(targets.length, 4);
+
+        assertEq(targets[0].venueId, V2_VENUE_ID);
+        assertEq(targets[0].weightBps, 1000);
+
+        assertEq(targets[1].venueId, V3_LOW_VENUE_ID);
+        assertEq(targets[1].weightBps, 6000);
+
+        assertEq(targets[2].venueId, V3_MID_VENUE_ID);
+        assertEq(targets[2].weightBps, 2500);
+
+        assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
+        assertEq(targets[3].weightBps, 500);
+    }
 }

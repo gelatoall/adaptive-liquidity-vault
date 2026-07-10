@@ -55,6 +55,15 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         PAUSED
     }
 
+    /// @notice Internal strategy rebalance guard status used by execution and view helpers.
+    enum RebalanceGuardFailure {
+        NONE,
+        COOLDOWN_NOT_ELAPSED,
+        GAS_PRICE_TOO_HIGH,
+        VOLATILITY_ORACLE_NOT_SET,
+        VOLATILITY_DELTA_TOO_SMALL
+    }
+
     // ============================================
     // State
     // ============================================
@@ -411,6 +420,26 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         }
 
         return SystemStatus.NORMAL;
+    }
+
+    /// @notice Returns whether strategy-driven rebalance currently passes vault-level guards.
+    /// @dev This does not call `strategy.buildTargets(...)`; it only checks vault-owned preconditions.
+    function canRebalanceWithStrategy() external view returns (bool allowed, string memory reason) {
+        if (address(strategy) == address(0)) {
+            return (false, "Rebalance strategy not set");
+        }
+
+        if (paused()) {
+            return (false, "Paused");
+        }
+
+        (RebalanceGuardFailure failure, ) = _getStrategyRebalanceGuardStatus();
+
+        if (failure == RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED) return (false, "Cooldown not elapsed");
+        if (failure == RebalanceGuardFailure.GAS_PRICE_TOO_HIGH) return (false, "Gas price too high");
+        if (failure == RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET) return (false, "Volatility oracle not set");
+        if (failure == RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL) return (false, "Volatility delta too small");
+        return (true, "");
     }
 
     // ============================================
@@ -801,28 +830,48 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Checks strategy rebalance guards and returns the current volatility if needed.
     function _checkStrategyRebalanceGuards() internal view returns (uint256 currentVolatilityBps) {
+        RebalanceGuardFailure failure;
+        (failure, currentVolatilityBps) = _getStrategyRebalanceGuardStatus();
+        if (failure == RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED) revert CooldownNotElapsed();
+        if (failure == RebalanceGuardFailure.GAS_PRICE_TOO_HIGH) revert GasPriceTooHigh();
+        if (failure == RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET) revert VolatilityOracleNotSet();
+        if (failure == RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL) revert VolatilityDeltaTooSmall();
+    }
+
+    /// @notice Returns the current strategy rebalance guard status without reverting.
+    function _getStrategyRebalanceGuardStatus()
+        internal
+        view
+        returns (RebalanceGuardFailure failure, uint256 currentVolatilityBps)
+    {
         if (lastRebalance != 0 && 
             rebalanceConfig.minCooldown != 0 && 
             block.timestamp < lastRebalance + rebalanceConfig.minCooldown
         ) {
-            revert CooldownNotElapsed();
+            return (RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED, 0);
         }
 
         if (rebalanceConfig.maxGasPrice != 0 && tx.gasprice > rebalanceConfig.maxGasPrice) {
-            revert GasPriceTooHigh();
+            return (RebalanceGuardFailure.GAS_PRICE_TOO_HIGH, 0);
         }
 
         bool needsVolatilityOracle = rebalanceConfig.minVolatilityDelta != 0 || oracleHealthCheckEnabled;
         if (needsVolatilityOracle) {
-            if (address(volatilityOracle) == address(0)) revert VolatilityOracleNotSet();
+            if (address(volatilityOracle) == address(0)) {
+                return (RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET, 0);
+            }
 
             if (rebalanceConfig.minVolatilityDelta != 0) {
                 currentVolatilityBps = volatilityOracle.getVolatilityBps();
 
                 uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
-                if (delta < rebalanceConfig.minVolatilityDelta) revert VolatilityDeltaTooSmall();
+                if (delta < rebalanceConfig.minVolatilityDelta) {
+                    return (RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL, currentVolatilityBps);
+                }
             }
         }
+
+        return (RebalanceGuardFailure.NONE, currentVolatilityBps);
     }
 
     /// @notice Returns the absolute difference between two values.
