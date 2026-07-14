@@ -24,16 +24,16 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
     MockUniswapV2Router public routerV2;
     UniswapV2Adapter public adapterV2;
 
-    MockUniswapV3Pool public poolV3;
-    MockNonfungiblePositionManager public positionManagerV3;
-    UniswapV3Adapter public adapterV3;
+    MockUniswapV3Pool public poolV3Low;
+    MockNonfungiblePositionManager public positionManagerV3Low;
+    UniswapV3Adapter public adapterV3Low;
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
     uint8 public decimals0 = 18;
     uint8 public decimals1 = 6;
-    uint24 public fee = 3000;
+    uint24 public fee = 500;
     int24 public tickLower = -600;
     int24 public tickUpper = 600;
 
@@ -62,40 +62,94 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
             address(pairV2)
         );
 
-        // deploy V3 venue
-        poolV3 = new MockUniswapV3Pool(address(token0), address(token1), fee);
-        poolV3.setSlot0FromTick(0);
-        positionManagerV3 = new MockNonfungiblePositionManager();
-        adapterV3 = new UniswapV3Adapter(
+        // deploy V3 low venue
+        poolV3Low = new MockUniswapV3Pool(address(token0), address(token1), fee);
+        poolV3Low.setSlot0FromTick(0);
+        positionManagerV3Low = new MockNonfungiblePositionManager();
+        adapterV3Low = new UniswapV3Adapter(
             address(vault), 
             address(token0),
             address(token1),
-            address(positionManagerV3),
-            address(poolV3),
+            address(positionManagerV3Low),
+            address(poolV3Low),
             tickLower,
             tickUpper
         );
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
-        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3Low), V3_LOW_LABEL, true);
     }
 
-    function test_SetVenue_RegistersMultipleVenuesCorrectly() public {
+    /// @notice Verifies the full Uniswap venue set uses one V2 adapter plus one V3 adapter per fee tier.
+    function test_SetVenue_RegistersFullUniswapVenueSet() public {
+        // deploy V3 mid venue
+        MockUniswapV3Pool poolV3Mid = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        MockNonfungiblePositionManager positionManagerV3Mid = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterV3Mid = new UniswapV3Adapter(
+            address(vault), 
+            address(token0),
+            address(token1),
+            address(positionManagerV3Mid),
+            address(poolV3Mid),
+            tickLower,
+            tickUpper
+        );
+        // deploy V3 high venue
+        MockUniswapV3Pool poolV3High = new MockUniswapV3Pool(address(token0), address(token1), 10000);
+        MockNonfungiblePositionManager positionManagerV3High = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterV3High = new UniswapV3Adapter(
+            address(vault), 
+            address(token0),
+            address(token1),
+            address(positionManagerV3High),
+            address(poolV3High),
+            tickLower,
+            tickUpper
+        );
+        vault.setVenue(V3_MID_VENUE_ID, address(adapterV3Mid), V3_MID_LABEL, true);
+        vault.setVenue(V3_HIGH_VENUE_ID, address(adapterV3High), V3_HIGH_LABEL, true);
+
         assertTrue(vault.venueRegistered(V2_VENUE_ID));
         assertTrue(vault.venueRegistered(V3_LOW_VENUE_ID));
+        assertTrue(vault.venueRegistered(V3_MID_VENUE_ID));
+        assertTrue(vault.venueRegistered(V3_HIGH_VENUE_ID));
 
         assertEq(vault.venueIds(0), V2_VENUE_ID);
         assertEq(vault.venueIds(1), V3_LOW_VENUE_ID);
+        assertEq(vault.venueIds(2), V3_MID_VENUE_ID);
+        assertEq(vault.venueIds(3), V3_HIGH_VENUE_ID);
 
         (IVenueAdapter v2Adapter, bool v2Enabled, bytes32 v2Label) = vault.venues(V2_VENUE_ID);
         assertEq(address(v2Adapter), address(adapterV2));
         assertTrue(v2Enabled);
-        assertEq(v2Label, bytes32("V2"));
+        assertEq(v2Label, V2_LABEL);
 
-        (IVenueAdapter v3Adapter, bool v3Enabled, bytes32 v3Label) = vault.venues(V3_LOW_VENUE_ID);
-        assertEq(address(v3Adapter), address(adapterV3));
-        assertTrue(v3Enabled);
-        assertEq(v3Label, bytes32("V3_005"));
+        (IVenueAdapter v3AdapterLow, bool v3EnabledLow, bytes32 v3LabelLow) = vault.venues(V3_LOW_VENUE_ID);
+        assertEq(address(v3AdapterLow), address(adapterV3Low));
+        assertTrue(v3EnabledLow);
+        assertEq(v3LabelLow, V3_LOW_LABEL);
+
+        (IVenueAdapter v3AdapterMid, bool v3EnabledMid, bytes32 v3LabelMid) = vault.venues(V3_MID_VENUE_ID);
+        assertEq(address(v3AdapterMid), address(adapterV3Mid));
+        assertTrue(v3EnabledMid);
+        assertEq(v3LabelMid, V3_MID_LABEL);
+
+        (IVenueAdapter v3AdapterHigh, bool v3EnabledHigh, bytes32 v3LabelHigh) = vault.venues(V3_HIGH_VENUE_ID);
+        assertEq(address(v3AdapterHigh), address(adapterV3High));
+        assertTrue(v3EnabledHigh);
+        assertEq(v3LabelHigh, V3_HIGH_LABEL);
+
+        assertTrue(address(adapterV3Low) != address(adapterV3Mid));
+        assertTrue(address(adapterV3Low) != address(adapterV3High));
+        assertTrue(address(adapterV3Mid) != address(adapterV3High));
+
+        assertEq(poolV3Low.fee(), 500);
+        assertEq(poolV3Mid.fee(), 3000);
+        assertEq(poolV3High.fee(), 10000);
+
+        assertEq(poolV3Low.tickSpacing(), 10);
+        assertEq(poolV3Mid.tickSpacing(), 60);
+        assertEq(poolV3High.tickSpacing(), 200);
     }
 
     function test_SetVenue_RevertsWhenVenueHasActiveLiquidity() public {
@@ -131,7 +185,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v3Amount1 = 8e6;
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
-        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, 
                                     V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
@@ -142,8 +196,8 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(token1.balanceOf(address(vault)), 0);
         assertEq(token0.balanceOf(address(pairV2)), v2Amount0);
         assertEq(token1.balanceOf(address(pairV2)), v2Amount1);
-        assertEq(token0.balanceOf(address(positionManagerV3)), v3Amount0);
-        assertEq(token1.balanceOf(address(positionManagerV3)), v3Amount1);
+        assertEq(token0.balanceOf(address(positionManagerV3Low)), v3Amount0);
+        assertEq(token1.balanceOf(address(positionManagerV3Low)), v3Amount1);
     }
 
     function test_DeployToVenue_RevertsWhenVenueDisabled() public {
@@ -174,7 +228,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v3Amount1 = 8e6;
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
-        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, 
                                     V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
 
         uint256 v2Amount0Out = v2Amount0;
@@ -192,8 +246,8 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(token0.balanceOf(address(vault)), v2Amount0);
         assertEq(token1.balanceOf(address(vault)), v2Amount1);
 
-        assertTrue(adapterV3.hasPosition());
-        assertEq(adapterV3.tokenId(), 1);
+        assertTrue(adapterV3Low.hasPosition());
+        assertEq(adapterV3Low.tokenId(), 1);
     }
 
     function test_TotalAssets_SumsIdleAndAllVenues() public {
@@ -207,14 +261,14 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v3Amount1 = 8e6;
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
-        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, 
                                     V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
         
         pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
         
         (uint256 price0, uint256 price1) = oracle.getPrices();
         (uint256 v2Value0, uint256 v2Value1) = adapterV2.getPositionValue();
-        (uint256 v3Value0, uint256 v3Value1) = adapterV3.getPositionValue();
+        (uint256 v3Value0, uint256 v3Value1) = adapterV3Low.getPositionValue();
         uint256 expected = VaultMath.getAssetsTotalValue(
             token0.balanceOf(address(vault)) + v2Value0 + v3Value0, 
             price0, 
@@ -241,7 +295,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v3Amount1 = 8e6;
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
-        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, 
                                     V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
@@ -249,7 +303,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         routerV2.setNextRemoveLiquidityResult(v2Amount0, v2Amount1);
         (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, v3Amount0, v3Amount1);
-        positionManagerV3.setNextDecreaseResult(poolAmount0, poolAmount1);
+        positionManagerV3Low.setNextDecreaseResult(poolAmount0, poolAmount1);
 
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
@@ -265,8 +319,8 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(vault.totalLiquidity(), 0);
 
         assertEq(pairV2.balanceOf(address(adapterV2)), 0);
-        assertFalse(adapterV3.hasPosition());
-        assertEq(adapterV3.tokenId(), 0);
+        assertFalse(adapterV3Low.hasPosition());
+        assertEq(adapterV3Low.tokenId(), 0);
     }
 
     /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V2 and V3 liquidity.
@@ -289,7 +343,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         uint256 v3Amount1 = 16e6;
 
         _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
-        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3, positionManagerV3, 
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, 
                                     V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
@@ -297,7 +351,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         routerV2.setNextRemoveLiquidityResult(6 ether, 12e6);
         (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, 4 ether, 8e6);
-        positionManagerV3.setNextDecreaseResult(poolAmount0, poolAmount1);
+        positionManagerV3Low.setNextDecreaseResult(poolAmount0, poolAmount1);
 
         vm.prank(alice);
         (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
@@ -313,10 +367,10 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(vault.totalLiquidity(), v2Liquidity / 2 + v3Liquidity / 2);
 
         assertEq(pairV2.balanceOf(address(adapterV2)), v2Liquidity / 2);
-        assertTrue(adapterV3.hasPosition());
-        assertEq(adapterV3.tokenId(), 1);
+        assertTrue(adapterV3Low.hasPosition());
+        assertEq(adapterV3Low.tokenId(), 1);
 
-        (,,,,,,, uint128 remainingV3Liquidity,,,,) = positionManagerV3.positions(adapterV3.tokenId());
+        (,,,,,,, uint128 remainingV3Liquidity,,,,) = positionManagerV3Low.positions(adapterV3Low.tokenId());
         assertEq(uint256(remainingV3Liquidity), v3Liquidity / 2);
     }
 }

@@ -95,6 +95,8 @@ The current tests and examples use this convention:
 
 These ids are caller-defined and are not hardcoded protocol semantics. They become meaningful only after the owner registers adapters through `setVenue(...)`.
 
+Each V3 fee tier is registered as a separate venue with a separate adapter instance. Reusing one V3 adapter for multiple V3 venue ids would mix per-venue vault accounting because the adapter owns one configured pool and one active position id.
+
 `IDLE` is not a venue id. To rebalance back to idle, pass an empty target array.
 
 ## Public Functions
@@ -265,6 +267,8 @@ For venues with a configured `V3TickCalculations` contract, `buildTargets(...)` 
 - `tickLower` and `tickUpper` from `V3TickCalculations.calculateTickRange(volatilityBps)`
 
 This wires volatility-based V3 range selection and TWAP-validated add-liquidity minimum amounts into the strategy layer. The controller checks that the target venue id matches the configured V3 pool, compares current spot price against TWAP, rejects excessive spot/TWAP deviation, and then applies the configured bps haircut to desired token amounts.
+
+The strategy-driven V3 entry path is covered end to end: `VolatilityBucketStrategy` can build a V3 target with dynamic params, `rebalanceWithStrategy(...)` executes that target through the shared rebalance flow, and the registered V3 adapter mints or increases its managed position. The V3 exit path is also covered by forwarding owner-supplied withdrawal params during strategy rebalances.
 
 Current limitations:
 - volatility is read from an external oracle contract
@@ -443,6 +447,8 @@ Core tests should cover:
 - fixed-weight strategy moving deployed capital into a new venue allocation
 - volatility bucket selection and target generation
 - volatility-selected plan execution through `rebalanceWithStrategy`
+- strategy-driven deployment into a V3 venue with dynamic tick and slippage params
+- strategy-driven withdrawal from an active V3 venue with forwarded withdrawal params
 - volatility-selected strategy moving deployed capital into a new venue allocation
 - strategy cooldown guard
 - strategy max gas price guard

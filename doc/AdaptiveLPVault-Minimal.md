@@ -83,6 +83,8 @@ Current test and example convention:
 
 These ids are not hardcoded protocol semantics. They become meaningful only after the owner registers adapters through `setVenue(...)`. `IDLE` is not a venue id; rebalance-to-idle is represented by an empty target array.
 
+Each V3 fee tier is represented by its own adapter instance. A full Uniswap venue set therefore uses one V2 adapter plus three separate V3 adapters for the 0.05%, 0.30%, and 1.00% pools.
+
 ## Public Functions
 
 - `constructor(name, symbol, token0, token1, decimals0, decimals1)`
@@ -288,6 +290,8 @@ Both strategies operate on total vault underlying amounts reported by `getTotalU
 
 The strategy can also use a configured `TwapSlippageController` plus per-venue slippage params to generate `amount0Min` and `amount1Min`. The controller validates that the target venue id matches the configured V3 pool, checks current spot price against TWAP, rejects excessive spot/TWAP deviation, and applies the configured bps haircut to desired token amounts. If no slippage controller or no venue slippage params are configured, the strategy preserves the legacy zero-minimum behavior.
 
+The strategy-driven path is covered for V3 entry and exit. A volatility-bucket target can deploy idle vault balances into a registered V3 venue through `rebalanceWithStrategy(...)`, and existing V3 positions can be exited during a strategy rebalance with caller-supplied withdrawal params.
+
 Current concrete volatility oracle implementations include:
 - `PriceChangeVolatilityOracle`, which reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points
 - `V3TwapVolatilityOracle`, which reads a Uniswap V3 pool's spot price from `slot0()`, reads a time-weighted average price through `observe(...)`, and reports the spot-vs-TWAP deviation in basis points
@@ -384,6 +388,8 @@ Rebalance coverage:
 - strategy-driven rebalance executes a fixed-weight plan
 - strategy-driven rebalance executes a volatility-selected plan
 - volatility-selected plans can generate dynamic V3 tick-range params for configured V3 venues
+- strategy-driven rebalance can deploy into a V3 venue with dynamic tick and slippage params
+- strategy-driven rebalance can exit an active V3 venue and forward V3 withdrawal params
 - strategy-driven rebalance can move already-deployed capital from one venue to another
 - configured keeper can execute strategy-driven rebalance
 - unauthorized callers cannot execute strategy-driven rebalance

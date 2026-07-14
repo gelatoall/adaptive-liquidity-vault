@@ -9,6 +9,8 @@ import "../src/strategies/FixedWeightStrategy.sol";
 import "../src/strategies/VolatilityBucketStrategy.sol";
 import "../src/oracles/PriceChangeVolatilityOracle.sol";
 import "../src/oracles/V3TwapVolatilityOracle.sol";
+import "../src/interfaces/ISlippageController.sol";
+import "../src/slippage/TwapSlippageController.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
@@ -39,6 +41,11 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
     MockUniswapV2Router public routerV2B;
     UniswapV2Adapter public adapterV2B;
 
+    MockUniswapV3Pool public pool;
+    MockNonfungiblePositionManager public positionManager;
+    UniswapV3Adapter public adapterV3;
+    TwapSlippageController public slippageController;
+
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
     address public keeper = makeAddr("keeper");
@@ -48,6 +55,9 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     uint256 public lowThresholdBps = 100;
     uint256 public highThresholdBps = 300;
+
+    int24 tickLower = -600;
+    int24 tickUpper = 600;
 
     function setUp() public {
         token0 = new MockERC20("token0", "T0", decimals0);
@@ -64,6 +74,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         priceOracle.setPrices(1e18, 1e18);
 
         volatilityOracle = new MockVolatilityOracle();
+
+        slippageController = new TwapSlippageController();
 
         strategy = new MockRebalanceStrategy();
         fixedStrategy = new FixedWeightStrategy();
@@ -93,6 +105,20 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
             address(pairV2B)
         );
         vault.setVenue(SECOND_V2_VENUE_ID, address(adapterV2B), bytes32("V2_B"), true);
+
+        // deploy V3 venue
+        pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        positionManager = new MockNonfungiblePositionManager();
+        adapterV3 = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(pool),
+            tickLower,
+            tickUpper
+        );
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
     }
 
     /// @notice setStrategy stores the configured strategy address.
@@ -442,7 +468,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         uint32 twapWindow = 1800;
         vm.warp(twapWindow);
 
-        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
         pool.setTwapTick(0);
         pool.setSlot0FromTick(0);
 
@@ -612,25 +637,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 v2Liquidity = 20 ether;
-        int24 tickLower = -600;
-        int24 tickUpper = 600;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-
-        MockUniswapV3Pool pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
-        MockNonfungiblePositionManager positionManager = new MockNonfungiblePositionManager();
-
-        UniswapV3Adapter adapterV3 = new UniswapV3Adapter(
-            address(vault),
-            address(token0),
-            address(token1),
-            address(positionManager),
-            address(pool),
-            tickLower,
-            tickUpper
-        );
-
-        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
 
         uint256 v3Liquidity = _deployVaultToV3(
             vault,
@@ -675,6 +683,66 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.totalLiquidity(), v2Liquidity);
+    }
+
+    /// @notice rebalanceWithStrategy can deploy strategy-built targets into V3.
+    function test_RebalanceWithStrategy_DeploysToV3WithDynamicParams() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+
+        pool.setSlot0FromTick(199);
+        pool.setTwapTick(199);
+        vm.warp(1800);
+
+        V3TickCalculations calculations = new V3TickCalculations(address(pool));
+        volatilityStrategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
+
+        slippageController.setVenuePool(V3_LOW_VENUE_ID, address(pool));
+        volatilityStrategy.setSlippageController(address(slippageController));
+        volatilityStrategy.setVenueSlippageParams(
+            V3_LOW_VENUE_ID, 
+            ISlippageController.SlippageParams({
+                maxSlippageBps: 50,
+                twapWindow: 1800,
+                pool: address(pool)
+            })
+        );
+
+        RebalanceTypes.TargetConfig[] memory configs = new RebalanceTypes.TargetConfig[](1);
+        configs[0] = RebalanceTypes.TargetConfig({
+            venueId: V3_LOW_VENUE_ID,
+            weightBps: 10_000,
+            params: ""
+        });
+        volatilityOracle.setVolatilityBps(49);
+        volatilityStrategy.setBucketTargets(VolatilityBucketStrategy.Bucket.LOW, configs);
+        vault.setStrategy(address(volatilityStrategy));
+
+        _primeV3Mint(token0, token1, pool, positionManager, -60, 420, amount0, amount1);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+
+        assertTrue(adapterV3.hasPosition());
+        assertEq(adapterV3.tokenId(), 1);
+        assertGt(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.totalLiquidity(), vault.venueLiquidity(V3_LOW_VENUE_ID));
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(
+            token0,
+            token1,
+            amount0 * 9_950 / 10_000,
+            amount1 * 9_950 / 10_000
+        );
+
+        assertEq(positionManager.lastMintAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastMintAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastMintTickLower(), -60);
+        assertEq(positionManager.lastMintTickUpper(), 420);
     }
 
 }

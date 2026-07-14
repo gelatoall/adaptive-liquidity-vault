@@ -1116,6 +1116,11 @@
   - `3`: Uniswap V3 0.30%
   - `4`: Uniswap V3 1.00%
 - 这些数字不是协议强制语义，而是 owner 在 `setVenue(...)` 里注册出来的 venue id。
+- 每个 V3 fee tier 应该对应一个独立 adapter：
+  - V3 0.05% -> 一个 adapter
+  - V3 0.30% -> 一个 adapter
+  - V3 1.00% -> 一个 adapter
+- 不能把三个 V3 venue id 都指向同一个 adapter，因为当前 V3 adapter 只绑定一个 pool，并且只管理一个 active `tokenId`。
 - `IDLE` 不是 venueId。当前如果要 rebalance 回 idle，传空的 `targets` 数组。
   - 如果 withdrawal 阶段需要 slippage/deadline 保护，同时传入对应的 `withdrawalParams`。
 
@@ -1358,6 +1363,8 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - spot 和 TWAP 不同时 volatility 大于 `0`
   - `VolatilityBucketStrategy` 能直接使用 `V3TwapVolatilityOracle` 驱动 LOW bucket target selection
   - `rebalanceWithStrategy(...)` 能执行由 `V3TwapVolatilityOracle` 驱动的 bucket plan
+  - `rebalanceWithStrategy(...)` 能把 strategy 生成的 V3 target 部署进 V3 adapter
+  - strategy-driven rebalance 能从 active V3 position 撤出，并把 V3 withdrawal params 转发给 adapter
 
 ### manual rebalance 和 strategy rebalance 的区别
 - `rebalance(targets, withdrawalParams)`：
@@ -1919,6 +1926,8 @@ tick range 有两个基本约束：
   - partial redeem 会保留原 `tokenId`，只减少 position liquidity
   - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
   - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出对应比例 liquidity 并清理 fully redeemed position
+  - strategy-driven rebalance 可以把 idle 资金部署进 V3，并验证 dynamic tick / slippage params 被传到 V3 mint
+  - strategy-driven rebalance 可以从 V3 撤出，并验证 withdrawal params 被传到 V3 decrease liquidity
 - 当前 vault 在撤出 venue liquidity 前会先调用 adapter `collectFees()`，所以 V3 fees 会在 withdraw / redeem / rebalance 撤仓路径中先回到 vault。
 - 当前还没有单独的 public fee-harvest 入口；如果后续要 keeper 定期 harvest，可以再加 `collectFeesFromVenue(...)`。
 
