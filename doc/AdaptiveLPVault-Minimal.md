@@ -22,6 +22,8 @@ This version includes:
 - oracle-based asset valuation
 - venue registration through `setVenue(...)`
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
+- owner- or keeper-triggered fee harvesting through `harvestVenueFees(...)`
+- in-place fee compounding through `compoundVenueFees(...)` for venues that support explicit claims
 - multi-venue asset accounting
 - a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
@@ -36,6 +38,7 @@ This version includes:
 This version does not include:
 - automatic dynamic strategy selection
 - autonomous keeper resolver integration or keeper rewards
+- an on-chain timer or threshold policy that decides when fees should be harvested or compounded
 - threshold-based rebalance conditions
 - deposit ratio optimization
 - full single-underlying-asset ERC4626 compliance
@@ -175,7 +178,8 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `pause()`
   - purpose: pause deposits, venue deployment, and normal rebalance operations
-  - behavior: owner-only; redemptions and direct venue withdrawals remain available
+  - behavior: owner-only; redemptions, direct venue withdrawals, and fee harvesting remain available
+  - behavior: fee compounding remains blocked because it redeploys idle assets into a venue
 
 - `unpause()`
   - purpose: resume deposits, venue deployment, and normal rebalance operations
@@ -246,11 +250,37 @@ Redemptions remain available while the vault is paused so users can exit.
 1. Require the venue to be registered and configured with an adapter.
 2. Reject zero liquidity.
 3. Require enough tracked liquidity for that venue.
-4. Call `adapter.collectFees()` so explicit venue fees are returned to idle vault balances before liquidity is removed.
+4. Collect claimable venue tokens before removing liquidity.
 5. Call `adapter.removeLiquidity(liquidity, params)`.
-6. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
+6. Return the sum of collected tokens and removed liquidity proceeds.
+7. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
 User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
+
+### Fee Harvest and Compounding
+
+`harvestVenueFees(venueId)` lets the owner or keeper collect claimable venue tokens into vault idle balances without removing liquidity. It remains available while paused because it only recovers assets from a venue.
+
+`compoundVenueFees(venueId, params)` collects claimable tokens and redeploys them into the same enabled venue in one transaction. It is paused with other deployment operations. For an active V3 adapter with matching tick params, this uses `increaseLiquidity` on the existing NFT rather than withdrawing and minting a new position. Any unused token dust is returned to vault idle balances by the adapter.
+
+`redeem(...)` collects claimable tokens from all venues before taking its idle-balance snapshot. Therefore, a partial redemption receives its pro-rata portion of previously accrued V3 fees through the idle component, while the remaining portion stays in the vault for remaining shares. The subsequent proportional liquidity withdrawal does not collect whole-position fees again.
+
+Harvesting and compounding are permissioned execution operations, not self-executing timers. An owner or configured keeper must submit the transaction after applying its own frequency, gas-cost, and slippage policy.
+
+### harvestVenueFees
+
+1. Require the caller to be the owner or configured keeper.
+2. Require a registered venue with a configured adapter.
+3. Return zeroes when the venue has no active position or owed tokens.
+4. Call `adapter.collectFees()` and leave tracked venue liquidity unchanged.
+
+### compoundVenueFees
+
+1. Require the caller to be the owner or configured keeper and require the vault not to be paused.
+2. Collect claimable venue tokens through the same harvest helper.
+3. Revert `NoFeesToCompound` when both collected token amounts are zero.
+4. Deploy the collected amounts back into the same venue using caller-supplied add-liquidity params.
+5. Increase tracked venue liquidity by the adapter-reported amount and emit `FeeCompounded`.
 
 ### rebalance
 
@@ -373,6 +403,9 @@ Venue integration:
 - `totalAssets()` includes idle balances and all venue positions
 - full redeem withdraws all active V2, V3, and multi-venue liquidity
 - partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
+- partial V3 redeem distributes previously accrued claimable tokens pro rata by shares
+- harvesting returns claimable V3 tokens to idle balances without removing the active position
+- compounding increases an existing V3 position without changing its `tokenId` or vault share supply
 - redeem forwards per-venue withdrawal params to V2 and V3 adapters
 - venue updates are blocked while the target venue is active
 

@@ -158,7 +158,14 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     event DeployToVenue(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidity);
 
     /// @notice Emitted when the vault withdraws venue liquidity back to idle balances.
+    /// @dev Output amounts include any fees collected before removing the requested liquidity.
     event WithdrawFromVenue(uint256 indexed venueId, uint256 liquidity, uint256 amount0Out, uint256 amount1Out);
+
+    /// @notice Emitted when claimable venue tokens are transferred into vault idle balances.
+    event FeeHarvested(uint256 indexed venueId, uint256 amount0, uint256 amount1);
+
+    /// @notice Emitted when harvested venue tokens are redeployed into the same venue.
+    event FeeCompounded(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidityAdded);
 
     /// @notice Emitted after a rebalance plan executes successfully.
     event Rebalance(address indexed caller);
@@ -189,6 +196,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when a caller is neither the owner nor the keeper.
     error NotOwnerOrKeeper();
+
+    /// @notice Thrown when a venue has no claimable tokens to compound.
+    error NoFeesToCompound();
 
     /// @notice Thrown when a caller tries to withdraw more liquidity than tracked for a venue.
     error InsufficientLiquidity();
@@ -331,7 +341,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     } 
 
     /// @notice Redeems vault shares for proportional underlying token balances.
-    /// @dev Burns shares from `owner`. If the caller is not `owner`, the caller must have share allowance.
+    /// @dev Harvests claimable venue tokens into idle balances before calculating the redeemer's pro-rata claim.
+    ///      Burns shares from `owner`. If the caller is not `owner`, the caller must have share allowance.
     /// @param shareToRedeem Amount of vault shares to burn.
     /// @param receiver Address that receives the withdrawn token0 and token1 amounts.
     /// @param owner Address whose vault shares are burned.
@@ -361,10 +372,13 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             _spendAllowance(owner, msg.sender, shareToRedeem);
         }
 
-        // Read totalSupply() before burning.
+        // Keep the denominator stable while harvested fees are moved into idle balances.
         uint256 totalSharesBefore = totalSupply();
 
-        // Read the current token0 and token1 balances held by the vault.
+        // Historical venue fees become part of the proportional idle claim for every shareholder.
+        _collectAllVenueFees();
+
+        // Snapshot idle balances after harvesting so fee ownership follows share ownership.
         uint256 idle0Before = IERC20(token0).balanceOf(address(this));
         uint256 idle1Before = IERC20(token1).balanceOf(address(this));
 
@@ -610,7 +624,40 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         uint256 amount0Out, 
         uint256 amount1Out
     ) {
-        return _withdrawFromVenue(venueId, liquidity, params);
+        return _withdrawFromVenue(venueId, liquidity, params, true);
+    }
+
+    /// @notice Collects claimable tokens from one venue into vault idle balances.
+    /// @dev Does not remove venue liquidity and remains callable while the vault is paused.
+    /// @param venueId Registered venue whose claimable tokens are collected.
+    /// @return collected0 Raw token0 amount collected into the vault.
+    /// @return collected1 Raw token1 amount collected into the vault.
+    function harvestVenueFees(uint256 venueId) external onlyOwnerOrKeeper nonReentrant returns (uint256 collected0, uint256 collected1) {
+        return _collectVenueFees(venueId);
+    }
+
+    /// @notice Collects claimable venue tokens and redeploys them into the same venue.
+    /// @dev Uses the adapter's existing-position path when available, so a V3 adapter increases its current NFT.
+    ///      The caller supplies venue-specific add-liquidity constraints. This operation is disabled while paused.
+    /// @param venueId Registered and enabled venue whose claimable tokens are compounded.
+    /// @param params Venue-specific encoded add-liquidity parameters.
+    /// @return collected0 Raw token0 amount collected before redeployment.
+    /// @return collected1 Raw token1 amount collected before redeployment.
+    /// @return liquidityAdded Additional liquidity reported by the venue adapter.
+    function compoundVenueFees(uint256 venueId, bytes calldata params) external onlyOwnerOrKeeper whenNotPaused nonReentrant returns (
+        uint256 collected0,
+        uint256 collected1,
+        uint256 liquidityAdded
+    ) {
+        (collected0, collected1) = _collectVenueFees(venueId);
+
+        if (collected0 == 0 && collected1 == 0) {
+            revert NoFeesToCompound();
+        }
+
+        liquidityAdded = _deployToVenue(venueId, collected0, collected1, params);
+
+        emit FeeCompounded(venueId, collected0, collected1, liquidityAdded);
     }
 
     /// @notice Rebalances vault capital according to an owner-supplied target plan.
@@ -653,6 +700,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // ============================================
     // Internal Functions
     // ============================================
+    /// @notice Returns matching withdrawal params for a venue, or empty bytes when none are supplied.
     function _getVenueWithdrawalParams(
         uint256 venueId,
         VenueWithdrawalParams[] memory withdrawalParams
@@ -717,12 +765,42 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit DeployToVenue(venueId, amount0, amount1, liquidity);
     }
 
+    /// @notice Collects claimable tokens from a registered venue into vault idle balances.
+    /// @dev A venue with no active position returns zero without calling its adapter. Disabled venues remain
+    ///      harvestable so existing assets can still be recovered.
+    function _collectVenueFees(uint256 venueId) internal returns(uint256 collected0, uint256 collected1) {
+        VenueConfig storage v = venues[venueId];
+        if (!venueRegistered[venueId] || address(v.adapter) == address(0)) revert VenueNotSet();
+
+        // Avoid calling adapters such as V3 when no active liquidity or owed tokens exist.
+        if (!v.adapter.hasPosition()) {
+            return (0, 0);
+        }
+
+        (collected0, collected1) = v.adapter.collectFees();
+
+        emit FeeHarvested(venueId, collected0, collected1);
+    }
+
+    /// @notice Collects claimable tokens from every registered venue.
+    /// @dev Used before redeem snapshots idle balances so collected V3 fees are distributed pro rata by shares.
+    function _collectAllVenueFees() internal returns (uint256 totalCollected0, uint256 totalCollected1) {
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            (uint256 collected0, uint256 collected1) = _collectVenueFees(venueIds[i]);
+            totalCollected0 += collected0;
+            totalCollected1 += collected1;
+        }
+    }
+
     /// @notice Shared internal withdraw flow for manual withdraws, rebalances, and redemptions.
-    /// @dev `params` is forwarded to the venue adapter so each entrypoint can apply venue-specific exit constraints.
+    /// @dev When `collectFeesBeforeRemove` is true, returns collected tokens plus removed liquidity proceeds.
+    ///      Redeem harvests before its idle-balance snapshot and passes false to prevent whole-position fees
+    ///      from being attributed to only the current redeemer. `params` is forwarded for exit constraints.
     function _withdrawFromVenue(
         uint256 venueId, 
         uint256 liquidity, 
-        bytes memory params
+        bytes memory params,
+        bool collectFeesBeforeRemove
     ) internal returns (
         uint256 amount0Out, 
         uint256 amount1Out
@@ -732,15 +810,23 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         if (liquidity == 0) revert ZeroLiquidity();
         if (venueLiquidity[venueId] < liquidity) revert InsufficientLiquidity();
 
-        v.adapter.collectFees();
+        uint256 fee0;
+        uint256 fee1;
+        if (collectFeesBeforeRemove) {
+            (fee0, fee1) = _collectVenueFees(venueId);
+        }
 
-        (amount0Out, amount1Out) = v.adapter.removeLiquidity(liquidity, params);
+        (uint256 removed0, uint256 removed1) = v.adapter.removeLiquidity(liquidity, params);
+        amount0Out = fee0 + removed0;
+        amount1Out = fee1 + removed1;
+
         venueLiquidity[venueId] -= liquidity;
         totalLiquidity -= liquidity;
 
         emit WithdrawFromVenue(venueId, liquidity, amount0Out, amount1Out);
     }
 
+    /// @notice Removes liquidity from each venue in proportion to redeemed shares after fees are harvested.
     function _withdrawProportionalVenueLiquidity(
         uint256 shares, 
         uint256 totalSharesBefore,
@@ -761,7 +847,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             if (liquidityToWithdraw == 0) continue;
 
             bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
-            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, params);
+            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, params, false);
             amount0Out += venue0Out;
             amount1Out += venue1Out;
         }
@@ -810,7 +896,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             uint256 liquidity = venueLiquidity[id];
             if (liquidity > 0) {
                 bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
-                _withdrawFromVenue(id, liquidity, params);
+                _withdrawFromVenue(id, liquidity, params, true);
             }
         }
     }

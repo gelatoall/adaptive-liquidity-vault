@@ -127,8 +127,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         (uint256 amount0Out, uint256 amount1Out) = vault.withdrawFromVenue(V3_LOW_VENUE_ID, deployedLiquidity, "");
 
-        assertEq(amount0Out, amount0);
-        assertEq(amount1Out, amount1);
+        assertEq(amount0Out, amount0 + fee0);
+        assertEq(amount1Out, amount1 + fee1);
         assertFalse(adapter.hasPosition());
         assertEq(adapter.tokenId(), 0);
 
@@ -140,6 +140,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
     function test_Redeem_FullyWithdrawsActiveV3Position() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
+        uint256 fee0 = 0.1 ether;
+        uint256 fee1 = 200e6;
 
         uint256 amount0Min = amount0 / 2;
         uint256 amount1Min = amount1 / 2;
@@ -163,14 +165,16 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
         (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
 
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
         (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams);
 
-        assertEq(redeemAmount0, amount0);
-        assertEq(redeemAmount1, amount1);
+        assertEq(redeemAmount0, amount0 + fee0);
+        assertEq(redeemAmount1, amount1 + fee1);
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.totalSupply(), 0);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
@@ -184,9 +188,11 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
     }
 
     /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V3 liquidity.
-    function test_Redeem_PartiallyWithdrawsActiveV3Position() public {
+    function test_Redeem_PartiallyDistributesV3FeesProRata() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
+        uint256 totalFee0 = 0.2 ether;
+        uint256 totalFee1 = 400e6;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
@@ -205,14 +211,23 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
 
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, totalFee0, totalFee1);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
+
         (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
 
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
+        (uint256 aliceAmount0Out, uint256 aliceAmount1Out) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
 
-        assertEq(redeemAmount0, amount0);
-        assertEq(redeemAmount1, amount1);
+        uint256 aliceFee0 = totalFee0 / 2;
+        uint256 aliceFee1 = totalFee1 / 2;
+        assertEq(aliceAmount0Out, amount0 + aliceFee0);
+        assertEq(aliceAmount1Out, amount1 + aliceFee1);
+
+        assertEq(token0.balanceOf(address(vault)), totalFee0 - aliceFee0);
+        assertEq(token1.balanceOf(address(vault)), totalFee1 - aliceFee1);
+
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(bob), bobShares);
         assertEq(vault.totalSupply(), bobShares);
@@ -223,6 +238,21 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         (,,,,,,, uint128 remainingLiquidity,,,,) = positionManager.positions(adapter.tokenId());
         assertEq(uint256(remainingLiquidity), deployedLiquidity / 2);
+
+        positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
+        vm.prank(bob);
+        (uint256 bobAmount0Out, uint256 bobAmount1Out) = vault.redeem(bobShares, bob, bob, _emptyWithdrawalParams());
+        assertEq(bobAmount0Out, amount0 + totalFee0 - aliceFee0);
+        assertEq(bobAmount1Out, amount1 + totalFee1 - aliceFee1);
+
+        assertEq(vault.balanceOf(bob), 0);
+        assertEq(vault.totalSupply(), 0);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.totalLiquidity(), 0);
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertFalse(adapter.hasPosition());
+        assertEq(adapter.tokenId(), 0);
     }
 
     /// @notice Verifies vault totalAssets includes the deployed V3 position value.
@@ -252,8 +282,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(vault.totalAssets(), expectedTotalAssets);
     }
 
-    /// @notice Tests that collected Uniswap V3 fees are correctly transferred back to the vault.
-    function test_CollectFees_ReturnsFeesToVault() public {
+    /// @notice Verifies harvesting transfers V3 fees to vault idle balances without removing the active position.
+    function test_HarvestVenueFees_CollectsFeesWithoutRemovingPosition() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
         uint256 fee0 = 0.1 ether;
@@ -272,8 +302,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 vault0Before = token0.balanceOf(address(vault));
         uint256 vault1Before = token1.balanceOf(address(vault));
 
-        vm.prank(address(vault));
-        (uint256 collected0, uint256 collected1) = adapter.collectFees();
+        (uint256 collected0, uint256 collected1) = vault.harvestVenueFees(V3_LOW_VENUE_ID);
         assertEq(collected0, fee0);
         assertEq(collected1, fee1);
 
@@ -282,5 +311,52 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         
         assertEq(vault.totalLiquidity(), liquidity);
         assertTrue(adapter.hasPosition());
+    }
+
+    /// @notice Verifies compounding V3 fees increases the existing position without changing share supply.
+    function test_CompoundVenueFees_IncreasesExistingV3Position() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+        uint256 fee0 = 0.1 ether;
+        uint256 fee1 = 200e6;
+        uint128 liquidityAdded = 1234;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        _deployVaultToV3(vault, token0, token1, pool, positionManager, V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
+
+        uint256 tokenIdBefore = adapter.tokenId();
+        uint256 venueLiquidityBefore = vault.venueLiquidity(V3_LOW_VENUE_ID);
+        uint256 totalSupplyBefore = vault.totalSupply();
+
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
+        positionManager.setNextIncreaseResult(liquidityAdded, feePool0, feePool1);
+
+        uint256 amount0Min = fee0 / 2;
+        uint256 amount1Min = fee1 / 2;
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory params = _v3Params(amount0Min, amount1Min, deadline, tickLower, tickUpper);
+        (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
+
+        (uint256 collected0, uint256 collected1, uint256 actualLiquidityAdded) = vault.compoundVenueFees(V3_LOW_VENUE_ID, params);
+
+        assertEq(collected0, fee0);
+        assertEq(collected1, fee1);
+        assertEq(actualLiquidityAdded, liquidityAdded);
+
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), venueLiquidityBefore + liquidityAdded);
+        assertEq(vault.totalLiquidity(), venueLiquidityBefore + liquidityAdded);
+        assertEq(vault.totalSupply(), totalSupplyBefore);
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        assertEq(positionManager.lastIncreaseAmount0Min(), poolAmount0Min);
+        assertEq(positionManager.lastIncreaseAmount1Min(), poolAmount1Min);
+        assertEq(positionManager.lastIncreaseDeadline(), deadline);
+
+        (,,,,,,, uint128 positionLiquidity,,,,) = positionManager.positions(tokenIdBefore);
+        assertEq(uint256(positionLiquidity), venueLiquidityBefore + liquidityAdded);
     }
 }

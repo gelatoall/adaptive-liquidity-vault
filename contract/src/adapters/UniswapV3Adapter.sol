@@ -242,10 +242,11 @@ contract UniswapV3Adapter is IVenueAdapter {
         emit LiquidityRemoved(msg.sender, liquidity, amount0, amount1);
     }
 
-    /// @notice Collects all fees and owed amounts from the active position and transfers them to the vault.
-    /// @return fees0 Vault token 0 collected from the position.
-    /// @return fees1 Vault token 1 collected from the position.
-    /// @dev Can be called when the position has accrued fees or owed amounts, even if liquidity is zero but the tokenId is still active.
+    /// @notice Collects any currently owed tokens from the active V3 position and transfers them to the vault.
+    /// @return fees0 Vault token 0 amount collected from the position.
+    /// @return fees1 Vault token 1 amount collected from the position.
+    /// @dev This satisfies the generic `collectFees` adapter interface. In Uniswap V3, fees are exposed
+    ///      through the position manager's owed-token accounting and are collected via `collect`.
     function collectFees() external override onlyVault returns (uint256 fees0, uint256 fees1) {
         if (!_hasActivePosition(tokenId)) revert NoPosition();
 

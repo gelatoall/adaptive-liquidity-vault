@@ -1928,8 +1928,12 @@ tick range 有两个基本约束：
   - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出对应比例 liquidity 并清理 fully redeemed position
   - strategy-driven rebalance 可以把 idle 资金部署进 V3，并验证 dynamic tick / slippage params 被传到 V3 mint
   - strategy-driven rebalance 可以从 V3 撤出，并验证 withdrawal params 被传到 V3 decrease liquidity
-- 当前 vault 在撤出 venue liquidity 前会先调用 adapter `collectFees()`，所以 V3 fees 会在 withdraw / redeem / rebalance 撤仓路径中先回到 vault。
-- 当前还没有单独的 public fee-harvest 入口；如果后续要 keeper 定期 harvest，可以再加 `collectFeesFromVenue(...)`。
+- `harvestVenueFees(venueId)` 允许 owner 或 keeper 在不撤仓的情况下，把 venue 可收取的 token 收回 vault idle；该操作在 paused 状态仍可执行，因为它只回收资产，不重新承担 AMM 风险。
+- `redeem(...)` 会在读取 idle balance 前，对所有 venue 执行 collect。这样历史 V3 fees 先进入 idle，再按 `shares / totalSharesBefore` 分配给赎回者；随后按比例撤出的 liquidity 不会再次收取整个 position 的历史 fees。
+- 因此 partial redeem 的 V3 fees 已按 shares 精确分配：赎回者得到自己的比例，剩余部分留在 vault，属于剩余 shares。
+- `compoundVenueFees(venueId, params)` 会在同一笔交易中 collect 后重新部署到相同 venue。对于已有且 tick range 匹配的 V3 NFT，adapter 会调用 `increaseLiquidity`，不需要全撤、burn NFT 或重新 mint。
+- harvest 和 compound 都需要 owner 或 keeper 主动发交易；合约没有内置定时器。keeper 应在链下结合 gas 成本、slippage params 和执行频率决定何时调用。
+- `collectFees()` 是 adapter 的通用接口名；对 V3 而言它收取的是 position manager 当前记录的 owed tokens，其中可能同时包含 swap fees 和此前 `decreaseLiquidity` 产生的 owed tokens。
 
 ### V3 集成测试边界
 - 当前 mock 版本里，token 余额最终会落在 `MockNonfungiblePositionManager`，这是简化实现，不是链上真实 V3 的最终托管位置

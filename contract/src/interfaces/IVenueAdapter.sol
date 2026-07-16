@@ -23,8 +23,10 @@ interface IVenueAdapter {
         bytes calldata params
     ) external returns (uint256 amount0, uint256 amount1);
 
-    /// @notice Collect any accumulated fees; venues without explicit fee claims should return zero.
-    function collectFees() external returns (uint256 fees0, uint256 fees1);
+    /// @notice Collect claimable venue tokens; venues without an explicit claim step should return zero.
+    /// @dev For V3 this uses position-manager owed-token accounting, which may include tokens made owed by
+    ///      a previous liquidity decrease in addition to swap fees.
+    function collectFees() external returns (uint256 collected0, uint256 collected1);
 
     /// @notice Get the underlying token balances represented by the current position
     function getPositionValue() external view returns (uint256 amount0, uint256 amount1);

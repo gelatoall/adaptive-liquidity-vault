@@ -385,7 +385,11 @@ That integration layer should verify:
 - `totalAssets()` includes `adapter.getPositionValue()`
 - redemption can clear the active V3 position when the user redeems all shares
 
-The vault withdraw path calls `collectFees()` before `removeLiquidity(...)`, so explicit V3 fees are returned to idle vault balances during manual withdraw, redeem, rebalance, and emergency-exit withdrawals. There is still no dedicated public fee-harvest entrypoint; adapter unit tests keep direct `collectFees()` coverage for the V3-specific behavior.
+The vault can call `harvestVenueFees(venueId)` to collect owed V3 tokens into idle balances without removing liquidity. It can call `compoundVenueFees(venueId, params)` to collect and redeploy those tokens into the same venue. When this adapter has an active NFT and the supplied ticks match that NFT, `addLiquidity(...)` uses `increaseLiquidity` rather than minting a new position.
+
+During redemption, the vault collects claimable tokens from all venues before its idle-balance snapshot. The redeemer therefore receives its share of previously accrued V3 fees through the idle component; proportional liquidity removal then executes without a second whole-position collection. This prevents a partial redeemer from receiving fees owned by remaining shareholders.
+
+The adapter-level `collectFees()` name is retained for the generic venue interface. For V3, it collects currently owed position-manager tokens, which can include swap fees and tokens made owed by a prior `decreaseLiquidity`.
 
 ## Current Vault Integration
 
