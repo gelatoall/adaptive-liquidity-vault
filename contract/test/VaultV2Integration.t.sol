@@ -309,8 +309,11 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
     function test_TotalAssets_IncludesDeployedPositionWithTwapOracle() public {
         uint32 interval = 300;
         uint256 q112 = 2 ** 112;
-        uint256 avg0X112 = 2 * q112; // expect 2e18
-        uint256 avg1X112 = 3 * q112; // expect 3e18
+        uint256 reserve0 = 1 ether;
+        uint256 reserve1 = 2000e6;
+
+        uint256 avg0X112 = reserve1 * q112 / reserve0;
+        uint256 avg1X112 = reserve0 * q112 / reserve1;
 
         (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
@@ -320,12 +323,12 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         );
         _primeTwap(twapPair, twap, interval, avg0X112, avg1X112);
         
-        uint256 amount0 = 1e18;
-        uint256 amount1 = 1e6;
+        uint256 amount0 = reserve0;
+        uint256 amount1 = reserve1;
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         
         uint256 totalAssetsBeforeDeploy = vault.totalAssets();
-        assertEq(totalAssetsBeforeDeploy, 5e18);
+        assertEq(totalAssetsBeforeDeploy, 2e18);
 
         uint256 liquidityMinted = 1e18;
         router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);

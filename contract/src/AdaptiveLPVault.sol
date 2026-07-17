@@ -408,9 +408,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // View Functions
     // ============================================
     /// @notice Returns the current total value of the vault's holdings.
-    /// @dev Includes idle vault balances and adapter-reported deployed underlying amounts for every registered venue.
-    /// The returned value is denominated in the base asset and uses 1e18 precision.
-    /// @return Total vault asset value using the currently configured mock prices.
+    /// @dev Includes idle balances and adapter-reported underlying amounts across registered venues.
+    /// Oracle prices and the returned value are denominated in configured token0 with 1e18 precision.
+    /// @return Total vault value denominated in token0, scaled by 1e18.
     function totalAssets() public view returns (uint256) {
         if (address(priceOracle) == address(0)) {
             revert PriceOracleNotSet();

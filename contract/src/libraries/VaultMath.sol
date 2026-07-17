@@ -7,7 +7,7 @@ library VaultMath {
     error InvalidVaultState();
     error ZeroShares();
 
-    /// @dev Converts a raw token amount into a base-asset-denominated value.
+    /// @dev Converts a raw token amount into a common-base value (token0 for AdaptiveLPVault).
     /// @param amount Raw token amount in the token's smallest unit.
     /// @param price Price of one whole token denominated in the base asset, scaled by 1e18.
     /// @param decimals Decimals used by the token amount.
@@ -28,7 +28,7 @@ library VaultMath {
         return (amount * price) / (10 ** decimals);
     }
 
-    /// @dev Sums the base-asset-denominated value of two token balances.
+    /// @dev Sums two token balances after pricing both in the same base asset.
     /// @param amount0 Raw amount of token0 in its smallest unit.
     /// @param price0 Price of one whole token0 denominated in the base asset, scaled by 1e18.
     /// @param decimals0 Decimals used by token0.

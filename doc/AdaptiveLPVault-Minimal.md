@@ -227,7 +227,8 @@ Redemptions remain available while the vault is paused so users can exit.
 
 1. Require an oracle.
 2. Read total underlying token amounts through `_getTotalUnderlying()`.
-3. Convert the combined token amounts into base-denominated value using oracle prices.
+3. Read prices that share configured token0 as their common numeraire.
+4. Convert and sum the underlying amounts into a token0-denominated value with 1e18 precision.
 
 ### getTotalUnderlying
 

@@ -6,7 +6,7 @@ Build a minimal Uniswap V2 TWAP oracle that:
 - reads cumulative prices from a configured V2 pair
 - computes time-weighted average prices over a minimum window
 - returns prices in `1e18` precision through `IPriceOracle.getPrices()`
-- aligns returned `(price0, price1)` to configured token order
+- denominates both returned prices in configured `token0`
 
 ## Scope
 
@@ -15,7 +15,8 @@ This version includes:
 - cumulative-price snapshot state
 - windowed `update()` with minimum interval guard
 - `UQ112x112 -> 1e18` conversion
-- token-order remapping for reversed pair ordering
+- raw-unit decimal normalization
+- direct and reversed pair-order handling
 - unit tests using mocked pair cumulative values
 
 This version does not include:
@@ -31,14 +32,20 @@ This version does not include:
 - `IPriceOracle.getPrices() -> (uint256 price0, uint256 price1)`
 
 Output contract:
-- `price0` and `price1` are denominated in base value with `1e18` precision
-- return order always follows configured oracle `token0/token1`, not pair internal order
+- configured `token0` is the base asset
+- `price0` is always `1e18`
+- `price1` is the value of one whole configured `token1` in configured `token0`, scaled by `1e18`
+- both outputs therefore share one numeraire and can be used by vault valuation
 
 ## Core Formula
 
-For each token side:
+For each pair-native price side:
 - `avgX112 = (cumNow - cumLast) / timeElapsed`
-- `price1e18 = avgX112 * 1e18 / 2^112`
+- `rawPrice1e18 = avgX112 * 1e18 / 2^112`
+
+After selecting the pair direction that represents configured `token1` in configured `token0`:
+- `price0 = 1e18`
+- `price1 = rawPrice1e18 * 10^token1Decimals / 10^token0Decimals`
 
 Notes:
 - cumulative deltas and timestamp deltas intentionally use wrap-around semantics
@@ -50,6 +57,8 @@ Immutable config:
 - `pair`
 - `token0`
 - `token1`
+- `token0Decimals`
+- `token1Decimals`
 - `minUpdateInterval`
 
 Rolling snapshot:
@@ -68,6 +77,7 @@ Constructor validates:
 - non-zero pair/token addresses
 - non-zero `minUpdateInterval`
 - pair token set matches configured token set (direct or reversed)
+- token decimals can be safely scaled
 
 Constructor snapshots:
 - `price0CumulativeLast`
@@ -88,14 +98,15 @@ Important:
 5. Compute average price deltas in `UQ112x112`.
 6. Advance snapshot state to current cumulative/timestamp.
 7. Mark `initialized = true`.
-8. Emit `TwapUpdated(price0, price1, timeElapsed)` with aligned 1e18 prices.
+8. Emit `TwapUpdated(price0, price1, timeElapsed)` with token0-denominated 1e18 prices.
 
 ## Read Behavior
 
 `getPrices()`:
 - reverts before first successful update
-- converts latest `UQ112x112` averages to `1e18`
-- remaps pair order to configured token order
+- selects the pair-native average representing configured token1 in configured token0
+- converts the selected `UQ112x112` raw-unit ratio to `1e18`
+- normalizes token decimals and returns `(1e18, token1PriceInToken0)`
 
 ## Internal Helper Functions
 
@@ -114,20 +125,22 @@ Design considerations:
 - reason: avoid intermediate multiplication overflow risk while preserving integer division semantics
 - keeps conversion logic in one place so update/read paths do not duplicate precision code
 
-### `_getAlignedPrices() -> (uint256 price0, uint256 price1)`
+### `_getBaseDenominatedPrices() -> (uint256 price0, uint256 price1)`
 
 Purpose:
-- return prices aligned to configured oracle token order (`token0`, `token1`)
+- return both configured token prices in the configured token0 numeraire
 
 Behavior:
-- first decodes stored `price0AverageX112` and `price1AverageX112` into `1e18`
-- then checks pair order:
-  - if `pair.token0 == configured token0`, return `(pairPrice0, pairPrice1)`
-  - else return `(pairPrice1, pairPrice0)`
+- if `pair.token0 == configured token0`, select pair `price1AverageX112`
+- otherwise select pair `price0AverageX112`
+- decode the selected UQ112x112 value
+- normalize the raw-unit ratio with configured token decimals
+- return `price0 = 1e18` and the normalized `price1`
 
 Design considerations:
-- isolates token-order remapping in one helper to avoid repeated branching logic
-- ensures public `getPrices()` always respects vault-facing token semantics, even when pair internal order is reversed
+- V2 pair `price0` and `price1` are reciprocal, pair-relative values with different numeraires
+- returning both pair-native values would violate the vault's common-base valuation contract
+- selecting one direction and fixing token0 at `1e18` keeps `totalAssets()` dimensionally consistent
 
 ## Failure Cases
 
@@ -135,6 +148,7 @@ The oracle should revert when:
 - constructor receives zero addresses
 - constructor receives zero update interval
 - pair token set mismatches configured tokens
+- either token reports decimals too large for safe power-of-ten scaling
 - `update()` is called with zero elapsed time
 - `update()` is called before minimum interval is reached
 - `getPrices()` is called before oracle initialization
@@ -142,7 +156,9 @@ The oracle should revert when:
 ## Invariants
 
 These conditions should always hold:
-- returned prices are always aligned to configured `token0/token1` order
+- `price0 == 1e18` after initialization
+- both returned prices are denominated in configured token0
+- direct and reversed pair ordering produce the same output for the same economic price
 - successful update advances cumulative and timestamp snapshot
 - second update window is computed from first update snapshot, not initial constructor snapshot
 - `getPrices()` never returns uninitialized values
@@ -158,7 +174,8 @@ Core tests should cover:
 - `update()` revert when interval too short
 - successful update average computation and 1e18 scaling
 - rolling-window snapshot advancement across multiple updates
-- reversed pair-order price alignment
+- token-decimal normalization
+- reversed pair-order base-denominated output
 
 Current integration validation in this repository also covers:
 - vault deposit failure before oracle initialization (`NotInitialized`)

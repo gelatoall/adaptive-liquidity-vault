@@ -16,6 +16,10 @@
 ### Price
 - `price` 表示 1 个完整 token 价值多少 base asset。
 - 在这个项目里，`price` 使用 `1e18` 精度。
+- 当前 vault 明确把配置的 `token0` 作为 base asset：
+  - `price0 = 1e18`，表示 1 个完整 token0 值 1 个 token0
+  - `price1` 表示 1 个完整 token1 值多少 token0
+- 因此 `price0` 和 `price1` 使用同一个计价单位，可以相加各自换算后的价值。
 
 ### Assets
 - `assets` 表示统一换算成 base asset 后的标准化价值。
@@ -131,6 +135,7 @@
   - `value1 = total1 * price1 / 10**decimals1`
   - `totalAssets = value0 + value1`
 - 这里的 `price0` 和 `price1` 不是 vault 自己存的状态变量，而是通过 `oracle.getPrices()` 读出来的。
+- 两个价格必须使用同一个 base；当前实现统一使用 vault `token0`，所以 `totalAssets()` 的返回值也以 token0 计价。
 
 更紧凑地写就是：
 - `totalAssets = valueInBase(idle0 + deployed0, price0, decimals0) + valueInBase(idle1 + deployed1, price1, decimals1)`
@@ -1015,13 +1020,17 @@
 - 输出给 vault：
   - `getPrices() -> (price0, price1)`
   - 两个价格都用 `1e18` 精度
-  - 输出顺序按 oracle 配置的 `token0/token1` 语义，不按 pair 内部顺序
+  - 两个价格都以 oracle 配置的 `token0` 为 base
+  - `price0 = 1e18`
+  - `price1 = 1 个完整 token1 值多少个完整 token0`
 
 ### 核心公式
 - 时间加权平均：
   - `avgX112 = (cumNow - cumLast) / timeElapsed`
 - 精度转换（UQ112x112 -> 1e18）：
-  - `price1e18 = avgX112 * 1e18 / 2^112`
+  - `rawPrice1e18 = avgX112 * 1e18 / 2^112`
+- 最小单位比例转换为完整 token 比例：
+  - `price1 = rawPrice1e18 * 10**decimals1 / 10**decimals0`
 
 ### 为什么不是直接读 reserve
 - 直接读 reserve 得到的是 spot 语义，容易受短时波动影响。
@@ -1038,20 +1047,18 @@
 - 只有至少成功 `update()` 一次后，`getPrices()` 才可读。
 - 在首次有效更新前，`getPrices()` 应该 revert `NotInitialized`。
 
-### 顺序映射语义（最容易错）
-- pair 可能是 `(token1, token0)`，但 vault 仍然希望拿到 `(price0, price1)`。
-- 所以 oracle 返回前要做映射：
-  - 若 `pair.token0 == configured token0`，直接返回
-  - 否则交换返回顺序
-
-伪代码可以记成：
-- `if pair.token0 == token0: return (pairPrice0, pairPrice1)`
-- `else: return (pairPrice1, pairPrice0)`
-- 其中 `pairPrice0/pairPrice1` 是按 pair 内部顺序算出来的平均价
-
-为什么必须这样做：
-- vault 下游逻辑按“配置顺序”消费价格，而不是按 pair 内部排序消费。
-- 如果不做映射，就会把 `price0` 和 `price1` 对错对象，导致 `totalAssets()` 估值偏差。
+### V2 原生价格与 vault 输出（最容易错）
+- Uniswap V2 的原生价格是 pair-relative：
+  - pair `price0` 表示 1 个 pair token0 值多少 pair token1，即 `pair token1 / pair token0`
+  - pair `price1` 表示 1 个 pair token1 值多少 pair token0，即 `pair token0 / pair token1`
+- 这两个原生价格的计价单位不同，不能直接作为 vault 的 `(price0, price1)` 相加估值。
+- vault 输出必须统一以配置的 token0 计价，因此：
+  - vault `price0` 固定为 `1e18`
+  - vault `price1` 从 pair 中选择“configured token0 / configured token1”的方向
+- 选择规则：
+  - 若 `pair.token0 == configured token0`，使用 pair `price1AverageX112`
+  - 若 `pair.token0 == configured token1`，使用 pair `price0AverageX112`
+- 选出方向后还要根据 `token0Decimals/token1Decimals` 修正最小单位比例，才能得到一个完整 token1 的 token0 价格。
 
 ### UQ112x112 是什么
 - `UQ112x112` 是 DeFi 常见的定点数格式（Unsigned Q-format）。
@@ -1096,7 +1103,8 @@
   - interval 过短/零时间 revert
   - TWAP 计算与 `1e18` 转换
   - 多窗口快照前移
-  - reversed pair 顺序映射
+  - token0 统一计价和不同 decimals 换算
+  - reversed pair 下保持相同的 token0-denominated 输出
 
 ## 15. Rebalance（当前实现）
 

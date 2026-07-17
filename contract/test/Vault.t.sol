@@ -413,8 +413,10 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     function test_Integration_Deposit_WorksAfterTwapUpdate() public {
         uint32 interval = 300;
         uint256 q112 = 2 ** 112;
-        uint256 avg0X112 = 2 * q112; // expect 2e18
-        uint256 avg1X112 = 3 * q112; // expect 3e18
+        uint256 reserve0 = 1 ether;
+        uint256 reserve1 = 2000e6;
+        uint256 avg0X112 = reserve1 * q112 / reserve0;
+        uint256 avg1X112 = reserve0 * q112 / reserve1;
 
         (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
@@ -426,14 +428,14 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         assertTrue(twap.initialized());
         
         (uint256 price0, uint256 price1) = twap.getPrices();
-        assertEq(price0, 2e18, "twap price0");
-        assertEq(price1, 3e18, "twap price1");
+        assertEq(price0, 1e18, "twap price0");
+        assertApproxEqAbs(price1, 0.0005 ether, 1, "twap price1");
 
         uint256 amount0 = 1e18;
         uint256 amount1 = 1e6;
         uint256 mintShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        uint256 expectedAssets = 5e18;
+        uint256 expectedAssets = 1e18 + 5e14;
         assertEq(mintShares, expectedAssets);
         assertEq(vault.balanceOf(alice), expectedAssets, "shares minted from twap-priced assets");
     }
@@ -441,8 +443,10 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     function test_Integration_TotalAssets_WorksWithTwapOracleAfterUpdate() public {
         uint32 interval = 300;
         uint256 q112 = 2 ** 112;
-        uint256 avg0X112 = 2 * q112; // expect 2e18
-        uint256 avg1X112 = 3 * q112; // expect 3e18
+        uint256 reserve0 = 1 ether;
+        uint256 reserve1 = 2000e6;
+        uint256 avg0X112 = reserve1 * q112 / reserve0;
+        uint256 avg1X112 = reserve0 * q112 / reserve1;
 
         (MockUniswapV2Pair twapPair, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
@@ -457,6 +461,6 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         
-        assertEq(vault.totalAssets(), 5e18);
+        assertEq(vault.totalAssets(), 1e18 + 5e14);
     }
 }

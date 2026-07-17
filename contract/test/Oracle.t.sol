@@ -120,11 +120,13 @@ contract OracleTest is Test {
     }
 
     /// @notice Computes TWAP averages and returns 1e18-scaled prices after update.
-    function test_Update_ComputesAveragesAndGetPricesReturns1e18ScaledValues() public {
+    function test_Update_ComputesBaseDenominatedPrices() public {
         uint256 q112 = 2 ** 112;
         uint32 dt = minUpdateInterval;
-        uint256 avg0X112 = 2 * q112; // expect 2e18
-        uint256 avg1X112 = 3 * q112; // expect 3e18
+        uint256 reserve0 = 1 ether;
+        uint256 reserve1 = 2000e6;
+        uint256 avg0X112 = reserve1 * q112 / reserve0;
+        uint256 avg1X112 = reserve0 * q112 / reserve1;
 
         uint256 cum0Last = oracle.price0CumulativeLast();
         uint256 cum1Last = oracle.price1CumulativeLast();
@@ -132,7 +134,7 @@ contract OracleTest is Test {
         uint256 cum1Now = cum1Last + avg1X112 * dt;
 
         vm.warp(block.timestamp + dt);
-        pair.setReserves(1_100_000, 2_200_000); // push pair timestamp forward
+        pair.setReserves(uint112(reserve0), uint112(reserve1)); // push pair timestamp forward
         pair.setCumulativePrices(cum0Now, cum1Now);
 
         oracle.update();
@@ -147,8 +149,8 @@ contract OracleTest is Test {
         assertEq(oracle.blockTimestampLast(), tsNow);
 
         (uint256 price0, uint256 price1) = oracle.getPrices();
-        assertEq(price0, 2e18);
-        assertEq(price1, 3e18);         
+        assertEq(price0, 1e18);
+        assertEq(price1, 0.0005 ether);
     }
 
     /// @notice Uses advanced snapshot state for the second update window.
@@ -156,9 +158,10 @@ contract OracleTest is Test {
         uint256 q112 = 2 ** 112;
         uint32 dt = minUpdateInterval;
 
-        // window #1 target avg
-        uint256 avg0W1 = 2 * q112; // expect 2e18
-        uint256 avg1W1 = 3 * q112; // expect 3e18
+        uint256 reserve0 = 1 ether;
+        uint256 reserve1W1 = 2000e6;
+        uint256 avg0W1 = reserve1W1 * q112 / reserve0;
+        uint256 avg1W1 = reserve0 * q112 / reserve1W1;
 
         uint256 cum0Last = oracle.price0CumulativeLast();
         uint256 cum1Last = oracle.price1CumulativeLast();
@@ -166,37 +169,43 @@ contract OracleTest is Test {
         uint256 cum1Now1 = cum1Last + avg1W1 * dt;
 
         vm.warp(block.timestamp + dt);
-        pair.setReserves(1_100_000, 2_200_000); // push pair timestamp forward
+        pair.setReserves(uint112(reserve0), uint112(reserve1W1)); // push pair timestamp forward
         pair.setCumulativePrices(cum0Now1, cum1Now1);
 
         oracle.update();
         (uint256 p0W1, uint256 p1W1) = oracle.getPrices();
-        assertEq(p0W1, 2e18);
-        assertEq(p1W1, 3e18);
+        assertEq(p0W1, 1e18);
+        assertEq(p1W1, 0.0005 ether);
 
         // window #2 target avg
-        uint256 avg0W2 = 5 * q112; // expect 5e18
-        uint256 avg1W2 = 7 * q112; // expect 7e18
+        uint256 reserve1W2 = 2_500e6;
+        uint256 avg0W2 = reserve1W2 * q112 / reserve0;
+        uint256 avg1W2 = reserve0 * q112 / reserve1W2;
         uint256 cum0Now2 = cum0Now1 + avg0W2 * dt;
         uint256 cum1Now2 = cum1Now1 + avg1W2 * dt;
 
         vm.warp(block.timestamp + dt);
-        pair.setReserves(1_200_000, 2_400_000);
+        pair.setReserves(uint112(reserve0), uint112(reserve1W2));
         pair.setCumulativePrices(cum0Now2, cum1Now2);
 
         oracle.update();
         (uint256 p0W2, uint256 p1W2) = oracle.getPrices();
-        assertEq(p0W2, 5e18);
-        assertEq(p1W2, 7e18);
+        assertEq(p0W2, 1e18);
+        assertEq(p1W2, 0.0004 ether);
     }
 
-    /// @notice Maps returned prices to configured token order when pair token order is reversed.
+    /// @notice Keeps token0-denominated output unchanged when the pair token order is reversed.
     function test_GetPrices_MapsReversedPairOrderCorrectly() public {
         MockUniswapV2Pair reversedPair = new MockUniswapV2Pair(address(token1), address(token0));
-        // IMPORTANT: set initial timestamp before oracle constructor snapshots it
-        reversedPair.setReserves(1_000_000, 2_000_000);
+
+        uint256 q112 = 2 ** 112;
+        uint256 pairReserve0 = 2000e6; // pair token0 = configured token1 (USDC)
+        uint256 pairReserve1 = 1 ether; // pair token1 = configured token0 (WETH)
+
+        // Establish the initial reserve timestamp before the oracle snapshots it.
+        reversedPair.setReserves(uint112(pairReserve0), uint112(pairReserve1));
         reversedPair.setCumulativePrices(1_000_000e18, 2_000_000e18);
-        
+
         V2TWAPOracle reversedOracle = new V2TWAPOracle(
             address(reversedPair),
             address(token0),
@@ -204,24 +213,24 @@ contract OracleTest is Test {
             minUpdateInterval
         );
 
-        uint256 q112 = 2 ** 112;
         uint32 dt = minUpdateInterval;
-        uint256 avg0X112 = 2 * q112; // expect 2e18
-        uint256 avg1X112 = 3 * q112; // expect 3e18
-        
+        uint256 avg0X112 = pairReserve1 * q112 / pairReserve0;
+        uint256 avg1X112 = pairReserve0 * q112 / pairReserve1;
+
         uint256 cum0Last = reversedOracle.price0CumulativeLast();
         uint256 cum1Last = reversedOracle.price1CumulativeLast();
         uint256 cum0Now = cum0Last + dt * avg0X112;
         uint256 cum1Now = cum1Last + dt * avg1X112;
 
         vm.warp(block.timestamp + dt);
-        reversedPair.setReserves(1_100_000, 2_200_000); // push pair timestamp forward
+        // Persist the advanced timestamp while keeping the same economic reserves.
+        reversedPair.setReserves(uint112(pairReserve0), uint112(pairReserve1));
         reversedPair.setCumulativePrices(cum0Now, cum1Now);
 
         reversedOracle.update();
         (uint256 price0, uint256 price1) = reversedOracle.getPrices();
-        assertEq(price0, 3e18);// reversed mapping
-        assertEq(price1, 2e18);
+        assertEq(price0, 1e18);
+        assertApproxEqAbs(price1, 0.0005 ether, 1);
     }
 
 }
