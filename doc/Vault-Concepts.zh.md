@@ -1315,6 +1315,7 @@ amount1Min = amount1 * (10_000 - maxSlippageBps) / 10_000
 - 第一次 `update()` 只初始化快照：
   - `lastPrice0`
   - `lastPrice1`
+  - `lastUpdateTimestamp`
   - `volatilityBps` 仍为 `0`
 - 第二次及之后的 `update()` 会计算：
 
@@ -1328,6 +1329,8 @@ volatilityBps = max(change0Bps, change1Bps)
   - token0 变化更大，就用 token0 的变化率
   - token1 变化更大，就用 token1 的变化率
   - 一个上涨、一个下跌也不会互相抵消，因为用的是绝对变化
+- 每次成功 `update()` 后都会记录 `lastUpdateTimestamp`，下一次 update 必须等待至少 `minUpdateInterval` 秒。
+- 这个 interval guard 的作用是防止任何人高频调用 `update()`，把一次较大的价格变化切成很多次很小的变化，从而压低 strategy 看到的 `volatilityBps`。
 - 这不是严格统计学波动率：
   - 不计算标准差
   - 不计算年化波动率

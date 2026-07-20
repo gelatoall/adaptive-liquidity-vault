@@ -18,6 +18,12 @@ contract PriceChangeVolatilityOracle is IVolatilityOracle {
     /// @notice Price source used for volatility calculation.
     IPriceOracle public immutable priceOracle;
 
+    /// @notice Minimum seconds required between successful price samples.
+    uint32 public immutable minUpdateInterval;
+
+    /// @notice Timestamp of the last successful price sample.
+    uint256 public lastUpdateTimestamp;
+
     /// @notice Last sampled token0 price.
     uint256 public lastPrice0;
 
@@ -38,15 +44,21 @@ contract PriceChangeVolatilityOracle is IVolatilityOracle {
     // ============================================
     error ZeroAddress();
     error InvalidPrice();
+    error InvalidInterval();
+    error IntervalTooShort();
 
     // ============================================
     // Constructor
     // ============================================
-    /// @notice Initializes the oracle with a price source.
-    constructor(address _priceOracle) {
+    /// @notice Initializes the oracle with a price source and minimum update interval.
+    /// @param _priceOracle Price source used for volatility calculation.
+    /// @param _minUpdateInterval Minimum seconds required between successful updates.
+    constructor(address _priceOracle, uint32 _minUpdateInterval) {
         if (_priceOracle == address(0)) revert ZeroAddress();
+        if (_minUpdateInterval == 0) revert InvalidInterval();
 
         priceOracle = IPriceOracle(_priceOracle);
+        minUpdateInterval = _minUpdateInterval;
     }
 
     // ============================================
@@ -54,12 +66,17 @@ contract PriceChangeVolatilityOracle is IVolatilityOracle {
     // ============================================
     /// @notice Samples current prices and updates volatility.
     function update() external {
+        if (lastUpdateTimestamp != 0 && block.timestamp < lastUpdateTimestamp + minUpdateInterval) {
+            revert IntervalTooShort();
+        }
+
         (uint256 price0, uint256 price1) = priceOracle.getPrices();
         if (price0 == 0 || price1 == 0) revert InvalidPrice();
 
         if (lastPrice0 == 0 || lastPrice1 == 0) {
             lastPrice0 = price0;
             lastPrice1 = price1;
+            lastUpdateTimestamp = block.timestamp;
             return;
         }
 
@@ -72,6 +89,7 @@ contract PriceChangeVolatilityOracle is IVolatilityOracle {
         volatilityBps = priceChangeBps0 > priceChangeBps1 ? priceChangeBps0 : priceChangeBps1;
         lastPrice0 = price0;
         lastPrice1 = price1;
+        lastUpdateTimestamp = block.timestamp;
 
         emit VolatilityUpdated(price0, price1, volatilityBps);
     }

@@ -414,14 +414,18 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 liquidity = 10 ether;
+        uint32 minUpdateInterval = 300;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         // Change price volatility
-        PriceChangeVolatilityOracle priceChangeVolatilityOracle = new PriceChangeVolatilityOracle(address(priceOracle));
+        PriceChangeVolatilityOracle priceChangeVolatilityOracle = new PriceChangeVolatilityOracle(address(priceOracle), minUpdateInterval);
             // First update initializes the price snapshot.
         priceOracle.setPrices(100e18, 100e18);
         priceChangeVolatilityOracle.update();
+
+        vm.warp(block.timestamp + minUpdateInterval);
+
             // Second update computes 50% volatility, which selects HIGH.
         priceOracle.setPrices(150e18, 110e18);
         priceChangeVolatilityOracle.update();

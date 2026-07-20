@@ -327,7 +327,7 @@ The strategy can also use a configured `TwapSlippageController` plus per-venue s
 The strategy-driven path is covered for V3 entry and exit. A volatility-bucket target can deploy idle vault balances into a registered V3 venue through `rebalanceWithStrategy(...)`, and existing V3 positions can be exited during a strategy rebalance with caller-supplied withdrawal params.
 
 Current concrete volatility oracle implementations include:
-- `PriceChangeVolatilityOracle`, which reads `price0` and `price1` from an `IPriceOracle`, compares them with the previous sampled prices, and reports the larger absolute price change in basis points
+- `PriceChangeVolatilityOracle`, which reads `price0` and `price1` from an `IPriceOracle`, enforces a minimum interval between samples, compares them with the previous sampled prices, and reports the larger absolute price change in basis points
 - `V3TwapVolatilityOracle`, which reads a Uniswap V3 pool's spot price from `slot0()`, reads a time-weighted average price through `observe(...)`, and reports the spot-vs-TWAP deviation in basis points
 
 Both implementations expose the same `IVolatilityOracle.getVolatilityBps()` interface. `VolatilityBucketStrategy` does not need to know how the volatility value was produced.

@@ -297,6 +297,8 @@ volatilityBps = max(change0Bps, change1Bps)
 
 The first `update()` only initializes `lastPrice0` and `lastPrice1`; later updates compute `volatilityBps`.
 
+Each successful `update()` records `lastUpdateTimestamp`, including the initial snapshot. Later updates must wait at least `minUpdateInterval` seconds, which prevents callers from repeatedly refreshing the baseline over very short intervals and smoothing a large move into many small reported changes.
+
 This is intentionally a minimal price-change proxy. It does not compute statistical volatility, standard deviation, or annualized volatility.
 
 #### V3TwapVolatilityOracle

@@ -9,16 +9,17 @@ import "./mocks/MockPriceOracle.sol";
 contract PriceChangeVolatilityOracleTest is Test {
     MockPriceOracle public priceOracle;
     PriceChangeVolatilityOracle public volatilityOracle;
+    uint32 public minUpdateInterval = 300;
 
     function setUp() public {
         priceOracle = new MockPriceOracle();
-        volatilityOracle = new PriceChangeVolatilityOracle(address(priceOracle));
+        volatilityOracle = new PriceChangeVolatilityOracle(address(priceOracle), minUpdateInterval);
     }
 
     /// @notice Constructor rejects a zero price oracle address.
     function test_Constructor_RevertsWhenPriceOracleIsZero() public {
         vm.expectRevert(PriceChangeVolatilityOracle.ZeroAddress.selector);
-        new PriceChangeVolatilityOracle(address(0));
+        new PriceChangeVolatilityOracle(address(0), minUpdateInterval);
     }
 
     /// @notice First update initializes snapshots without volatility.
@@ -36,6 +37,8 @@ contract PriceChangeVolatilityOracleTest is Test {
         priceOracle.setPrices(100e18, 200e18);
         volatilityOracle.update();
 
+        vm.warp(block.timestamp + minUpdateInterval);
+
         priceOracle.setPrices(110e18, 210e18);
         volatilityOracle.update();
 
@@ -49,6 +52,8 @@ contract PriceChangeVolatilityOracleTest is Test {
         priceOracle.setPrices(100e18, 200e18);
         volatilityOracle.update();
 
+        vm.warp(block.timestamp + minUpdateInterval);
+
         priceOracle.setPrices(90e18, 190e18);
         volatilityOracle.update();
 
@@ -61,6 +66,8 @@ contract PriceChangeVolatilityOracleTest is Test {
     function test_Update_ComputesVolatilityWhenPricesMoveInOppositeDirections() public {
         priceOracle.setPrices(100e18, 200e18);
         volatilityOracle.update();
+
+        vm.warp(block.timestamp + minUpdateInterval);
 
         priceOracle.setPrices(105e18, 170e18);
         volatilityOracle.update();
