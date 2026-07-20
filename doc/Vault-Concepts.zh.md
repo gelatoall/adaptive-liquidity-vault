@@ -204,6 +204,7 @@
   - `amount0Out = idle0Out + venue0Out`
   - `amount1Out = idle1Out + venue1Out`
 - 如果 `shares == totalSupplyBefore`，会直接撤出每个 active venue 的全部 tracked liquidity，避免整数除法留下 dust。
+- 如果用户部分赎回的 shares 相对总 shares 太小，`venueLiquidity * shares / totalSupplyBefore` 可能会因为整数除法向下取整变成 0。此时 vault 会 revert `RedeemAmountTooSmall`，避免用户 shares 被 burn 但拿不到 deployed liquidity 对应资产。
 - `redeem` 现在接收 `withdrawalParams`，可以按 `venueId` 给不同 venue 的 withdrawal 传入不同的 slippage/deadline 参数。
 - 如果某个 active venue 没有对应的 `withdrawalParams`，vault 会向该 adapter 传空 `params`，adapter 使用自己的默认值。
 

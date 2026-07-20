@@ -221,6 +221,8 @@ Deposits are disabled while the vault is paused.
 
 When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
 
+If a partial redemption is very small relative to total shares, `venueLiquidity * shares / totalSupplyBefore` can round down to zero for an active venue. In that case, the vault reverts with `RedeemAmountTooSmall` instead of burning shares for no venue output.
+
 Redemptions remain available while the vault is paused so users can exit.
 
 ### totalAssets

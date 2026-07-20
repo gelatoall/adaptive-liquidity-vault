@@ -221,6 +221,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Thrown when an operation is blocked because at least one venue still has an active position.
     error ActivePositionExists();
 
+    /// @notice Thrown when redeemed shares are too small to withdraw any tracked venue liquidity.
+    error RedeemAmountTooSmall();
+
     /// @notice Thrown when a rebalance request would not move any funds.
     error NoRebalanceNeeded();
 
@@ -844,7 +847,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
                 liquidityToWithdraw = liquidity * shares / totalSharesBefore;
             }
 
-            if (liquidityToWithdraw == 0) continue;
+            if (liquidityToWithdraw == 0) revert RedeemAmountTooSmall();
 
             bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
             (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, params, false);

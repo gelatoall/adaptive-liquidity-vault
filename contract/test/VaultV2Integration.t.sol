@@ -303,6 +303,30 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(pair.balanceOf(address(adapter)), 5 ether);
     }
 
+    /// @notice Redeem reverts instead of burning shares when the pro-rata venue liquidity rounds down to zero.
+    function test_Redeem_RevertsWhenProRataVenueLiquidityRoundsToZero() public {
+        uint256 amount0 = 1_000_000 ether;
+        uint256 amount1 = 1_000_000e6;
+        uint256 liquidityMinted = 1;
+
+        uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
+        assertTrue(shares > liquidityMinted);
+
+        vm.prank(alice);
+        vm.expectRevert(AdaptiveLPVault.RedeemAmountTooSmall.selector);
+        vault.redeem(1, alice, alice, _emptyWithdrawalParams());
+
+        assertEq(vault.balanceOf(alice), shares);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
+    }
+
     // ============================================
     // Integration Tests for User & vault & V2 adapter & V2 TWAP Oracle
     // ============================================
