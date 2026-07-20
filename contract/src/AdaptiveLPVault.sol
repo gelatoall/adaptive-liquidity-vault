@@ -212,6 +212,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Thrown when a deployment or rebalance plan requires more idle token balance than available.
     error InsufficientBalances();
 
+    /// @notice Thrown when minted shares are below the caller's minimum.
+    error InsufficientSharesOut();
+
+    /// @notice Thrown when redeemed token amounts are below the caller's minimums.
+    error InsufficientRedeemOutput();
+
     /// @notice Thrown when a valuation or price-dependent operation is requested before an oracle is configured.
     error PriceOracleNotSet();
 
@@ -308,8 +314,14 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @param amount0 Raw token0 amount in token0's smallest unit.
     /// @param amount1 Raw token1 amount in token1's smallest unit.
     /// @param receiver Address that receives the minted vault shares.
+    /// @param minShares Minimum acceptable shares minted to `receiver`.
     /// @return shares Amount of vault shares minted to `receiver`.
-    function deposit(uint256 amount0, uint256 amount1, address receiver) external whenNotPaused nonReentrant returns (uint256 shares) {
+    function deposit(
+        uint256 amount0, 
+        uint256 amount1, 
+        address receiver, 
+        uint256 minShares
+    ) external whenNotPaused nonReentrant returns (uint256 shares) {
         // Reject if both deposit amounts are zero.
         if (amount0 == 0 && amount1 == 0) {
             revert ZeroAmounts();
@@ -337,6 +349,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
         // Calculate shares to mint using VaultMath.calculateShares.
         shares = VaultMath.calculateShares(assetsToDeposit, totalAssetsBefore, totalShares);
+        if (shares < minShares) revert InsufficientSharesOut();
 
         // Transfer token0 and token1 from the sender into the vault.
         IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
@@ -355,13 +368,17 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @param receiver Address that receives the withdrawn token0 and token1 amounts.
     /// @param owner Address whose vault shares are burned.
     /// @param withdrawalParams Venue-specific remove-liquidity params used when redeem withdraws active positions.
+    /// @param minAmount0Out Minimum acceptable token0 amount sent to `receiver`.
+    /// @param minAmount1Out Minimum acceptable token1 amount sent to `receiver`.
     /// @return amount0Out Raw token0 amount sent to `receiver`.
     /// @return amount1Out Raw token1 amount sent to `receiver`.
     function redeem(
         uint256 shareToRedeem,
         address receiver,
         address owner,
-        VenueWithdrawalParams[] calldata withdrawalParams
+        VenueWithdrawalParams[] calldata withdrawalParams,
+        uint256 minAmount0Out,
+        uint256 minAmount1Out
     ) external nonReentrant returns (uint256 amount0Out, uint256 amount1Out) {
         // Reject if shares is zero.
         if (shareToRedeem == 0) {
@@ -401,6 +418,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         );
         amount0Out += venue0Out;
         amount1Out += venue1Out;
+        if (amount0Out < minAmount0Out || amount1Out < minAmount1Out) {
+            revert InsufficientRedeemOutput();
+        }
 
         // Burn the owner's redeemed shares.
         _burn(owner, shareToRedeem);

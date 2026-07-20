@@ -268,7 +268,7 @@ For venues with a configured `V3TickCalculations` contract, `buildTargets(...)` 
 
 This wires volatility-based V3 range selection and TWAP-validated add-liquidity minimum amounts into the strategy layer. The controller checks that the target venue id matches the configured V3 pool, compares current spot price against TWAP, rejects excessive spot/TWAP deviation, and then applies the configured bps haircut to desired token amounts.
 
-The strategy-driven V3 entry path is covered end to end: `VolatilityBucketStrategy` can build a V3 target with dynamic params, `rebalanceWithStrategy(...)` executes that target through the shared rebalance flow, and the registered V3 adapter mints or increases its managed position. The V3 exit path is also covered by forwarding owner-supplied withdrawal params during strategy rebalances.
+The strategy-driven V3 entry path is covered end to end: `VolatilityBucketStrategy` can build a V3 target with dynamic params, `rebalanceWithStrategy(...)` executes that target through the shared rebalance flow, and the registered V3 adapter mints or increases its managed position. The V3 exit path is also covered by forwarding caller-supplied withdrawal params during strategy rebalances.
 
 Current limitations:
 - volatility is read from an external oracle contract

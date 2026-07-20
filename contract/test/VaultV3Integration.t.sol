@@ -171,7 +171,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams, 0, 0);
 
         assertEq(redeemAmount0, amount0 + fee0);
         assertEq(redeemAmount1, amount1 + fee1);
@@ -218,7 +218,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
 
         vm.prank(alice);
-        (uint256 aliceAmount0Out, uint256 aliceAmount1Out) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
+        (uint256 aliceAmount0Out, uint256 aliceAmount1Out) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
         uint256 aliceFee0 = totalFee0 / 2;
         uint256 aliceFee1 = totalFee1 / 2;
@@ -241,7 +241,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
         vm.prank(bob);
-        (uint256 bobAmount0Out, uint256 bobAmount1Out) = vault.redeem(bobShares, bob, bob, _emptyWithdrawalParams());
+        (uint256 bobAmount0Out, uint256 bobAmount1Out) = vault.redeem(bobShares, bob, bob, _emptyWithdrawalParams(), 0, 0);
         assertEq(bobAmount0Out, amount0 + totalFee0 - aliceFee0);
         assertEq(bobAmount1Out, amount1 + totalFee1 - aliceFee1);
 

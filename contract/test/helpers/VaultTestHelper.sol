@@ -27,7 +27,7 @@ abstract contract VaultTestHelper is Test {
         vm.startPrank(user);
         token0.approve(address(vault), amount0);
         token1.approve(address(vault), amount1);
-        shares = vault.deposit(amount0, amount1, user);
+        shares = vault.deposit(amount0, amount1, user, 0);
         vm.stopPrank();
     }
 
@@ -53,7 +53,7 @@ abstract contract VaultTestHelper is Test {
         vm.startPrank(sender);
         token0.approve(address(vault), amount0);
         token1.approve(address(vault), amount1);
-        shares = vault.deposit(amount0, amount1, receiver);
+        shares = vault.deposit(amount0, amount1, receiver, 0);
         vm.stopPrank();
     }
 

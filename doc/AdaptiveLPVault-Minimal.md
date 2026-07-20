@@ -112,16 +112,18 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: return raw `token0` and `token1` amounts across idle balances and adapter-reported venue positions
   - returns: `uint256 total0, uint256 total1`
 
-- `deposit(amount0, amount1, receiver)`
+- `deposit(amount0, amount1, receiver, minShares)`
   - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
   - behavior: blocked while the vault is paused
+  - behavior: reverts if minted shares are below `minShares`
   - returns: `uint256 shares`
 
-- `redeem(shares, receiver, owner, withdrawalParams)`
+- `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`
   - purpose: burn `owner` shares and return proportional token balances across idle assets and active venue positions to `receiver`
   - behavior: if the caller is not `owner`, the caller must have sufficient ERC20 share allowance from `owner`
   - behavior: withdraws the redeemed share ratio of tracked liquidity from each active venue before transferring tokens
   - behavior: forwards matching per-venue withdrawal params to adapters; venues without a matching entry receive empty params
+  - behavior: reverts if final token outputs are below `minAmount0Out` or `minAmount1Out`
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `deployToVenue(venueId, amount0, amount1, params)`
@@ -200,8 +202,9 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 4. Read `totalSupply()` before the deposit.
 5. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
 6. Calculate shares to mint using `VaultMath.calculateShares`.
-7. Transfer `token0` and `token1` from the caller into the vault.
-8. Mint shares to `receiver`.
+7. Revert if minted shares are below `minShares`.
+8. Transfer `token0` and `token1` from the caller into the vault.
+9. Mint shares to `receiver`.
 
 Deposits are disabled while the vault is paused.
 
@@ -217,8 +220,9 @@ Deposits are disabled while the vault is paused.
 8. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
 9. For each venue withdrawal, forward the matching `VenueWithdrawalParams.params` entry to the adapter; if no entry matches the venue id, forward empty params.
 10. Add the tokens returned from venue withdrawals to the output amounts.
-11. Burn `owner`'s shares.
-12. Transfer `token0` and `token1` to `receiver`.
+11. Revert if final token outputs are below `minAmount0Out` or `minAmount1Out`.
+12. Burn `owner`'s shares.
+13. Transfer `token0` and `token1` to `receiver`.
 
 When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
 
@@ -259,7 +263,7 @@ Redemptions remain available while the vault is paused so users can exit.
 6. Return the sum of collected tokens and removed liquidity proceeds.
 7. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
+User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
 ### Fee Harvest and Compounding
 
@@ -355,7 +359,7 @@ The vault should revert when:
 - constructor token addresses are zero or identical, or either decimals value is zero
 - both deposit amounts are zero
 - the oracle is not configured
-- a non-zero deposit would mint zero shares
+- a non-zero deposit would mint zero shares or fewer shares than `minShares`
 - `redeem` is called with zero shares
 - `redeem` is called with more shares than the user owns
 - `deposit`, `deployToVenue`, `rebalance`, or `rebalanceWithStrategy` is called while paused
@@ -373,6 +377,7 @@ The vault should revert when:
 - strategy-driven rebalance is called before a strategy is configured
 - strategy-driven rebalance violates cooldown, volatility delta, or max gas price guards
 - volatility delta guard is enabled before a volatility oracle is configured
+- redeem output is below `minAmount0Out` or `minAmount1Out`
 
 ## Invariants
 

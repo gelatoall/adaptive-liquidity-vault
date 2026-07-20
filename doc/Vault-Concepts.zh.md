@@ -152,8 +152,9 @@
   - `amount0/amount1 -> assetsToDeposit -> sharesToMint`
 - vault 先把不同 token 的数量换算成统一价值。
 - 然后根据当前 vault 定价计算应该 mint 多少 shares。
-- 当前签名是 `deposit(amount0, amount1, receiver)`。
+- 当前签名是 `deposit(amount0, amount1, receiver, minShares)`。
 - `msg.sender` 提供 `token0/token1`，`receiver` 接收新 mint 出来的 vault shares。
+- `minShares` 是用户愿意接受的最少 shares。如果实际 mint 出来的 shares 小于这个值，交易会 revert `InsufficientSharesOut`。
 - 所以 caller 和 receiver 可以不同：
   - Alice 可以出 token
   - Bob 可以收到 shares
@@ -173,16 +174,18 @@
 ### 重要细节
 - `deposit` 必须使用转账前的 `totalAssets`。
 - 否则用户自己的存款会先被算进 vault，总价值分母变大，导致新用户拿到的 shares 偏少。
+- `minShares` 是 deposit 的用户侧保护。它可以防止 oracle、估值或交易环境导致实际 minted shares 低于用户预期。
 - 当 vault 处于 paused 状态时，`deposit` 会被禁止，因为暂停状态下不应该继续接受新资金。
 
 ### Redeem
 - `redeem` 的流程是：
   - `shares -> ownership ratio -> amount0Out/amount1Out`
 - `redeem` 会按 shares 占比返还底层 token。
-- 当前签名是 `redeem(shares, receiver, owner, withdrawalParams)`。
+- 当前签名是 `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`。
 - `owner` 是 shares 被 burn 的地址。
 - `receiver` 是最终收到 `token0/token1` 的地址。
 - `msg.sender` 是发起 redeem 的地址。
+- `minAmount0Out/minAmount1Out` 是用户愿意接受的最少赎回输出。如果最终输出低于任一最小值，交易会 revert `InsufficientRedeemOutput`。
 - 如果 `msg.sender != owner`，则 `msg.sender` 必须先获得 `owner` 对 vault shares 的 ERC20 allowance。
 - 在当前集成里，`redeem` 会同时处理：
   - vault 里直接持有的 idle token
@@ -211,6 +214,7 @@
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
 - 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会按 shares 比例调用内部 withdrawal flow，把用户对应比例的 liquidity 撤回后再转出 token。
+- `minAmount0Out/minAmount1Out` 是 redeem 的用户侧保护。它可以防止撤仓滑点、rounding 或 venue 返回值低于用户预期。
 - `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
 - `redeem` 不受 paused 状态限制。这样在紧急情况下，即使 owner 暂停了正常运营，用户仍然可以退出。
 
@@ -1304,7 +1308,7 @@ amount1Min = amount1 * (10_000 - maxSlippageBps) / 10_000
 
 - `targetVenueId -> pool` 的检查是为了避免真实 fork 配置里把 V3 0.05%、0.30%、1.00% 的 pool 搞混。
 - 当前 controller 保护的是 strategy 生成的 V3 add-liquidity params。
-- strategy-driven withdrawal 阶段现在可以接收 owner-supplied withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
+- strategy-driven withdrawal 阶段现在可以接收 caller-supplied withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
 
 ### 当前 PriceChangeVolatilityOracle
 - 当前已经实现了 [PriceChangeVolatilityOracle.sol](../contract/src/oracles/PriceChangeVolatilityOracle.sol)。

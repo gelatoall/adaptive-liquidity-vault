@@ -253,7 +253,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         router.setNextRemoveLiquidityResult(amount0Used, amount1Used);
         uint256 aliceShares = vault.balanceOf(alice);
         vm.prank(alice);
-        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams);
+        (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams, 0, 0);
         
         assertEq(redeemAmount0, amount0);
         assertEq(redeemAmount1, amount1);
@@ -291,7 +291,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         router.setNextRemoveLiquidityResult(amount0, amount1);
         vm.prank(alice);
-        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams());
+        (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
         assertEq(redeem0, amount0);
         assertEq(redeem1, amount1);
@@ -321,7 +321,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.RedeemAmountTooSmall.selector);
-        vault.redeem(1, alice, alice, _emptyWithdrawalParams());
+        vault.redeem(1, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
         assertEq(vault.balanceOf(alice), shares);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
