@@ -194,6 +194,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Thrown when a caller tries to withdraw zero venue liquidity.
     error ZeroLiquidity();
 
+    /// @notice Thrown when both configured underlying token addresses are the same.
+    error IdenticalTokens();
+
     /// @notice Thrown when a caller is neither the owner nor the keeper.
     error NotOwnerOrKeeper();
 
@@ -288,6 +291,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         if (_decimals0 == 0 || _decimals1 == 0) {
             revert ZeroDecimals();
         }
+
+        if (_token0 == _token1) revert IdenticalTokens();
 
         token0 = IERC20(_token0);
         token1 = IERC20(_token1);

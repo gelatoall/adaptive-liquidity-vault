@@ -295,6 +295,7 @@
 - 用户赎回超过自己持有的 shares，应该 revert。
 - paused 状态下调用 `deposit`、`deployToVenue`、`rebalance`、`rebalanceWithStrategy` 应该 revert。
 - 非 owner 调用 `pause`、`unpause`、`emergencyExit` 或资本管理函数应该 revert。
+- vault constructor 配置零地址、相同的 `token0/token1`，或零 decimals 时应该 revert。
 
 ### 关键规则
 - 业务输入检查通常属于 vault。

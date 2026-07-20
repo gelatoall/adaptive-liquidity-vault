@@ -92,6 +92,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `constructor(name, symbol, token0, token1, decimals0, decimals1)`
   - purpose: initialize share token metadata, underlying tokens, and decimals
+  - behavior: rejects zero token addresses, identical token addresses, and zero decimals
 
 - `setPriceOracle(priceOracle)`
   - purpose: set the price oracle used to read `token0` and `token1` prices
@@ -351,6 +352,7 @@ Paused state does not block exit-oriented operations:
 ## Failure Cases
 
 The vault should revert when:
+- constructor token addresses are zero or identical, or either decimals value is zero
 - both deposit amounts are zero
 - the oracle is not configured
 - a non-zero deposit would mint zero shares
