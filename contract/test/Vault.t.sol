@@ -131,7 +131,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vault.deposit(0, 0, alice, 0);
     }
 
-    function test_Deposit_MintsSharesEqualToAssetValueOnInitialDeposit() public {
+    function test_Deposit_InitialDepositLocksMinimumShares() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
@@ -140,8 +140,44 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        assertEq(shares, 2e18);
-        assertEq(vault.balanceOf(alice), 2e18);
+        uint256 grossShares = 2e18;
+        uint256 expectedUserShares = grossShares - vault.MINIMUM_LOCKED_SHARES();
+        assertEq(shares, expectedUserShares);
+        assertEq(vault.balanceOf(alice), expectedUserShares);
+        assertEq(vault.balanceOf(vault.LOCKED_SHARES_RECEIVER()), vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.totalSupply(), grossShares);
+    }
+
+    function test_Deposit_FirstDepositorCannotProfitFromDonationAttack() public {
+        oracle.setPrices(1e18, 1e18);
+
+        uint256 initialDeposit = 1001;
+        uint256 donation = 100 ether;
+        uint256 victimDeposit = 100 ether;
+        uint256 attackerCost = initialDeposit + donation;
+
+        // Alice becomes the first depositor, then inflates totalAssets by donating directly.
+        token0.mint(alice, attackerCost);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), initialDeposit);
+        uint256 aliceShares = vault.deposit(initialDeposit, 0, alice, 0);
+        token0.transfer(address(vault), donation);
+        vm.stopPrank();
+
+        // Bob deposits after the donation has increased assets without increasing shares.
+        token0.mint(bob, victimDeposit);
+
+        vm.startPrank(bob);
+        token0.approve(address(vault), victimDeposit);
+        vault.deposit(victimDeposit, 0, bob, 0);
+        vm.stopPrank();
+
+        // Alice must not recover more than her initial deposit plus donation.
+        vm.prank(alice);
+        (uint256 amount0Out,) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+
+        assertLe(amount0Out, attackerCost);
     }
 
     function test_Deposit_MintsProportionalSharesOnSecondDeposit() public {
@@ -245,8 +281,9 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = _mintAndDepositToReceiver(token0, token1, vault, alice, bob, amount0, amount1);
 
-        assertEq(shares, 2e18);
-        
+        assertEq(shares, 2e18 - vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.balanceOf(vault.LOCKED_SHARES_RECEIVER()), vault.MINIMUM_LOCKED_SHARES());
+
         // Alice supplies the underlying tokens to the vault.
         assertEq(token0.balanceOf(alice), 0);
         assertEq(token1.balanceOf(alice), 0);
@@ -269,13 +306,18 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
+        uint256 totalSharesBefore = vault.totalSupply();
+        uint256 expectedAmount0Out = amount0 * shares / totalSharesBefore;
+        uint256 expectedAmount1Out = amount1 * shares / totalSharesBefore;
+
         vault.pause();
 
         vm.prank(alice);
         (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
-        assertEq(amount0Out, amount0);
-        assertEq(amount1Out, amount1);
+        assertEq(amount0Out, expectedAmount0Out);
+        assertEq(amount1Out, expectedAmount1Out);
+        assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
         assertEq(vault.balanceOf(alice), 0);
     }
 
@@ -286,7 +328,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        assertEq(vault.balanceOf(alice), 2e18);
+        assertEq(vault.balanceOf(alice), 2e18 - vault.MINIMUM_LOCKED_SHARES());
 
         _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
         assertEq(vault.balanceOf(bob), 2e18);
@@ -313,12 +355,12 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 amount1 = 2000e6;
         oracle.setPrices(price0, price1);
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        assertEq(vault.balanceOf(alice), 2e18);
+        assertEq(vault.balanceOf(alice), 2e18 - vault.MINIMUM_LOCKED_SHARES());
 
         uint256 shares = 1e18;
         vm.prank(alice);
         vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
-        assertEq(vault.balanceOf(alice), 1e18);
+        assertEq(vault.balanceOf(alice), 1e18 - vault.MINIMUM_LOCKED_SHARES());
     }
 
     function test_Redeem_ReducesTotalSupply() public {
@@ -329,7 +371,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         oracle.setPrices(price0, price1);
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        assertEq(vault.balanceOf(alice), 2e18);
+        assertEq(vault.balanceOf(alice), 2e18 - vault.MINIMUM_LOCKED_SHARES());
 
         _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
         assertEq(vault.balanceOf(bob), 2e18);
@@ -340,7 +382,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.prank(alice);
         vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
-        assertEq(vault.balanceOf(alice), 1e18);
+        assertEq(vault.balanceOf(alice), 1e18 - vault.MINIMUM_LOCKED_SHARES());
         assertEq(vault.totalSupply(), 3e18);
     }
 
@@ -352,7 +394,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         oracle.setPrices(price0, price1);
         
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        assertEq(vault.balanceOf(alice), 2e18);
+        assertEq(vault.balanceOf(alice), 2e18 - vault.MINIMUM_LOCKED_SHARES());
         
         uint256 shares = 1e18;
         vm.prank(alice);
@@ -393,12 +435,16 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vault.approve(operator, shares);
         assertEq(vault.allowance(alice, operator), shares);
 
+        uint256 totalSharesBefore = vault.totalSupply();
+        uint256 expectedAmount0Out = amount0 * shares / totalSharesBefore;
+        uint256 expectedAmount1Out = amount1 * shares / totalSharesBefore;
+
         vm.prank(operator);
         (uint256 amount0Out, uint256 amount1Out) =
             vault.redeem(shares, bob, alice, _emptyWithdrawalParams(), 0, 0);
 
-        assertEq(amount0Out, amount0);
-        assertEq(amount1Out, amount1);
+        assertEq(amount0Out, expectedAmount0Out);
+        assertEq(amount1Out, expectedAmount1Out);
 
         // Alice's shares are burned.
         assertEq(vault.balanceOf(alice), 0);
@@ -409,8 +455,10 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         assertEq(token1.balanceOf(operator), 0);
 
         // Bob receives the underlying tokens.
-        assertEq(token0.balanceOf(bob), amount0);
-        assertEq(token1.balanceOf(bob), amount1);
+        assertEq(token0.balanceOf(bob), expectedAmount0Out);
+        assertEq(token1.balanceOf(bob), expectedAmount1Out);
+        
+        assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
 
         // Allowance was consumed.
         assertEq(vault.allowance(alice, operator), 0);
@@ -469,8 +517,10 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 mintShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         uint256 expectedAssets = 1e18 + 5e14;
-        assertEq(mintShares, expectedAssets);
-        assertEq(vault.balanceOf(alice), expectedAssets, "shares minted from twap-priced assets");
+        uint256 expectedUserShares = expectedAssets - vault.MINIMUM_LOCKED_SHARES();
+        assertEq(mintShares, expectedUserShares);
+        assertEq(vault.balanceOf(alice), expectedUserShares, "shares minted from twap-priced assets");
+        assertEq(vault.totalSupply(), expectedAssets);
     }
 
     function test_Integration_TotalAssets_WorksWithTwapOracleAfterUpdate() public {

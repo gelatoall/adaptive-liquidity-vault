@@ -227,8 +227,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(token1.balanceOf(address(vault)), amount1);
     }
 
-    /// @notice Verifies full redeem withdraws all active V2 liquidity and forwards withdrawal params.
-    function test_Redeem_FullyWithdrawsActiveV2Position() public {
+    /// @notice Verifies redeeming all user-owned shares preserves locked-share V2 liquidity and forwards params.
+    function test_Redeem_AllUserSharesPreservesLockedV2Liquidity() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 amount0Used = 8 ether;
@@ -250,18 +250,32 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
             params: abi.encode(amount0Min, amount1Min, deadline)
         });
 
-        router.setNextRemoveLiquidityResult(amount0Used, amount1Used);
         uint256 aliceShares = vault.balanceOf(alice);
+
+        uint256 totalSharesBefore = vault.totalSupply();
+        uint256 liquidityToWithdraw = liquidityMinted * aliceShares / totalSharesBefore;
+        uint256 expectedRemainingLiquidity = liquidityMinted - liquidityToWithdraw;
+
+        uint256 venueAmount0Out = amount0Used * aliceShares / totalSharesBefore;
+        uint256 venueAmount1Out = amount1Used * aliceShares / totalSharesBefore;
+        router.setNextRemoveLiquidityResult(venueAmount0Out, venueAmount1Out);
+
         vm.prank(alice);
         (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams, 0, 0);
         
-        assertEq(redeemAmount0, amount0);
-        assertEq(redeemAmount1, amount1);
+        uint256 idleAmount0 = amount0 - amount0Used;
+        uint256 idleAmount1 = amount1 - amount1Used;
+        uint256 expectedAmount0Out = idleAmount0 * aliceShares / totalSharesBefore + venueAmount0Out;
+        uint256 expectedAmount1Out = idleAmount1 * aliceShares / totalSharesBefore + venueAmount1Out;
+
+        assertEq(redeemAmount0, expectedAmount0Out);
+        assertEq(redeemAmount1, expectedAmount1Out);
+
+        assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), expectedRemainingLiquidity);
+        assertEq(vault.totalLiquidity(), expectedRemainingLiquidity);
+        assertEq(pair.balanceOf(address(adapter)), expectedRemainingLiquidity);
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.totalSupply(), 0);
-        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), 0);
-        assertEq(pair.balanceOf(address(adapter)), 0);
 
         assertEq(router.lastRemoveAmountAMin(), amount0Min);
         assertEq(router.lastRemoveAmountBMin(), amount1Min);
@@ -277,8 +291,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         uint256 aliceShares = vault.balanceOf(alice);
         uint256 bobShares = vault.balanceOf(bob);
         uint256 totalSharesBefore = vault.totalSupply();
-        assertEq(aliceShares, bobShares);
-        assertEq(totalSharesBefore, aliceShares + bobShares);
+        assertEq(aliceShares + vault.MINIMUM_LOCKED_SHARES(), bobShares);
+        assertEq(totalSharesBefore, aliceShares + bobShares + vault.MINIMUM_LOCKED_SHARES());
 
         uint256 totalAmount0 = 20 ether;
         uint256 totalAmount1 = 40e6;
@@ -289,18 +303,24 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
         assertEq(vault.totalLiquidity(), liquidityMinted);
 
-        router.setNextRemoveLiquidityResult(amount0, amount1);
+        uint256 liquidityToWithdraw = liquidityMinted * aliceShares / totalSharesBefore;
+        uint256 expectedRemainingLiquidity = liquidityMinted - liquidityToWithdraw;
+        uint256 expectedAmount0Out = totalAmount0 * aliceShares / totalSharesBefore;
+        uint256 expectedAmount1Out = totalAmount1 * aliceShares / totalSharesBefore;
+        router.setNextRemoveLiquidityResult(expectedAmount0Out, expectedAmount1Out);
+
         vm.prank(alice);
         (uint256 redeem0, uint256 redeem1) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
-        assertEq(redeem0, amount0);
-        assertEq(redeem1, amount1);
+        assertEq(redeem0, expectedAmount0Out);
+        assertEq(redeem1, expectedAmount1Out);
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(bob), bobShares);
-        assertEq(vault.totalSupply(), bobShares);
-        assertEq(vault.venueLiquidity(V2_VENUE_ID), 5 ether);
-        assertEq(vault.totalLiquidity(), 5 ether);
-        assertEq(pair.balanceOf(address(adapter)), 5 ether);
+        assertEq(vault.totalSupply(), bobShares + vault.MINIMUM_LOCKED_SHARES());
+        
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), expectedRemainingLiquidity);
+        assertEq(vault.totalLiquidity(), expectedRemainingLiquidity);
+        assertEq(pair.balanceOf(address(adapter)), expectedRemainingLiquidity);
     }
 
     /// @notice Redeem reverts instead of burning shares when the pro-rata venue liquidity rounds down to zero.

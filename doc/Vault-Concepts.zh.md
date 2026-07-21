@@ -118,6 +118,7 @@
 ### totalSupply
 - `totalSupply()` 表示总 shares 数量。
 - 它不等于 `totalAssets()`。
+- vault 首次存款后，`totalSupply()` 同时包含用户 shares 和永久锁定的 `MINIMUM_LOCKED_SHARES`。
 
 ### totalAssets
 - `totalAssets()` 表示 vault 当前持有资产的总价值。
@@ -163,7 +164,9 @@
 - 对已经初始化的 vault：
   - `sharesToMint = assetsToDeposit * totalShares / totalAssets`
 - 对首次存款：
-  - `sharesToMint = assetsToDeposit`
+  - `grossShares = assetsToDeposit`
+  - `userShares = grossShares - MINIMUM_LOCKED_SHARES`
+  - `MINIMUM_LOCKED_SHARES` 会 mint 给 `LOCKED_SHARES_RECEIVER` 并永久保留
 
 ### Deposit 里的 `assetsToDeposit` 怎么算
 - 当前实现里：
@@ -174,6 +177,9 @@
 ### 重要细节
 - `deposit` 必须使用转账前的 `totalAssets`。
 - 否则用户自己的存款会先被算进 vault，总价值分母变大，导致新用户拿到的 shares 偏少。
+- 首次存款要求 `grossShares > MINIMUM_LOCKED_SHARES`，否则 revert `InitialDepositTooSmall`。
+- 永久锁定的初始 shares 让首存者无法用极小首存获得 100% 的总份额，再通过直接 donation 抬高每份 share 价值并让后续存款向下取整为 0。
+- vault 初始化后，即使所有普通用户退出，locked shares 及其对应资产仍会保留；后续存款按当时的 `totalSupply / totalAssets` 兑换率计算，不会再次执行初始锁定。
 - `minShares` 是 deposit 的用户侧保护。它可以防止 oracle、估值或交易环境导致实际 minted shares 低于用户预期。
 - 当 vault 处于 paused 状态时，`deposit` 会被禁止，因为暂停状态下不应该继续接受新资金。
 
@@ -206,7 +212,7 @@
 - 所以当前实现更准确地说是：
   - `amount0Out = idle0Out + venue0Out`
   - `amount1Out = idle1Out + venue1Out`
-- 如果 `shares == totalSupplyBefore`，会直接撤出每个 active venue 的全部 tracked liquidity，避免整数除法留下 dust。
+- withdrawal helper 在 `shares == totalSupplyBefore` 时仍会撤出全部 tracked liquidity。但正常初始化后，永久锁定 shares 始终包含在 `totalSupplyBefore` 中，因此普通用户赎回自己的全部 shares 时，locked shares 对应的资产和 venue liquidity 会继续保留。
 - 如果用户部分赎回的 shares 相对总 shares 太小，`venueLiquidity * shares / totalSupplyBefore` 可能会因为整数除法向下取整变成 0。此时 vault 会 revert `RedeemAmountTooSmall`，避免用户 shares 被 burn 但拿不到 deployed liquidity 对应资产。
 - `redeem` 现在接收 `withdrawalParams`，可以按 `venueId` 给不同 venue 的 withdrawal 传入不同的 slippage/deadline 参数。
 - 如果某个 active venue 没有对应的 `withdrawalParams`，vault 会向该 adapter 传空 `params`，adapter 使用自己的默认值。
@@ -437,7 +443,7 @@
 - 错误理解：
   - `vault.totalAssets() == vault.balanceOf(alice) + vault.balanceOf(bob)`
 - 更准确的理解：
-- `vault.balanceOf(alice) + vault.balanceOf(bob)` 如果覆盖了全部用户，那等于 `vault.totalSupply()`
+- 初始化后，即使 Alice 和 Bob 覆盖了全部可赎回用户，`vault.balanceOf(alice) + vault.balanceOf(bob) + MINIMUM_LOCKED_SHARES` 才等于 `vault.totalSupply()`
 - `vault.totalAssets()` 只有在特殊情况下才会和 `totalSupply()` 数值碰巧相等
 - 两者语义始终不同：一个是总价值，一个是总份额
 
@@ -1939,10 +1945,10 @@ tick range 有两个基本约束：
 - 最小闭环建议覆盖：
   - `setVenue()` 正确接入 V3 adapter
   - `deposit -> deployToVenue(venueId, ...) -> redeem` 可以通过 redeem 自动按比例撤出 active V3 仓位
-  - full redeem 会清理整个 active V3 position
+  - 用户赎回自己的全部 shares 后，locked shares 对应的 V3 liquidity 仍会保留，因此 position 和 `tokenId` 仍然存在
   - partial redeem 会保留原 `tokenId`，只减少 position liquidity
   - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
-  - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出对应比例 liquidity 并清理 fully redeemed position
+  - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出用户对应比例的 liquidity；只有 venue liquidity 被管理操作全部撤出时才会清理 position
   - strategy-driven rebalance 可以把 idle 资金部署进 V3，并验证 dynamic tick / slippage params 被传到 V3 mint
   - strategy-driven rebalance 可以从 V3 撤出，并验证 withdrawal params 被传到 V3 decrease liquidity
 - `harvestVenueFees(venueId)` 允许 owner 或 keeper 在不撤仓的情况下，把 venue 可收取的 token 收回 vault idle；该操作在 paused 状态仍可执行，因为它只回收资产，不重新承担 AMM 风险。

@@ -201,12 +201,16 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 3. Read `totalAssets()` before the deposit.
 4. Read `totalSupply()` before the deposit.
 5. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
-6. Calculate shares to mint using `VaultMath.calculateShares`.
-7. Revert if minted shares are below `minShares`.
-8. Transfer `token0` and `token1` from the caller into the vault.
-9. Mint shares to `receiver`.
+6. Calculate gross shares using `VaultMath.calculateShares`.
+7. On the initial deposit, require gross shares to exceed `MINIMUM_LOCKED_SHARES`, reserve that amount for the permanent lock, and return the remainder as user shares.
+8. Revert if user shares are below `minShares`.
+9. Transfer `token0` and `token1` from the caller into the vault.
+10. On the initial deposit, mint `MINIMUM_LOCKED_SHARES` to `LOCKED_SHARES_RECEIVER`.
+11. Mint the remaining shares to `receiver`.
 
 Deposits are disabled while the vault is paused.
+
+The permanent initial-share lock prevents a first depositor from owning 100% of supply with a tiny deposit and then using a direct token donation to make later deposits round down to zero shares. Once initialized, the vault retains the locked supply and its proportional backing even after all redeemable user shares have exited.
 
 ### redeem
 
@@ -224,7 +228,7 @@ Deposits are disabled while the vault is paused.
 12. Burn `owner`'s shares.
 13. Transfer `token0` and `token1` to `receiver`.
 
-When `shareToRedeem == totalSupplyBefore`, redemption withdraws all tracked liquidity from each active venue to avoid leaving rounding dust.
+The withdrawal helper still handles `shareToRedeem == totalSupplyBefore` by withdrawing all tracked liquidity. Under normal operation after initialization, however, the permanently locked shares remain in `totalSupply`, so redeeming all shares held by a user preserves the assets and venue liquidity backing the locked shares.
 
 If a partial redemption is very small relative to total shares, `venueLiquidity * shares / totalSupplyBefore` can round down to zero for an active venue. In that case, the vault reverts with `RedeemAmountTooSmall` instead of burning shares for no venue output.
 
@@ -382,7 +386,8 @@ The vault should revert when:
 ## Invariants
 
 These conditions should always hold:
-- the initial deposit mints shares equal to deposit value
+- the initial deposit creates gross shares equal to deposit value, locks `MINIMUM_LOCKED_SHARES`, and gives the remainder to the receiver
+- initialized vault supply never falls below `MINIMUM_LOCKED_SHARES`
 - non-zero deposits must not mint zero shares
 - `totalAssets()` reflects idle balances plus adapter-reported position values across all registered venues
 - redeeming shares reduces the user's share balance and total share supply
@@ -395,7 +400,8 @@ These conditions should always hold:
 ## Test Plan
 
 Vault basics:
-- initial deposit mints shares equal to deposit value
+- initial deposit locks `MINIMUM_LOCKED_SHARES` while preserving gross share supply
+- a first depositor cannot profit from the covered direct-donation attack scenario
 - subsequent deposit mints proportional shares
 - deposit transfers tokens into the vault
 - `totalAssets()` returns the combined vault value
@@ -411,7 +417,7 @@ Venue integration:
 - deployment tracks per-venue liquidity
 - withdrawal reduces per-venue liquidity and total liquidity
 - `totalAssets()` includes idle balances and all venue positions
-- full redeem withdraws all active V2, V3, and multi-venue liquidity
+- redeeming all user-owned shares preserves the V2, V3, and multi-venue liquidity backing locked shares
 - partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
 - partial V3 redeem distributes previously accrued claimable tokens pro rata by shares
 - harvesting returns claimable V3 tokens to idle balances without removing the active position

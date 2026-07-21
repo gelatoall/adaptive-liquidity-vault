@@ -136,8 +136,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(vault)), amount1 + fee1);
     }
 
-    /// @notice Verifies full redeem withdraws all active V3 liquidity and forwards withdrawal params.
-    function test_Redeem_FullyWithdrawsActiveV3Position() public {
+    /// @notice Verifies redeeming all user-owned shares preserves locked-share V3 liquidity and forwards params.
+    function test_Redeem_AllUserSharesPreservesLockedV3Liquidity() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
         uint256 fee0 = 0.1 ether;
@@ -157,50 +157,59 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
        
         // vault -> pool
-        _deployVaultToV3(vault, token0, token1, pool, positionManager, 
+        uint256 deployedLiquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager, 
                         V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
+
+        uint256 aliceShares = vault.balanceOf(alice);
+        uint256 totalSharesBefore = vault.totalSupply();
+        uint256 principal0Out = amount0 * aliceShares / totalSharesBefore;
+        uint256 principal1Out = amount1 * aliceShares / totalSharesBefore;
+        uint256 aliceFee0 = fee0 * aliceShares / totalSharesBefore;
+        uint256 aliceFee1 = fee1 * aliceShares / totalSharesBefore;
+        uint256 liquidityToWithdraw = deployedLiquidity * aliceShares / totalSharesBefore;
+        uint256 remainingLiquidity = deployedLiquidity - liquidityToWithdraw;
         
-        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, principal0Out, principal1Out);
         (uint256 poolAmount0Min, uint256 poolAmount1Min) = _mapPoolAmounts(token0, token1, amount0Min, amount1Min);
         (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
 
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
-        uint256 aliceShares = vault.balanceOf(alice);
+        
         vm.prank(alice);
         (uint256 redeemAmount0, uint256 redeemAmount1) = vault.redeem(aliceShares, alice, alice, withdrawalParams, 0, 0);
 
-        assertEq(redeemAmount0, amount0 + fee0);
-        assertEq(redeemAmount1, amount1 + fee1);
+        assertEq(redeemAmount0, principal0Out + aliceFee0);
+        assertEq(redeemAmount1, principal1Out + aliceFee1);
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.totalSupply(), 0);
-        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), 0);
-        assertFalse(adapter.hasPosition());
-        assertEq(adapter.tokenId(), 0);
+        assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), remainingLiquidity);
+        assertEq(vault.totalLiquidity(), remainingLiquidity);
+        assertTrue(adapter.hasPosition());
+        assertEq(adapter.tokenId(), 1);
 
         assertEq(positionManager.lastDecreaseAmount0Min(), poolAmount0Min);
         assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
         assertEq(positionManager.lastDecreaseDeadline(), deadline);
     }
 
-    /// @notice Verifies partial redeem withdraws only the caller's pro-rata active V3 liquidity.
+    /// @notice Verifies a partial V3 redeem distributes principal and harvested fees pro rata.
     function test_Redeem_PartiallyDistributesV3FeesProRata() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
-        uint256 totalFee0 = 0.2 ether;
-        uint256 totalFee1 = 400e6;
+        uint256 fee0 = 0.2 ether;
+        uint256 fee1 = 400e6;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
         _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
         uint256 aliceShares = vault.balanceOf(alice);
         uint256 bobShares = vault.balanceOf(bob);
         uint256 totalSharesBefore = vault.totalSupply();
-        assertEq(aliceShares, bobShares);
-        assertEq(totalSharesBefore, aliceShares + bobShares);
+        assertEq(aliceShares + vault.MINIMUM_LOCKED_SHARES(), bobShares);
+        assertEq(totalSharesBefore, aliceShares + bobShares + vault.MINIMUM_LOCKED_SHARES());
 
         uint256 totalAmount0 = 2 ether;
         uint256 totalAmount1 = 4000e6;
@@ -211,48 +220,38 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
 
-        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, totalFee0, totalFee1);
+        uint256 principal0Out = totalAmount0 * aliceShares / totalSharesBefore;
+        uint256 principal1Out = totalAmount1 * aliceShares / totalSharesBefore;
+        uint256 aliceFee0 = fee0 * aliceShares / totalSharesBefore;
+        uint256 aliceFee1 = fee1 * aliceShares / totalSharesBefore;
+        uint256 liquidityToWithdraw = deployedLiquidity * aliceShares / totalSharesBefore;
+        uint256 remainingLiquidity = deployedLiquidity - liquidityToWithdraw;
+
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
 
-        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, principal0Out, principal1Out);
         positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
 
         vm.prank(alice);
         (uint256 aliceAmount0Out, uint256 aliceAmount1Out) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
 
-        uint256 aliceFee0 = totalFee0 / 2;
-        uint256 aliceFee1 = totalFee1 / 2;
-        assertEq(aliceAmount0Out, amount0 + aliceFee0);
-        assertEq(aliceAmount1Out, amount1 + aliceFee1);
+        assertEq(aliceAmount0Out, principal0Out + aliceFee0);
+        assertEq(aliceAmount1Out, principal1Out + aliceFee1);
 
-        assertEq(token0.balanceOf(address(vault)), totalFee0 - aliceFee0);
-        assertEq(token1.balanceOf(address(vault)), totalFee1 - aliceFee1);
+        assertEq(token0.balanceOf(address(vault)), fee0 - aliceFee0);
+        assertEq(token1.balanceOf(address(vault)), fee1 - aliceFee1);
 
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(bob), bobShares);
-        assertEq(vault.totalSupply(), bobShares);
-        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), deployedLiquidity / 2);
-        assertEq(vault.totalLiquidity(), deployedLiquidity / 2);
+        assertEq(vault.totalSupply(), bobShares + vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), remainingLiquidity);
+        assertEq(vault.totalLiquidity(),  remainingLiquidity);
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
 
-        (,,,,,,, uint128 remainingLiquidity,,,,) = positionManager.positions(adapter.tokenId());
-        assertEq(uint256(remainingLiquidity), deployedLiquidity / 2);
-
-        positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
-        vm.prank(bob);
-        (uint256 bobAmount0Out, uint256 bobAmount1Out) = vault.redeem(bobShares, bob, bob, _emptyWithdrawalParams(), 0, 0);
-        assertEq(bobAmount0Out, amount0 + totalFee0 - aliceFee0);
-        assertEq(bobAmount1Out, amount1 + totalFee1 - aliceFee1);
-
-        assertEq(vault.balanceOf(bob), 0);
-        assertEq(vault.totalSupply(), 0);
-        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), 0);
-        assertEq(token0.balanceOf(address(vault)), 0);
-        assertEq(token1.balanceOf(address(vault)), 0);
-        assertFalse(adapter.hasPosition());
-        assertEq(adapter.tokenId(), 0);
+        (,,,,,,, uint128 positionLiquidity,,,,) = positionManager.positions(adapter.tokenId());
+        assertEq(uint256(positionLiquidity), remainingLiquidity);
     }
 
     /// @notice Verifies vault totalAssets includes the deployed V3 position value.

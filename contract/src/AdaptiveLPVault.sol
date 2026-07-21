@@ -21,6 +21,15 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // ============================================
+    // Constants
+    // ============================================
+    /// @notice Shares permanently locked on the first deposit to mitigate donation attacks.
+    uint256 public constant MINIMUM_LOCKED_SHARES = 1000;
+
+    /// @notice Address holding permanently locked initial shares.
+    address public constant LOCKED_SHARES_RECEIVER = address(0xdead);
+
+    // ============================================
     // Types
     // ============================================
     /// @notice Configuration for one registered liquidity venue.
@@ -194,6 +203,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Thrown when a caller tries to withdraw zero venue liquidity.
     error ZeroLiquidity();
 
+    /// @notice Thrown when an initial deposit cannot cover the permanently locked shares.
+    error InitialDepositTooSmall();
+
     /// @notice Thrown when both configured underlying token addresses are the same.
     error IdenticalTokens();
 
@@ -310,7 +322,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // User Functions
     // ============================================
     /// @notice Deposits token0 and token1 and mints vault shares to `receiver`.
-    /// @dev The caller supplies the underlying tokens; `receiver` receives the newly minted shares.
+    /// @dev The caller supplies the underlying tokens; `receiver` receives the newly minted shares. On
+    ///      the initial deposit, `MINIMUM_LOCKED_SHARES` is reserved from gross shares and locked permanently.
     /// @param amount0 Raw token0 amount in token0's smallest unit.
     /// @param amount1 Raw token1 amount in token1's smallest unit.
     /// @param receiver Address that receives the minted vault shares.
@@ -347,15 +360,28 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             amount1, price1, decimals1
         );
 
-        // Calculate shares to mint using VaultMath.calculateShares.
-        shares = VaultMath.calculateShares(assetsToDeposit, totalAssetsBefore, totalShares);
+        // Calculate gross shares, then reserve the permanent lock on initial deposit.
+        uint256 grossShares = VaultMath.calculateShares(assetsToDeposit, totalAssetsBefore, totalShares);
+        bool isInitialDeposit = totalShares == 0;
+        if (isInitialDeposit) {
+            if (grossShares <= MINIMUM_LOCKED_SHARES) revert InitialDepositTooSmall();
+            shares = grossShares - MINIMUM_LOCKED_SHARES;
+        } else {
+            shares = grossShares;
+        }
+
         if (shares < minShares) revert InsufficientSharesOut();
 
         // Transfer token0 and token1 from the sender into the vault.
         IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
         IERC20(token1).safeTransferFrom(msg.sender, address(this), amount1);
 
-        // Mint shares to the receiver.
+        // Permanently lock part of the shares minted by the initial deposit.
+        if (isInitialDeposit) {
+            _mint(LOCKED_SHARES_RECEIVER, MINIMUM_LOCKED_SHARES);
+        }
+
+        // Mint the remaining shares to the receiver.
         _mint(receiver, shares);
 
         emit Deposit(msg.sender, receiver, amount0, amount1, shares);
