@@ -32,7 +32,7 @@ This version does not include:
 - swap-to-ratio logic
 - autonomous rebalancing
 - production-grade slippage policy
-- V3 TWAP oracle integration
+- TWAP valuation logic embedded in the execution adapter
 - exact real-time uncollected fee accounting beyond the position manager state
 
 Notes:
@@ -43,6 +43,7 @@ Notes:
 - The target `pool` is treated as known configuration, so this minimal version does not depend on a V3 factory.
 - The current `IVenueAdapter` can be reused because the adapter hides the V3 NFT details internally.
 - Dynamic tick range calculation lives outside the adapter in `V3TickCalculations`; the adapter only validates and executes the tick bounds passed in `LiquidityParams`.
+- Share-accounting valuation also lives outside the adapter: `V3TwapPositionValuator` computes principal using a historical TWAP tick.
 - `VolatilityBucketStrategy` can wire a configured venue id to `V3TickCalculations` and supply fresh V3 tick bounds in rebalance targets.
 - `V3TickCalculations` rounds tick bounds outward: lower ticks round down and upper ticks round up so the legal V3 range covers, rather than shrinks, the raw target range.
 
@@ -180,6 +181,8 @@ Reason:
   - precision note:
     - this minimal implementation reports `principal + position-manager-tracked owed amounts`
     - it does not reconstruct the latest uncollected fee growth that has not yet been written into `tokensOwed0/1`
+    - principal uses the current pool spot tick, so this view is intended for strategy planning and reporting
+    - vault share accounting instead uses `V3TwapPositionValuator`, which computes principal at the configured TWAP tick and applies the vault's oracle prices
 
 - `hasPosition()`
   - purpose: report whether the adapter currently has an active V3 position
@@ -382,8 +385,8 @@ After the adapter unit tests are stable, add a separate vault integration file f
 That integration layer should verify:
 - `setVenue()` wires the vault to the V3 adapter
 - `deposit -> deployToVenue(venueId, ...) -> redeem` works as a closed loop by withdrawing proportional active V3 liquidity during redemption
-- `totalAssets()` includes `adapter.getPositionValue()`
-- redemption can clear the active V3 position when the user redeems all shares
+- `totalAssets()` includes the position through the configured `V3TwapPositionValuator`
+- redeeming all user-owned shares preserves the position liquidity backing permanently locked shares
 
 The vault can call `harvestVenueFees(venueId)` to collect owed V3 tokens into idle balances without removing liquidity. It can call `compoundVenueFees(venueId, params)` to collect and redeploy those tokens into the same venue. When this adapter has an active NFT and the supplied ticks match that NFT, `addLiquidity(...)` uses `increaseLiquidity` rather than minting a new position.
 
@@ -398,7 +401,7 @@ The current vault can integrate this adapter without changing `IVenueAdapter`:
 - the owner can register one V3 fee tier as one venue through `setVenue(venueId, adapter, label, enabled)`
 - the owner can call `deployToVenue(venueId, amount0, amount1, params)`
 - the owner can call `withdrawFromVenue(venueId, liquidity, params)`
-- `totalAssets()` can include V3 deployed balances through `adapter.getPositionValue()`
+- `totalAssets()` values active V3 positions through a configured `V3TwapPositionValuator`; `getPositionValue()` remains an informational amount view
 - direct user redemption withdraws the caller's proportional tracked V3 liquidity before transferring underlying tokens
 
 This means each V3 fee tier can be represented by a separate adapter instance and registered as a separate venue while preserving the current vault abstraction.

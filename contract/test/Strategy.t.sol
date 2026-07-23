@@ -11,6 +11,8 @@ import "../src/oracles/PriceChangeVolatilityOracle.sol";
 import "../src/oracles/V3TwapVolatilityOracle.sol";
 import "../src/interfaces/ISlippageController.sol";
 import "../src/slippage/TwapSlippageController.sol";
+import "../src/valuators/V2FairValueValuator.sol";
+import "../src/valuators/V3TwapPositionValuator.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
@@ -93,6 +95,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         );
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
+        V2FairValueValuator v2Valuator = new V2FairValueValuator(address(adapterV2));
+        vault.setVenueValuator(V2_VENUE_ID, address(v2Valuator));
 
         // deploy another V2 venue for test_RebalanceWithStrategy_MovesDeployedPositionToNewVenueWithFixedWeightStrategy
         pairV2B = new MockUniswapV2Pair(address(token0), address(token1));
@@ -105,6 +109,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
             address(pairV2B)
         );
         vault.setVenue(SECOND_V2_VENUE_ID, address(adapterV2B), bytes32("V2_B"), true);
+        V2FairValueValuator valuatorV2B = new V2FairValueValuator(address(adapterV2B));
+        vault.setVenueValuator(SECOND_V2_VENUE_ID, address(valuatorV2B));
 
         // deploy V3 venue
         pool = new MockUniswapV3Pool(address(token0), address(token1), 3000);
@@ -119,6 +125,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
             tickUpper
         );
         vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
+        V3TwapPositionValuator v3Valuator = new V3TwapPositionValuator(address(adapterV3), 1800);
+        vault.setVenueValuator(V3_LOW_VENUE_ID, address(v3Valuator));
     }
 
     /// @notice setStrategy stores the configured strategy address.

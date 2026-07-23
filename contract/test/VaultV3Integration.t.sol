@@ -12,6 +12,7 @@ import "../src/libraries/v3/TickMath.sol";
 import "../src/libraries/v3/LiquidityAmounts.sol";
 import "../test/helpers/VaultTestHelper.sol";
 import "../test/helpers/VenueTestHelper.sol";
+import "../src/valuators/V3TwapPositionValuator.sol";
 
 /// @title VaultV3IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV3Adapter`.
@@ -21,6 +22,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
     AdaptiveLPVault public vault;
 
     MockPriceOracle public oracle;
+    V3TwapPositionValuator public valuator;
     
     MockUniswapV3Pool public pool;
     MockNonfungiblePositionManager public positionManager;
@@ -34,6 +36,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
     uint24 public fee = 3000;
     int24 public tickLower = -600;
     int24 public tickUpper = 600;
+    uint32 public twapWindow = 1800;
 
     /// @notice Deploys the vault, oracle, pool, position manager, and V3 adapter fixture.
     function setUp() public {
@@ -71,6 +74,12 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         // set V3 adapter into vault
         vault.setVenue(V3_LOW_VENUE_ID, address(adapter), V3_LOW_LABEL, true);
+
+        pool.setTwapTick(0);
+        vm.warp(block.timestamp + twapWindow);
+
+        valuator = new V3TwapPositionValuator(address(adapter), twapWindow);
+        vault.setVenueValuator(V3_LOW_VENUE_ID, address(valuator));
     }
 
     /// @notice Verifies idle vault funds can be deployed into V3.
@@ -268,15 +277,15 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         (uint256 price0, uint256 price1) = oracle.getPrices();
         
-        (uint256 deployed0, uint256 deployed1) = adapter.getPositionValue();
-        uint256 expectedTotalAssets = VaultMath.getAssetsTotalValue(
-            token0.balanceOf(address(vault)) + deployed0, // vault + adapter
+        uint256 idleValue = VaultMath.getAssetsTotalValue(
+            token0.balanceOf(address(vault)),
             price0, 
             decimals0, 
-            token1.balanceOf(address(vault)) + deployed1, 
+            token1.balanceOf(address(vault)),
             price1, 
             decimals1
         );
+        uint256 expectedTotalAssets = idleValue + valuator.getValueInBase(price0, price1);
 
         assertEq(vault.totalAssets(), expectedTotalAssets);
     }
@@ -358,4 +367,42 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         (,,,,,,, uint128 positionLiquidity,,,,) = positionManager.positions(tokenIdBefore);
         assertEq(uint256(positionLiquidity), venueLiquidityBefore + liquidityAdded);
     }
+
+    /// @notice Verifies a temporary V3 spot move cannot alter totalAssets or deposit share issuance.
+    function test_DepositShares_IgnoreV3SpotManipulation() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        _deployVaultToV3(
+            vault,
+            token0,
+            token1,
+            pool,
+            positionManager,
+            V3_LOW_VENUE_ID,
+            tickLower,
+            tickUpper,
+            amount0,
+            amount1
+        );
+
+        pool.setSlot0FromTick(0);
+        uint256 assetsBefore = vault.totalAssets();
+        uint256 totalSharesBefore = vault.totalSupply();
+
+        (uint256 price0, uint256 price1) = oracle.getPrices();
+        uint256 bobDepositValue = VaultMath.getAssetsTotalValue(amount0, price0, decimals0, amount1, price1, decimals1);
+        uint256 expectedBobShares = VaultMath.calculateShares(bobDepositValue, assetsBefore, totalSharesBefore);
+
+        // Simulate a flash swap changing spot while TWAP remains unchanged.
+        pool.setSlot0FromTick(500);
+        assertEq(vault.totalAssets(), assetsBefore);
+
+        uint256 bobShares = _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
+
+        assertEq(bobShares, expectedBobShares);
+    }
+
 }

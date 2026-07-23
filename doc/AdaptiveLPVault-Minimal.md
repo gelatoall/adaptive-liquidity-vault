@@ -19,7 +19,7 @@ This version includes:
 - `totalAssets`
 - share minting and burning
 - ERC4626-style receiver/owner semantics for deposit and redeem
-- oracle-based asset valuation
+- oracle-based idle valuation and adapter-bound venue valuators
 - venue registration through `setVenue(...)`
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
 - owner- or keeper-triggered fee harvesting through `harvestVenueFees(...)`
@@ -62,6 +62,7 @@ The vault stores:
 - `token1` decimals
 - oracle address
 - venue configs by `venueId`
+- trusted venue valuators by `venueId`
 - registered venue ids for iteration
 - per-venue tracked liquidity
 - total tracked liquidity across all venues
@@ -76,6 +77,7 @@ Venue state:
 - `venueRegistered[venueId]` tracks whether a venue id has been registered
 - `venueIds` is used to iterate all registered venues in `totalAssets()` and withdrawal flows
 - `venueLiquidity[venueId]` tracks liquidity reported by each adapter
+- `venueValuators[venueId]` stores the trusted accounting valuator bound to the venue's current adapter
 - `totalLiquidity` is bookkeeping only; liquidity units can differ across venues and should not be treated as asset value
 
 Current test and example convention:
@@ -103,13 +105,19 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 - `setVenue(venueId, adapter, label, enabled)`
   - purpose: register or update a venue adapter
   - behavior: updating an existing venue is blocked while that venue has tracked liquidity or adapter-reported position state
+  - behavior: replacing an inactive venue's adapter clears its previous adapter-specific valuator
+
+- `setVenueValuator(venueId, valuator)`
+  - purpose: configure the trusted accounting valuator used by `totalAssets()` for an active venue position
+  - behavior: owner-only; the valuator must report the venue's current adapter through `getVenueAdapter()`
 
 - `totalAssets()`
-  - purpose: return the combined value of idle balances and all adapter-reported venue positions
+  - purpose: return idle value plus trusted valuator output for every active venue position
   - returns: `uint256 assets`
 
 - `getTotalUnderlying()`
   - purpose: return raw `token0` and `token1` amounts across idle balances and adapter-reported venue positions
+  - note: intended for strategy planning and reporting; it is not used as trusted share-accounting value
   - returns: `uint256 total0, uint256 total1`
 
 - `deposit(amount0, amount1, receiver, minShares)`
@@ -237,9 +245,14 @@ Redemptions remain available while the vault is paused so users can exit.
 ### totalAssets
 
 1. Require an oracle.
-2. Read total underlying token amounts through `_getTotalUnderlying()`.
-3. Read prices that share configured token0 as their common numeraire.
-4. Convert and sum the underlying amounts into a token0-denominated value with 1e18 precision.
+2. Read prices that share configured token0 as their common numeraire.
+3. Value idle token balances directly with those prices.
+4. Iterate active venues and require a configured `IVenueValuator` for each position.
+5. Add each valuator's base-denominated result to the idle value.
+
+Current valuators:
+- `V2FairValueValuator` oracle-values pair reserves and applies a geometric-mean fair LP value before scaling by the adapter's LP share.
+- `V3TwapPositionValuator` computes principal at a historical TWAP tick, adds position-manager-tracked owed tokens, and applies the vault's oracle prices.
 
 ### getTotalUnderlying
 
@@ -252,7 +265,8 @@ Redemptions remain available while the vault is paused so users can exit.
 
 1. Require the venue to be registered and configured with an adapter.
 2. Require the venue to be enabled.
-3. Temporarily approve the adapter to pull the requested token amounts.
+3. Require a trusted valuator configured for the venue's current adapter.
+4. Temporarily approve the adapter to pull the requested token amounts.
 4. Call `adapter.addLiquidity(amount0, amount1, params)`.
 5. Increase `venueLiquidity[venueId]` and `totalLiquidity`.
 6. Reset adapter allowances back to zero.
@@ -389,7 +403,7 @@ These conditions should always hold:
 - the initial deposit creates gross shares equal to deposit value, locks `MINIMUM_LOCKED_SHARES`, and gives the remainder to the receiver
 - initialized vault supply never falls below `MINIMUM_LOCKED_SHARES`
 - non-zero deposits must not mint zero shares
-- `totalAssets()` reflects idle balances plus adapter-reported position values across all registered venues
+- `totalAssets()` reflects idle balances plus trusted valuator output for all active venues
 - redeeming shares reduces the user's share balance and total share supply
 - redeeming shares withdraws the caller's proportional tracked liquidity from active venues
 - per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
@@ -416,7 +430,7 @@ Venue integration:
 - deployment reverts when venue is unset or disabled
 - deployment tracks per-venue liquidity
 - withdrawal reduces per-venue liquidity and total liquidity
-- `totalAssets()` includes idle balances and all venue positions
+- `totalAssets()` includes directly valued idle balances and trusted V2/V3 venue valuations
 - redeeming all user-owned shares preserves the V2, V3, and multi-venue liquidity backing locked shares
 - partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
 - partial V3 redeem distributes previously accrued claimable tokens pro rata by shares

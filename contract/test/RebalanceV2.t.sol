@@ -9,6 +9,7 @@ import "./mocks/MockUniswapV2Router.sol";
 import "./mocks/MockPriceOracle.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "../src/valuators/V2FairValueValuator.sol";
 import "./helpers/VaultTestHelper.sol";
 import "./helpers/VenueTestHelper.sol";
 import "./helpers/RebalanceTestHelper.sol";
@@ -22,6 +23,7 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
     uint8 public decimals1 = 6;
     AdaptiveLPVault public vault;
     MockPriceOracle public oracle;
+    V2FairValueValuator public valuator;
 
     MockUniswapV2Pair public pair;
     MockUniswapV2Router public router;
@@ -60,6 +62,9 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
 
         // set venue into vault
         vault.setVenue(V2_VENUE_ID, address(adapter), V2_LABEL, true);
+
+        valuator = new V2FairValueValuator(address(adapter));
+        vault.setVenueValuator(V2_VENUE_ID, address(valuator));
     }
 
     /// @notice Verifies rebalance remains owner-only.

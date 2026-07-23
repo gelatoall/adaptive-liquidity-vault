@@ -13,6 +13,7 @@ import "./interfaces/IVenueAdapter.sol";
 import "./interfaces/IPriceOracle.sol";
 import "./interfaces/IVolatilityOracle.sol";
 import "./interfaces/IRebalanceStrategy.sol";
+import "./interfaces/IVenueValuator.sol";
 
 /// @title AdaptiveLPVault
 /// @notice Minimal two-asset vault that mints ERC20 shares against deposited assets.
@@ -122,6 +123,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Adapter-reported liquidity currently tracked for each venue.
     mapping(uint256 => uint256) public venueLiquidity;
+
+    /// @notice Trusted accounting valuator configured for each venue.
+    mapping(uint256 => IVenueValuator) public venueValuators;
     
     /// @notice List of registered venue ids used for iteration.
     uint256[] public venueIds;
@@ -156,6 +160,10 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when the owner registers or updates a venue.
     event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
+
+    /// @notice Emitted when the trusted valuator for a venue is updated or cleared.
+    /// @dev A zero valuator means the previous adapter-specific valuator was cleared.
+    event SetVenueValuator(uint256 indexed venueId, address indexed valuator);
 
     /// @notice Emitted when the owner updates the rebalance value-loss guard.
     event SetMaxRebalanceValueLossBps(uint256 maxRebalanceValueLossBps);
@@ -235,6 +243,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when a requested venue id is not registered or has no adapter configured.
     error VenueNotSet();
+
+    /// @notice Thrown when an active venue has no trusted accounting valuator.
+    error VenueValuatorNotSet(uint256 venueId);
+
+    /// @notice Thrown when a valuator is bound to a different venue adapter.
+    error ValuatorAdapterMismatch();
 
     /// @notice Thrown when a requested venue is registered but disabled for new deployments.
     error VenueDisabled();
@@ -351,7 +365,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
         // Read totalAssets() before the deposit.
         // Read totalSupply() before the deposit.
-        uint256 totalAssetsBefore = totalAssets();
+        uint256 totalAssetsBefore = _totalAssetsAtPrices(price0, price1);
         uint256 totalShares = totalSupply();
 
         // Convert the deposit amounts into a single base-denominated value using VaultMath.
@@ -462,7 +476,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // View Functions
     // ============================================
     /// @notice Returns the current total value of the vault's holdings.
-    /// @dev Includes idle balances and adapter-reported underlying amounts across registered venues.
+    /// @dev Values idle balances directly and active positions through their configured trusted valuators.
     /// Oracle prices and the returned value are denominated in configured token0 with 1e18 precision.
     /// @return Total vault value denominated in token0, scaled by 1e18.
     function totalAssets() public view returns (uint256) {
@@ -471,15 +485,11 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         }
         (uint256 price0, uint256 price1) = priceOracle.getPrices();
 
-        (uint256 total0, uint256 total1) = _getTotalUnderlying();
-
-        return VaultMath.getAssetsTotalValue(
-            total0, price0, decimals0, 
-            total1, price1, decimals1
-        );
+        return _totalAssetsAtPrices(price0, price1);
     }
 
     /// @notice Returns raw token amounts across idle balances and deployed venue positions.
+    /// @dev Venue amounts may depend on current pool state and are informational; share accounting uses `totalAssets()`.
     /// @return total0 Total token0 amount held directly or reported by venues.
     /// @return total1 Total token1 amount held directly or reported by venues.
     function getTotalUnderlying() external view returns (uint256 total0, uint256 total1) {
@@ -633,6 +643,11 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             ) {
                 revert ActivePositionExists();
             }
+
+            if (address(currentVenue.adapter) != _adapter) {
+                delete venueValuators[_venueId];
+                emit SetVenueValuator(_venueId, address(0));
+            }
         } else {
             venueRegistered[_venueId] = true;
             venueIds.push(_venueId);
@@ -645,6 +660,23 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         });
 
         emit SetVenue(_venueId, _adapter, _label, _enabled);
+    }
+
+    /// @notice Configures the trusted accounting valuator for a registered venue.
+    /// @dev The valuator must declare the venue's current adapter, preventing stale or cross-venue configuration.
+    /// @param _venueId Registered venue whose active position will be valued.
+    /// @param _valuator Valuator contract bound to the venue's current adapter.
+    function setVenueValuator(uint256 _venueId, address _valuator) external onlyOwner {
+        if (!venueRegistered[_venueId]) revert VenueNotSet();
+        if (_valuator == address(0)) revert ZeroAddress();
+
+        IVenueValuator configuredValuator = IVenueValuator(_valuator);
+        if (configuredValuator.getVenueAdapter() != address(venues[_venueId].adapter)) {
+            revert ValuatorAdapterMismatch();
+        }
+        venueValuators[_venueId] = configuredValuator;
+
+        emit SetVenueValuator(_venueId, _valuator);
     }
 
     /// @notice Deploys idle vault funds into a registered venue adapter.
@@ -768,7 +800,37 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         return "";
     }
 
+    /// @notice Values idle balances and active venue positions using trusted accounting valuators.
+    /// @dev Every active position must have a valuator bound to its current adapter.
+    function _totalAssetsAtPrices(uint256 price0, uint256 price1) internal view returns (uint256 totalValue) {
+        // Idle tokens do not depend on AMM pool state and can be valued directly.
+        totalValue = VaultMath.getAssetsTotalValue(
+            token0.balanceOf(address(this)),
+            price0,
+            decimals0,
+            token1.balanceOf(address(this)),
+            price1,
+            decimals1
+        );
+
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 venueId = venueIds[i];
+            IVenueAdapter adapter = venues[venueId].adapter;
+
+            if (address(adapter) == address(0)) continue;
+            if (!adapter.hasPosition()) continue;
+
+            IVenueValuator valuator = venueValuators[venueId];
+            if (address(valuator) == address(0)) {
+                revert VenueValuatorNotSet(venueId);
+            }
+
+            totalValue += valuator.getValueInBase(price0, price1);
+        }
+    }
+
     /// @notice Sums idle token balances and adapter-reported deployed amounts.
+    /// @dev This amount view is intended for strategy planning and reporting, not vault share pricing.
     function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
         total0 = IERC20(token0).balanceOf(address(this));
         total1 = IERC20(token1).balanceOf(address(this));
@@ -805,6 +867,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         VenueConfig storage v = venues[venueId];
         if (!venueRegistered[venueId] || address(v.adapter) == address(0)) revert VenueNotSet();
         if (!v.enabled) revert VenueDisabled();
+        if (address(venueValuators[venueId]) == address(0)) revert VenueValuatorNotSet(venueId);
 
         token0.forceApprove(address(v.adapter), amount0);
         token1.forceApprove(address(v.adapter), amount1);

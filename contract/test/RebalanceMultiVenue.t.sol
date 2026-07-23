@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/adapters/UniswapV3Adapter.sol";
+import "../src/valuators/V2FairValueValuator.sol";
+  import "../src/valuators/V3TwapPositionValuator.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
@@ -80,6 +82,11 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
         vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
+
+        V2FairValueValuator v2Valuator = new V2FairValueValuator(address(adapterV2));
+        V3TwapPositionValuator v3Valuator = new V3TwapPositionValuator(address(adapterV3), 1800);
+        vault.setVenueValuator(V2_VENUE_ID, address(v2Valuator));
+        vault.setVenueValuator(V3_LOW_VENUE_ID, address(v3Valuator));
     }
 
     function test_Rebalance_DeploysToMultipleVenues() public {

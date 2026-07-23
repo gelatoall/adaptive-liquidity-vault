@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "../src/valuators/V2FairValueValuator.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
@@ -21,8 +22,9 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
     uint8 public decimals0 = 18;
     uint8 public decimals1 = 6;
     AdaptiveLPVault public vault;
-    
     MockPriceOracle public oracle;
+    V2FairValueValuator public valuator;
+
     MockUniswapV2Pair public pair;
     MockUniswapV2Router public router;
     UniswapV2Adapter public adapter;
@@ -60,6 +62,9 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         // set adapter into vault
         vault.setVenue(V2_VENUE_ID, address(adapter), V2_LABEL, true);
+
+        valuator = new V2FairValueValuator(address(adapter));
+        vault.setVenueValuator(V2_VENUE_ID, address(valuator));
     }
 
     // ============================================
@@ -77,6 +82,43 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         // vm.prank(vault.owner());
         vm.expectRevert(AdaptiveLPVault.ZeroAddress.selector);
         vault.setVenue(V2_VENUE_ID, address(0), V2_LABEL, true);
+    }
+
+    /// @notice Verifies a venue rejects a valuator bound to a different adapter.
+    function test_SetVenueValuator_RevertsWhenAdapterDoesNotMatch() public {
+        MockUniswapV2Pair otherPair = new MockUniswapV2Pair(address(token0), address(token1));
+        MockUniswapV2Router otherRouter = new MockUniswapV2Router(otherPair);
+        UniswapV2Adapter otherAdapter = new UniswapV2Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(otherRouter),
+            address(otherPair)
+        );
+        V2FairValueValuator otherValuator = new V2FairValueValuator(address(otherAdapter));
+
+        vm.expectRevert(AdaptiveLPVault.ValuatorAdapterMismatch.selector);
+        vault.setVenueValuator(V2_VENUE_ID, address(otherValuator));
+    }
+
+    /// @notice Verifies replacing an adapter clears its valuator and blocks deployment until reconfigured.
+    function test_SetVenue_ReplacingAdapterClearsValuatorAndBlocksDeploy() public {
+        MockUniswapV2Pair replacementPair = new MockUniswapV2Pair(address(token0), address(token1));
+        MockUniswapV2Router replacementRouter = new MockUniswapV2Router(replacementPair);
+        UniswapV2Adapter replacementAdapter = new UniswapV2Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(replacementRouter),
+            address(replacementPair)
+        );
+
+        vault.setVenue(V2_VENUE_ID, address(replacementAdapter), V2_LABEL, true);
+
+        assertEq(address(vault.venueValuators(V2_VENUE_ID)), address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(AdaptiveLPVault.VenueValuatorNotSet.selector, V2_VENUE_ID));
+        vault.deployToVenue(V2_VENUE_ID, 1 ether, 1e6, "");
     }
     
     /// @notice Verifies deployment to a venue fails when no venue has been configured.
@@ -110,7 +152,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
         uint256 amount0Used = 8 ether;
-        uint256 amount1Used = 15e6;
+        uint256 amount1Used = 8e6;
         uint256 liquidityMinted = 5 ether;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
@@ -132,8 +174,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(token0.balanceOf(address(pair)), amount0Used);
         assertEq(token0.balanceOf(address(adapter)), 0);
         assertEq(token1.balanceOf(address(adapter)), 0);
-        // totalAsset stays the same
-        assertEq(totalAssetsBefore, totalAssetsAfter);
+        // Fair-value calculation rounds down through integer square roots.
+        assertApproxEqAbs(totalAssetsAfter, totalAssetsBefore, 1e10);
     }
     
     /// @notice Verifies withdrawal from a venue fails when no venue has been configured.

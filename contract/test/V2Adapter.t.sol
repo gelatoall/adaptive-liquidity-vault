@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
+import "../src/valuators/V2FairValueValuator.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV2Pair.sol";
 import "./mocks/MockUniswapV2Router.sol";
@@ -464,5 +465,27 @@ contract V2AdapterTest is Test {
         assertEq(token1.balanceOf(vault), amount1Out);
 
         assertEq(pair.balanceOf(address(adapter)), initialLp - liquidityToRemove);
+    }
+
+    /// @notice Verifies reserve-ratio manipulation does not change fair LP value when the reserve product is unchanged.
+    function test_FairValueValuator_IgnoresReserveRatioManipulation() public {
+        V2FairValueValuator valuator = new V2FairValueValuator(address(adapter));
+
+        // Adapter owns the entire mocked LP supply.
+        pair.mintLp(address(adapter), 100 ether);
+
+        // Both reserves are worth 100 token0, so the pool is worth 200 token0.
+        pair.setReserves(100 ether, 100e6);
+
+        uint256 valueBefore = valuator.getValueInBase(1e18, 1e18);
+
+        // Simulate a large swap changing the reserve ratio while preserving k:
+        // 100 * 100 = 400 * 25 = 10,000.
+        pair.setReserves(400 ether, 25e6);
+
+        uint256 valueAfter = valuator.getValueInBase(1e18, 1e18);
+
+        assertEq(valueBefore, 200 ether);
+        assertEq(valueAfter, valueBefore);
     }
 }

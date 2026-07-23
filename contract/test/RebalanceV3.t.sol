@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV3Adapter.sol";
+import "../src/valuators/V3TwapPositionValuator.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV3Pool.sol";
@@ -70,6 +71,9 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
 
         // set V3 adapter into vault
         vault.setVenue(V3_LOW_VENUE_ID, address(adapter), V3_LOW_LABEL, true);
+
+        V3TwapPositionValuator valuator = new V3TwapPositionValuator(address(adapter), 1800);
+        vault.setVenueValuator(V3_LOW_VENUE_ID, address(valuator));
     }
 
     /// @notice Verifies rebalance moves all idle balances into V3.

@@ -95,7 +95,7 @@ Current code status:
   - `setVenue(venueId, adapter, label, enabled)`
   - `deployToVenue(venueId, amount0, amount1, params)`
   - `withdrawFromVenue(venueId, liquidity, params)`
-  - `totalAssets()` including idle balances and adapter-reported deployed underlying amounts across registered venues
+  - `V2FairValueValuator` for trusted `totalAssets()` accounting of the deployed LP position
 
 ## Public Functions
 
@@ -140,6 +140,9 @@ Current code status:
     - the result is computed entirely from public on-chain data: adapter LP balance, pair reserves, pair total supply, and token ordering
     - restricting this function to `vault` would not hide meaningful information because any observer can derive the same result off-chain
     - keeping it public makes integration easier for frontends, monitoring, scripts, and keepers
+  - accounting note:
+    - this reserve-ratio-based amount view is informational and is not used directly by vault share accounting
+    - `AdaptiveLPVault.totalAssets()` uses `V2FairValueValuator`, which oracle-values both reserves and applies a geometric-mean fair LP value before scaling by LP ownership
 
 - `hasPosition()`
   - purpose: report whether the adapter currently has an active venue position
@@ -238,7 +241,7 @@ The current repository now goes beyond an isolated standalone adapter unit.
 - the owner can call `withdrawFromVenue(venueId, liquidity, params)`
 - `totalAssets()` adds:
   - idle token balances held by the vault
-  - deployed underlying token amounts reported by every registered adapter's `getPositionValue()`
+  - trusted base-denominated values returned by the configured venue valuators
 - direct user redemption withdraws the caller's proportional tracked venue liquidity before transferring underlying tokens
 
 This means the current implementation already validates:

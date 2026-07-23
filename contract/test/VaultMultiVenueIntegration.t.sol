@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import "../src/AdaptiveLPVault.sol";
 import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/adapters/UniswapV3Adapter.sol";
+import "../src/valuators/V2FairValueValuator.sol";
+import "../src/valuators/V3TwapPositionValuator.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
@@ -19,6 +21,8 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
     MockERC20 public token1;
     AdaptiveLPVault public vault;
     MockPriceOracle public oracle;
+    V2FairValueValuator public valuatorV2;
+    V3TwapPositionValuator public valuatorV3;
     
     MockUniswapV2Pair public pairV2;
     MockUniswapV2Router public routerV2;
@@ -36,6 +40,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
     uint24 public fee = 500;
     int24 public tickLower = -600;
     int24 public tickUpper = 600;
+    uint32 public twapWindow = 1800;
 
     function setUp() public {
         token0 = new MockERC20("token0", "T0", decimals0);
@@ -78,6 +83,13 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, true);
         vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3Low), V3_LOW_LABEL, true);
+
+        poolV3Low.setTwapTick(0);
+        vm.warp(block.timestamp + twapWindow);
+        valuatorV2 = new V2FairValueValuator(address(adapterV2));
+        valuatorV3 = new V3TwapPositionValuator(address(adapterV3Low), twapWindow);
+        vault.setVenueValuator(V2_VENUE_ID, address(valuatorV2));
+        vault.setVenueValuator(V3_LOW_VENUE_ID, address(valuatorV3));
     }
 
     /// @notice Verifies the full Uniswap venue set uses one V2 adapter plus one V3 adapter per fee tier.
@@ -267,16 +279,15 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
         
         (uint256 price0, uint256 price1) = oracle.getPrices();
-        (uint256 v2Value0, uint256 v2Value1) = adapterV2.getPositionValue();
-        (uint256 v3Value0, uint256 v3Value1) = adapterV3Low.getPositionValue();
-        uint256 expected = VaultMath.getAssetsTotalValue(
-            token0.balanceOf(address(vault)) + v2Value0 + v3Value0, 
-            price0, 
-            decimals0, 
-            token1.balanceOf(address(vault)) + v2Value1 + v3Value1, 
-            price1, 
+        uint256 idleValue = VaultMath.getAssetsTotalValue(
+            token0.balanceOf(address(vault)),
+            price0,
+            decimals0,
+            token1.balanceOf(address(vault)),
+            price1,
             decimals1
         );
+        uint256 expected = idleValue + valuatorV2.getValueInBase(price0, price1) + valuatorV3.getValueInBase(price0, price1);
 
         assertEq(vault.totalAssets(), expected);
     }

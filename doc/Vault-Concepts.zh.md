@@ -122,24 +122,28 @@
 
 ### totalAssets
 - `totalAssets()` 表示 vault 当前持有资产的总价值。
-- 在当前实现里，它已经包含两部分：
-  - vault 当前持有的 idle `token0/token1`
-  - adapter 当前 deployed position 对应的底层 `amount0/amount1`
-- 然后 vault 再通过 `IPriceOracle` 提供的价格把这两部分一起估值。
+- 当前估值分成两部分：
+  - vault 直接持有的 idle `token0/token1`，使用 `IPriceOracle` 的统一 base 价格直接估值
+  - active venue position，通过该 venue 配置的 `IVenueValuator` 估值
+- venue valuator 与具体 adapter 绑定。部署资金前必须完成配置；更换 adapter 时，旧 valuator 会被清除，避免错误复用。
 
 ### `totalAssets()` 的当前公式
 - 当前实现的心智模型是：
-  - `total0 = idle0 + deployed0`
-  - `total1 = idle1 + deployed1`
-- 然后：
-  - `value0 = total0 * price0 / 10**decimals0`
-  - `value1 = total1 * price1 / 10**decimals1`
-  - `totalAssets = value0 + value1`
+  - `idleValue = valueInBase(idle0, price0) + valueInBase(idle1, price1)`
+  - `venueValue[i] = venueValuators[i].getValueInBase(price0, price1)`
+  - `totalAssets = idleValue + sum(venueValue[i])`
 - 这里的 `price0` 和 `price1` 不是 vault 自己存的状态变量，而是通过 `oracle.getPrices()` 读出来的。
 - 两个价格必须使用同一个 base；当前实现统一使用 vault `token0`，所以 `totalAssets()` 的返回值也以 token0 计价。
 
-更紧凑地写就是：
-- `totalAssets = valueInBase(idle0 + deployed0, price0, decimals0) + valueInBase(idle1 + deployed1, price1, decimals1)`
+当前 venue 估值方式：
+- V2 使用 `V2FairValueValuator`：先用 oracle 价格分别估算两侧 reserves 的价值，再用 `2 * sqrt(reserveValue0 * reserveValue1)` 的公平 LP 价值模型，最后乘以 adapter 持有的 LP 份额。这样不会直接信任可在单笔交易中改变的 reserve ratio。
+- V3 使用 `V3TwapPositionValuator`：通过 pool `observe(...)` 得到 TWAP tick，用该 tick 计算区间本金，再加上 position manager 已记录的 `tokensOwed0/1`，最后按 vault token 顺序和统一价格估值。
+
+### `getTotalUnderlying()` 与 `totalAssets()` 的区别
+- `getTotalUnderlying()` 仍汇总 idle 数量和 `adapter.getPositionValue()` 返回的 token 数量，主要供策略构建 target 和链下观察使用。
+- adapter 返回的数量可能依赖当前 pool spot/reserves，因此不能作为份额会计的可信估值。
+- deposit 和 rebalance value invariant 使用的是 `totalAssets()`，不会直接使用 `getTotalUnderlying()` 给 shares 定价。
+- 剩余边界：外部 `IPriceOracle` 本身仍必须可靠且新鲜；V3 valuator 只计入 position manager 已写入的 owed amounts，不重建尚未 checkpoint 的最新 fee growth。
 
 ### 关键规则
 - `shares` = 所有权单位
@@ -1829,9 +1833,10 @@ tick range 有两个基本约束：
 - 如果 position 只有 owed、没有 liquidity，`getPositionValue()` 仍应返回非零值。
 
 重要限制：
-- 这版估值是“position-manager-tracked 值 + 当前本金”，能覆盖已记账的 owed amounts。
+- adapter 的 `getPositionValue()` 是“position-manager-tracked 值 + spot tick 下的当前本金”，用于数量观察和策略输入。
+- vault 的 `totalAssets()` 不直接使用这个 spot 口径，而是通过 `V3TwapPositionValuator` 使用 TWAP tick 计算本金。
 - 它不会重建尚未写入 `tokensOwed0/1` 的最新 fee growth，所以不是完整会计意义上的精确净值。
-- 如果后面要做份额定价或审计级估值，需要再补 V3 fee growth accounting。
+- 如果后面要做审计级净值，需要再补 V3 fee growth accounting。
 
 ### hasPosition 最小语义
 - `hasPosition()` 不只是判断 `tokenId != 0`。
@@ -1947,7 +1952,7 @@ tick range 有两个基本约束：
   - `deposit -> deployToVenue(venueId, ...) -> redeem` 可以通过 redeem 自动按比例撤出 active V3 仓位
   - 用户赎回自己的全部 shares 后，locked shares 对应的 V3 liquidity 仍会保留，因此 position 和 `tokenId` 仍然存在
   - partial redeem 会保留原 `tokenId`，只减少 position liquidity
-  - `totalAssets()` 会把 `adapter.getPositionValue()` 算进去
+  - `totalAssets()` 会通过该 venue 配置的 `V3TwapPositionValuator` 计算 V3 position 价值
   - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出用户对应比例的 liquidity；只有 venue liquidity 被管理操作全部撤出时才会清理 position
   - strategy-driven rebalance 可以把 idle 资金部署进 V3，并验证 dynamic tick / slippage params 被传到 V3 mint
   - strategy-driven rebalance 可以从 V3 撤出，并验证 withdrawal params 被传到 V3 decrease liquidity
