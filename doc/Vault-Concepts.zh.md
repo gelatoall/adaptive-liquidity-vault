@@ -251,16 +251,20 @@
 
 ### Oracle Circuit Breaker
 - `checkSystemHealth()` 是给 keeper / monitoring 看的健康状态接口。
-- 当前返回三种状态：
-  - `NORMAL`：vault 没暂停，并且当前启用的 oracle 健康要求都满足
-  - `ORACLE_STALE`：当前最小实现里，表示启用了 oracle health check，但还没有配置 `volatilityOracle`
+- 当前返回四种状态：
+  - `NORMAL`：vault 没暂停，估值 oracle 价格仍在 freshness window 内，并且当前启用的额外 oracle 健康要求都满足
+  - `ORACLE_STALE`：估值 oracle 未配置、时间戳无效或已经过期，或者启用了额外 health check 但没有配置 `volatilityOracle`
+  - `ORACLE_DEVIATION`：primary 和 reference oracle 的任一 token 价格偏差超过配置上限
   - `PAUSED`：vault 已暂停
 - `setOracleHealthCheckEnabled(true)` 后，`rebalanceWithStrategy(...)` 会要求 vault 已经配置 `volatilityOracle`。
 - 这一步的意义是：
   - 防止策略 rebalance 在缺少关键 volatility oracle 的情况下继续执行
-  - 给后续 keeper 判断 `canRebalance` / `checkSystemHealth` 留出稳定接口
-- 当前还没有实现完整的 timestamp stale 检测。
-- 也就是说，现在的 `ORACLE_STALE` 更准确地说是“必须依赖的 oracle 未配置或不可用”，不是已经读取 oracle 时间戳后判断过期。
+  - 给 keeper 判断 `canRebalance` / `checkSystemHealth` 提供稳定接口
+- 估值 oracle 的 timestamp freshness 检查始终生效，不依赖 `oracleHealthCheckEnabled`。
+- `setPriceOracleConfig(...)` 会同时设置 primary/reference oracle、各自 freshness window 和最大偏差；两个 oracle 必须使用 token0 作为同一计价基准，生产配置还应保证来源相互独立。
+- `deposit()` 和 `totalAssets()` 会在 oracle 未配置、价格为 `0`、时间戳无效、价格过期或双源偏差超限时 revert。
+- 手动 `rebalance(...)` 和 `rebalanceWithStrategy(...)` 同样受 valuation oracle 熔断保护。
+- `redeem()` 不依赖价格估值，因此暂停、价格过期或双源偏差超限时仍允许用户按份额退出。
 - `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
 
 ### Keeper 执行权限

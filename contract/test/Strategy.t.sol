@@ -72,7 +72,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         );
 
         priceOracle = new MockPriceOracle();
-        vault.setPriceOracle(address(priceOracle));
+        _configureMirroredPriceOracles(vault, priceOracle);
         priceOracle.setPrices(1e18, 1e18);
 
         volatilityOracle = new MockVolatilityOracle();
@@ -164,6 +164,47 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.ORACLE_STALE));
     }
 
+    /// @notice System health reports ORACLE_STALE when valuation prices exceed their permitted age.
+    function test_CheckSystemHealth_ReturnsOracleStaleWhenPriceIsStale() public {
+        vm.warp(priceOracle.lastUpdatedAt() + DEFAULT_MAX_PRICE_AGE + 1);
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.ORACLE_STALE));
+    }
+
+    function test_OracleDeviation_BlocksManualAndStrategyRebalance() public {
+        MockPriceOracle referenceOracle = new MockPriceOracle();
+
+        vault.setPriceOracleConfig(
+            address(priceOracle),
+            DEFAULT_MAX_PRICE_AGE,
+            address(referenceOracle),
+            DEFAULT_MAX_PRICE_AGE,
+            DEFAULT_MAX_PRICE_DEVIATION_BPS
+        );
+
+        // token1 differs by 10%, exceeding the configured 5% limit.
+        priceOracle.setPrices(1e18, 1.1e18);
+        referenceOracle.setPrices(1e18, 1e18);
+
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.ORACLE_DEVIATION));
+
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
+        // Manual rebalance is protected by the same valuation-oracle guard.
+        vm.expectRevert(AdaptiveLPVault.ValuationOracleDeviation.selector);
+        vault.rebalance(targets, _emptyWithdrawalParams());
+
+        vault.setStrategy(address(strategy));
+        // The keeper-facing view reports that rebalance is unavailable.
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertFalse(allowed);
+        assertEq(reason, "Valuation oracle deviation");
+
+        // Actual strategy execution is blocked by the same guard.
+        vm.expectRevert(AdaptiveLPVault.ValuationOracleDeviation.selector);
+
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+    }
+
     /// @notice rebalanceWithStrategy reverts when oracle health check requires a missing volatility oracle.
     function test_RebalanceWithStrategy_RevertsWhenOracleHealthCheckEnabledWithoutOracle() public {
         vault.setStrategy(address(strategy));
@@ -208,19 +249,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         assertFalse(allowed);
         assertEq(reason, "Volatility oracle not set");
-    }
-
-    /// @notice canRebalanceWithStrategy reports when volatility movement is below the configured threshold.
-    function test_CanRebalanceWithStrategy_ReturnsFalseWhenVolatilityDeltaTooSmall() public {
-        vault.setStrategy(address(strategy));
-        vault.setRebalanceConfig(0, 100, 0);
-        vault.setVolatilityOracle(address(volatilityOracle));
-        volatilityOracle.setVolatilityBps(50);
-
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
-
-        assertFalse(allowed);
-        assertEq(reason, "Volatility delta too small");
     }
 
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
@@ -521,18 +549,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
-    /// @notice rebalanceWithStrategy reverts when volatility change is below the configured minimum.
-    function test_RebalanceWithStrategy_RevertsWhenVolatilityDeltaTooSmall() public {
-        vault.setStrategy(address(strategy));
-        vault.setRebalanceConfig(0, 100, 0);
-        vault.setVolatilityOracle(address(volatilityOracle));
-
-        volatilityOracle.setVolatilityBps(50);
-
-        vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
-        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
-    }
-
     /// @notice successful strategy rebalance records the current volatility.
     function test_RebalanceWithStrategy_UpdatesLastRebalanceVolatility() public {
         uint256 amount0 = 10 ether;
@@ -755,6 +771,49 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(positionManager.lastMintAmount1Min(), poolAmount1Min);
         assertEq(positionManager.lastMintTickLower(), -60);
         assertEq(positionManager.lastMintTickUpper(), 420);
+    }
+
+    /// @notice The first rebalance establishes a volatility baseline,
+    ///         then subsequent small volatility changes are rejected.
+    function test_VolatilityDelta_AllowsFirstRebalanceThenBlocksSmallChange() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.setStrategy(address(strategy));
+        vault.setRebalanceConfig(0, 100, 0);
+        vault.setVolatilityOracle(address(volatilityOracle));
+
+        strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+
+        // No previous baseline exists, so 50 bps must not block the first rebalance.
+        volatilityOracle.setVolatilityBps(50);
+
+        (bool firstAllowed, string memory firstReason) =
+            vault.canRebalanceWithStrategy();
+
+        assertTrue(firstAllowed);
+        assertEq(firstReason, "");
+
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+
+        assertEq(vault.lastRebalanceVolatilityBps(), 50);
+
+        // The new value differs from the baseline by only 30 bps,
+        // below the configured 100 bps minimum.
+        volatilityOracle.setVolatilityBps(80);
+
+        (bool secondAllowed, string memory secondReason) =
+            vault.canRebalanceWithStrategy();
+
+        assertFalse(secondAllowed);
+        assertEq(secondReason, "Volatility delta too small");
+
+        vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
     }
 
 }

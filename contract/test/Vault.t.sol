@@ -31,7 +31,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         );
 
         oracle = new MockPriceOracle();
-        vault.setPriceOracle(address(oracle));
+        _configureMirroredPriceOracles(vault, oracle);
     }
 
     // ============================================
@@ -95,6 +95,8 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
     // totalAssets
     function test_TotalAssets_ReturnsZeroWhenVaultHasNoBalances() public {
+        // Initialize valid prices and timestamp without adding vault assets.
+        oracle.setPrices(1e18, 1e18);
         assertEq(vault.totalAssets(), 0);
     }
 
@@ -113,14 +115,34 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     function test_TotalAssets_RevertsWhenVaultHoldsNonZeroToken0ButPrice0IsZero() public {
         uint256 amount0 = 1e18;
         token0.mint(address(vault), amount0);
-        vm.expectRevert(VaultMath.InvalidPrice.selector);
+
+        // Refresh the oracle while deliberately keeping token0 price invalid.
+        oracle.setPrices(0, 1e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AdaptiveLPVault.InvalidOraclePrice.selector,
+                address(oracle),
+                uint8(0)
+            )
+        );
         vault.totalAssets();
     }
 
     function test_TotalAssets_RevertsWhenVaultHoldsNonZeroToken1ButPrice1IsZero() public {
         uint256 amount1 = 1;
         token1.mint(address(vault), amount1);
-        vm.expectRevert(VaultMath.InvalidPrice.selector);
+
+        // Refresh the oracle while deliberately keeping token1 price invalid.
+        oracle.setPrices(1e18, 0);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AdaptiveLPVault.InvalidOraclePrice.selector,
+                address(oracle),
+                uint8(1)
+            )
+        );
         vault.totalAssets();
     }
 
@@ -129,6 +151,113 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.ZeroAmounts.selector);
         vault.deposit(0, 0, alice, 0);
+    }
+
+    function test_Deposit_RevertsWhenOraclePriceIsStale() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 1e6;
+
+        // Produce a valid price snapshot.
+        oracle.setPrices(1e18, 1e18);
+
+        token0.mint(alice, amount0);
+        token1.mint(alice, amount1);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+        token1.approve(address(vault), amount1);
+
+        uint256 updatedTimestamp = oracle.lastUpdatedAt();
+        vm.warp(updatedTimestamp + DEFAULT_MAX_PRICE_AGE + 1);
+        uint256 currentTimestamp = block.timestamp;
+        vm.expectRevert(abi.encodeWithSelector(
+            AdaptiveLPVault.StalePrice.selector,
+            address(oracle),
+            updatedTimestamp,
+            currentTimestamp)
+        );
+
+        vault.deposit(amount0, amount1, alice, 0);
+        vm.stopPrank();
+    }
+
+    function test_Deposit_RevertsWhenReferencePriceIsStale() public {
+        uint256 amount0 = 1 ether;
+        uint256 referenceMaxPriceAge = 1 hours;
+
+        MockPriceOracle referenceOracle = new MockPriceOracle();
+
+        vault.setPriceOracleConfig(
+            address(oracle),
+            DEFAULT_MAX_PRICE_AGE,
+            address(referenceOracle),
+            referenceMaxPriceAge,
+            DEFAULT_MAX_PRICE_DEVIATION_BPS
+        );
+
+        // Produce the reference snapshot first.
+        referenceOracle.setPrices(1e18, 1e18);
+        uint256 referenceUpdatedTimestamp = referenceOracle.lastUpdatedAt();
+
+        // Expire only the reference snapshot.
+        vm.warp(referenceUpdatedTimestamp + referenceMaxPriceAge + 1);
+
+        // Refresh primary after the warp so it remains valid.
+        oracle.setPrices(1e18, 1e18);
+
+        token0.mint(alice, amount0);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+
+        uint256 currentTimestamp = block.timestamp;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AdaptiveLPVault.StalePrice.selector,
+                address(referenceOracle),
+                referenceUpdatedTimestamp,
+                currentTimestamp
+            )
+        );
+
+        vault.deposit(amount0, 0, alice, 0);
+        vm.stopPrank();
+    }
+
+    function test_Deposit_RevertsWhenPriceDeviationExceedsLimit() public {
+        uint256 amount0 = 1 ether;
+
+        MockPriceOracle referenceOracle = new MockPriceOracle();
+
+        vault.setPriceOracleConfig(
+            address(oracle),
+            DEFAULT_MAX_PRICE_AGE,
+            address(referenceOracle),
+            DEFAULT_MAX_PRICE_AGE,
+            DEFAULT_MAX_PRICE_DEVIATION_BPS
+        );
+
+        // token0 prices match. Primary token1 is 10% above the reference.
+        oracle.setPrices(1e18, 1.1e18);
+        referenceOracle.setPrices(1e18, 1e18);
+
+        token0.mint(alice, amount0);
+
+        vm.startPrank(alice);
+        token0.approve(address(vault), amount0);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AdaptiveLPVault.ExcessivePriceDeviation.selector,
+                uint8(1),
+                uint256(1000),
+                DEFAULT_MAX_PRICE_DEVIATION_BPS
+            )
+        );
+
+        vault.deposit(amount0, 0, alice, 0);
+        vm.stopPrank();
     }
 
     function test_Deposit_InitialDepositLocksMinimumShares() public {
@@ -296,8 +425,8 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     }
 
     // redeem
-    /// @notice Verifies users can still redeem idle balances while the vault is paused.
-    function test_Redeem_WorksWhenPaused() public {
+    /// @notice Verifies pause and stale oracle conditions do not block user redemption.
+    function test_Redeem_WorksWhenPausedAndOraclePriceIsStale() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
@@ -311,6 +440,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 expectedAmount1Out = amount1 * shares / totalSharesBefore;
 
         vault.pause();
+        vm.warp(oracle.lastUpdatedAt() + DEFAULT_MAX_PRICE_AGE + 1);
 
         vm.prank(alice);
         (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
@@ -468,7 +598,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     // ============================================
     // Integration Tests
     // ============================================
-    function test_Integration_Deposit_RevertsBeforeTwapIsInitialized() public {
+    function test_Integration_UninitializedTwapReportsStaleAndBlocksDeposit() public {
         uint32 interval = 300;
         (, V2TWAPOracle twap) = _deployTwapOracleButNotUpdate(
             token0,
@@ -476,6 +606,9 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
             vault,
             interval
         );
+
+        assertFalse(twap.initialized());
+        assertEq(uint256(vault.checkSystemHealth()), uint256(AdaptiveLPVault.SystemStatus.ORACLE_STALE));
         
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;

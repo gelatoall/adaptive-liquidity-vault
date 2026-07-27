@@ -133,7 +133,9 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 - `checkSystemHealth()`
   - purpose: expose coarse vault health for keepers and monitoring
   - behavior: returns `PAUSED` when the vault is paused
-  - behavior: returns `ORACLE_STALE` when oracle health checks are enabled but no volatility oracle is configured
+  - behavior: returns `ORACLE_STALE` for missing, invalid, future-dated, or expired valuation data
+  - behavior: returns `ORACLE_DEVIATION` when primary and reference valuation prices diverge beyond the configured limit
+  - behavior: can also return `ORACLE_STALE` when the optional volatility-oracle health check is enabled without an oracle
   - behavior: returns `NORMAL` otherwise
 
 - `canRebalanceWithStrategy()`
@@ -166,9 +168,9 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 
 ## Manual vs Strategy Rebalance
 
-`rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault only validates and executes that plan. This path is useful for manual operations, emergency overrides, and tests. It is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
+`rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault validates valuation-oracle health and executes that plan. This path is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
 
-`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies strategy guards such as cooldown, gas price, volatility delta, and oracle health checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
+`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault first validates valuation-oracle health, asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies cooldown, gas price, volatility delta, and optional volatility-oracle checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
 
 Both paths ultimately reuse the same internal withdraw-all-then-deploy execution logic.
 
@@ -194,14 +196,15 @@ function buildTargets(address vault, bytes calldata data)
 Flow:
 1. Owner or configured keeper calls `rebalanceWithStrategy(data, withdrawalParams)`.
 2. Vault checks that a strategy is configured.
-3. Vault checks `minCooldown` if it is non-zero.
-4. Vault checks `maxGasPrice` if it is non-zero.
-5. Vault requires a configured volatility oracle if `minVolatilityDelta` or oracle health checks are enabled.
-6. Vault checks `minVolatilityDelta` if it is non-zero.
-7. Vault calls `strategy.buildTargets(address(this), data)`.
-8. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the caller-supplied withdrawal params to active venues.
-9. Vault updates `lastRebalance` only after successful execution.
-10. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
+3. Vault requires fresh primary/reference valuation data within the configured deviation limit.
+4. Vault checks `minCooldown` if it is non-zero.
+5. Vault checks `maxGasPrice` if it is non-zero.
+6. Vault requires a configured volatility oracle if `minVolatilityDelta` or optional oracle health checks are enabled.
+7. Vault checks `minVolatilityDelta` if it is non-zero.
+8. Vault calls `strategy.buildTargets(address(this), data)`.
+9. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the caller-supplied withdrawal params to active venues.
+10. Vault updates `lastRebalance` only after successful execution.
+11. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
 
 If `maxRebalanceValueLossBps` is non-zero, strategy-driven rebalance also passes through the same post-execution value-loss guard.
 
@@ -276,7 +279,7 @@ Current limitations:
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
 - execution still withdraws all tracked venue liquidity before redeploying the target plan
 - strategy-driven withdrawal params are owner-supplied through `rebalanceWithStrategy(data, withdrawalParams)`; automatic remove-side min amount generation remains out of scope
-- oracle health checks currently detect missing required oracle configuration, not timestamp-based oracle staleness
+- valuation-oracle health checks reject missing, invalid, future-dated, stale, or excessively divergent prices; the optional volatility-oracle check currently validates configuration availability only
 - calculated V3 tick bounds are rounded outward to legal `tickSpacing()` values, so the executable range covers the raw strategy range instead of narrowing it
 
 ### volatility oracle implementations

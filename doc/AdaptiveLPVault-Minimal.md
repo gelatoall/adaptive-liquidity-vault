@@ -46,8 +46,10 @@ This version does not include:
 Notes:
 - the vault depends on `IPriceOracle` for prices
 - `MockPriceOracle` is a test helper that exposes `setPrices(...)`
-- `IPriceOracle` itself is read-only and only defines `getPrices()`
+- `IPriceOracle` is read-only and exposes both `getPrices()` and `lastUpdatedAt()`
 - a production version should replace the mock oracle with a real oracle implementation
+- the vault rejects unset, future-dated, stale, or excessively divergent valuation data before price-dependent accounting
+- production primary and reference oracles must be operationally independent and use token0 as the same numeraire
 - the vault is a dual-asset share vault; it adopts ERC4626-style receiver/owner/allowance semantics, but does not implement the full ERC4626 standard because ERC4626 assumes a single underlying asset
 - V2 price TWAP implementation details are documented in `doc/V2TWAPOracle-Minimal.md`
 - V3 spot-vs-TWAP volatility details are documented in `doc/V3TwapVolatilityOracle-Minimal.md`
@@ -60,7 +62,9 @@ The vault stores:
 - `token1` address
 - `token0` decimals
 - `token1` decimals
-- oracle address
+- primary and reference valuation-oracle addresses
+- separate maximum permitted price ages for both oracles
+- maximum permitted primary/reference price deviation in basis points
 - venue configs by `venueId`
 - trusted venue valuators by `venueId`
 - registered venue ids for iteration
@@ -96,8 +100,10 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: initialize share token metadata, underlying tokens, and decimals
   - behavior: rejects zero token addresses, identical token addresses, and zero decimals
 
-- `setPriceOracle(priceOracle)`
-  - purpose: set the price oracle used to read `token0` and `token1` prices
+- `setPriceOracleConfig(priceOracle, maxPriceAge, referencePriceOracle, maxReferencePriceAge, maxPriceDeviationBps)`
+  - purpose: atomically configure primary valuation prices, an independent reference source, freshness windows, and the deviation limit
+  - behavior: rejects zero or identical oracle addresses, zero freshness windows, and deviation limits outside `(0, 10_000]`
+  - requirement: both oracles return token0-denominated prices with 1e18 precision
 
 - `setVolatilityOracle(volatilityOracle)`
   - purpose: set the volatility oracle used by strategy rebalance guards
@@ -113,6 +119,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `totalAssets()`
   - purpose: return idle value plus trusted valuator output for every active venue position
+  - behavior: rejects unset, future-dated, stale, zero, or excessively divergent oracle data before valuation
   - returns: `uint256 assets`
 
 - `getTotalUnderlying()`
@@ -123,6 +130,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 - `deposit(amount0, amount1, receiver, minShares)`
   - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
   - behavior: blocked while the vault is paused
+  - behavior: validates primary/reference freshness and deviation before calculating shares
   - behavior: reverts if minted shares are below `minShares`
   - returns: `uint256 shares`
 
@@ -132,6 +140,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - behavior: withdraws the redeemed share ratio of tracked liquidity from each active venue before transferring tokens
   - behavior: forwards matching per-venue withdrawal params to adapters; venues without a matching entry receive empty params
   - behavior: reverts if final token outputs are below `minAmount0Out` or `minAmount1Out`
+  - behavior: does not depend on valuation oracles, so stale or divergent prices do not block exits
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `deployToVenue(venueId, amount0, amount1, params)`
@@ -149,6 +158,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 - `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied multi-venue target plan
   - behavior: owner-only and blocked while the vault is paused
+  - behavior: requires healthy primary/reference valuation oracles before execution
   - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase; `targets[i].params` controls deployment into the new venue
 
@@ -174,8 +184,9 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `checkSystemHealth()`
   - purpose: expose a simple status for keepers and monitoring
-  - returns: `NORMAL`, `ORACLE_STALE`, or `PAUSED`
-  - behavior: in this minimal version, `ORACLE_STALE` means the oracle health check is enabled but no volatility oracle is configured
+  - returns: `NORMAL`, `ORACLE_STALE`, `ORACLE_DEVIATION`, or `PAUSED`
+  - behavior: reports missing, invalid, future-dated, or expired valuation data as `ORACLE_STALE`
+  - behavior: reports primary/reference divergence above the configured limit as `ORACLE_DEVIATION`
 
 - `canRebalanceWithStrategy()`
   - purpose: expose whether strategy-driven rebalance currently passes vault-level guards

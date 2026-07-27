@@ -7,7 +7,10 @@ import "../../src/interfaces/IPriceOracle.sol";
 /// @notice Test-only price oracle with manually configurable token prices.
 contract MockPriceOracle is IPriceOracle {
 	uint256 public price0;
-	uint256 public price1; 
+	uint256 public price1;
+
+    /// @notice Timestamp when the mock prices were last updated.
+    uint256 public override lastUpdatedAt;
 
     /// @notice Sets the mock prices returned by {getPrices}.
     /// @param _price0 Price of one whole token0.
@@ -15,6 +18,7 @@ contract MockPriceOracle is IPriceOracle {
     function setPrices(uint256 _price0, uint256 _price1) external {
         price0 = _price0;
         price1 = _price1;
+        lastUpdatedAt = block.timestamp;
     }
 
     /// @inheritdoc IPriceOracle

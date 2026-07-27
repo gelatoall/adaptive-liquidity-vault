@@ -59,6 +59,9 @@ contract V2TWAPOracle is IPriceOracle {
     /// @notice True after the first successful `update`.
     bool public initialized;
 
+    /// @inheritdoc IPriceOracle
+    uint256 public override lastUpdatedAt;
+
     // ============================================
     // Events
     // ============================================
@@ -169,6 +172,7 @@ contract V2TWAPOracle is IPriceOracle {
         price1CumulativeLast = price1CumNow;
         blockTimestampLast = tsNow;
         initialized = true;
+        lastUpdatedAt = uint256(tsNow);
 
         (uint256 p0, uint256 p1) = _getBaseDenominatedPrices();
         emit TwapUpdated(p0, p1, timeElapsed);

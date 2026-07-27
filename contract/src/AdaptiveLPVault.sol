@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./libraries/VaultMath.sol";
 import "./libraries/RebalanceTypes.sol";
 import "./interfaces/IVenueAdapter.sol";
@@ -62,6 +63,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     enum SystemStatus {
         NORMAL,
         ORACLE_STALE,
+        ORACLE_DEVIATION,
         PAUSED
     }
 
@@ -70,6 +72,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         NONE,
         COOLDOWN_NOT_ELAPSED,
         GAS_PRICE_TOO_HIGH,
+        VALUATION_ORACLE_STALE,
+        VALUATION_ORACLE_DEVIATION,
         VOLATILITY_ORACLE_NOT_SET,
         VOLATILITY_DELTA_TOO_SMALL
     }
@@ -90,6 +94,18 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Price oracle used to calculate the value of underlying holdings.
     /// @dev The vault depends on the IPriceOracle interface for price discovery.
     IPriceOracle public priceOracle;
+
+    /// @notice Maximum permitted age of prices used for vault accounting.
+    uint256 public maxPriceAge;
+
+    /// @notice Independent oracle used to validate valuation prices.
+    IPriceOracle public referencePriceOracle;
+
+    /// @notice Maximum permitted age of reference prices.
+    uint256 public maxReferencePriceAge;
+
+    /// @notice Maximum permitted primary/reference price deviation in basis points.
+    uint256 public maxPriceDeviationBps;
 
     /// @notice Strategy used to build target plans for strategy-driven rebalances.
     IRebalanceStrategy public strategy;
@@ -144,7 +160,13 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     event Redeem(address indexed sender, address indexed receiver, address indexed owner, uint256 shares, uint256 amount0Out, uint256 amount1Out);
 
     /// @notice Emitted when the owner updates the valuation price oracle.
-    event SetPriceOracle(address indexed priceOracle);
+    event SetPriceOracleConfig(
+        address indexed priceOracle,
+        address indexed referencePriceOracle,
+        uint256 maxPriceAge,
+        uint256 maxReferencePriceAge,
+        uint256 maxPriceDeviationBps
+    );
 
     /// @notice Emitted when the owner updates the volatility oracle.
     event SetVolatilityOracle(address indexed volatilityOracle);
@@ -238,8 +260,32 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Thrown when redeemed token amounts are below the caller's minimums.
     error InsufficientRedeemOutput();
 
-    /// @notice Thrown when a valuation or price-dependent operation is requested before an oracle is configured.
+    /// @notice Thrown when the primary valuation oracle is not configured.
     error PriceOracleNotSet();
+
+    /// @notice Thrown when the independent reference oracle is not configured.
+    error ReferencePriceOracleNotSet();
+
+    /// @notice Thrown when primary and reference oracle configuration is invalid.
+    error InvalidOracleConfiguration();
+
+    /// @notice Thrown when either configured price freshness window is zero.
+    error InvalidMaxPriceAge();
+
+    /// @notice Thrown when the maximum permitted price deviation is invalid.
+    error InvalidMaxPriceDeviationBps();
+
+    /// @notice Thrown when an oracle reports a zero price.
+    error InvalidOraclePrice(address oracle, uint8 tokenIndex);
+
+    /// @notice Thrown when an oracle reports an unset or future update timestamp.
+    error InvalidOracleTimestamp(address oracle, uint256 updatedTimestamp, uint256 currentTimestamp);
+
+    /// @notice Thrown when an oracle price is older than its configured maximum age.
+    error StalePrice(address oracle, uint256 updatedTimestamp, uint256 currentTimestamp);
+
+    /// @notice Thrown when primary and reference prices differ beyond the configured limit.
+    error ExcessivePriceDeviation(uint8 tokenIndex, uint256 deviationBps, uint256 maxDeviationBps);
 
     /// @notice Thrown when a requested venue id is not registered or has no adapter configured.
     error VenueNotSet();
@@ -273,6 +319,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when strategy-driven rebalance is called above the configured gas price limit.
     error GasPriceTooHigh();
+
+    /// @notice Thrown when a strategy rebalance requires fresh valuation prices.
+    error ValuationOracleStale();
+
+    /// @notice Thrown when valuation oracles exceed the configured deviation limit.
+    error ValuationOracleDeviation();
 
     /// @notice Thrown when volatility guard is enabled before configuring a volatility oracle.
     error VolatilityOracleNotSet();
@@ -357,11 +409,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         // Reject if receiver is zero.
         if (receiver == address(0)) revert ZeroAddress();
 
-        // Reject if oracle is not configured.
-        if (address(priceOracle) == address(0)) {
-            revert PriceOracleNotSet();
-        }
-        (uint256 price0, uint256 price1) = priceOracle.getPrices();
+        (uint256 price0, uint256 price1) = _getValidatedPrices();
 
         // Read totalAssets() before the deposit.
         // Read totalSupply() before the deposit.
@@ -477,13 +525,11 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // ============================================
     /// @notice Returns the current total value of the vault's holdings.
     /// @dev Values idle balances directly and active positions through their configured trusted valuators.
-    /// Oracle prices and the returned value are denominated in configured token0 with 1e18 precision.
+    ///      Primary prices must be fresh and within the configured deviation from the reference oracle.
+    ///      Oracle prices and the returned value are denominated in configured token0 with 1e18 precision.
     /// @return Total vault value denominated in token0, scaled by 1e18.
     function totalAssets() public view returns (uint256) {
-        if (address(priceOracle) == address(0)) {
-            revert PriceOracleNotSet();
-        }
-        (uint256 price0, uint256 price1) = priceOracle.getPrices();
+        (uint256 price0, uint256 price1) = _getValidatedPrices();
 
         return _totalAssetsAtPrices(price0, price1);
     }
@@ -497,9 +543,15 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Returns the current vault health status used by offchain keepers and monitoring.
-    /// @dev In this minimal circuit breaker, ORACLE_STALE means the required volatility oracle is not configured.
+    /// @dev Reports stale or invalid valuation data as `ORACLE_STALE`, excessive primary/reference
+    ///      price divergence as `ORACLE_DEVIATION`, and gives pause state the highest priority.
     function checkSystemHealth() external view returns (SystemStatus) {
         if (paused()) return SystemStatus.PAUSED;
+
+        SystemStatus valuationStatus = _getValuationOracleStatus();
+        if (valuationStatus != SystemStatus.NORMAL) {
+            return valuationStatus;
+        }
 
         if (oracleHealthCheckEnabled && address(volatilityOracle) == address(0)) {
             return SystemStatus.ORACLE_STALE;
@@ -523,6 +575,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
         if (failure == RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED) return (false, "Cooldown not elapsed");
         if (failure == RebalanceGuardFailure.GAS_PRICE_TOO_HIGH) return (false, "Gas price too high");
+        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_STALE) return (false, "Valuation oracle stale");
+        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_DEVIATION) return (false, "Valuation oracle deviation");
         if (failure == RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET) return (false, "Volatility oracle not set");
         if (failure == RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL) return (false, "Volatility delta too small");
         return (true, "");
@@ -553,15 +607,37 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit EmergencyExit(msg.sender);
     }
 
-    /// @notice Sets the price oracle used by the vault for asset valuation.
-    /// @dev The input address is stored as an `IPriceOracle` interface reference.
-    /// @param _priceOracle Address of the price oracle contract.
-    function setPriceOracle(address _priceOracle) external onlyOwner {
-        if (_priceOracle == address(0)) {
-            revert ZeroAddress();
-        }
+    /// @notice Atomically configures primary and reference valuation-oracle safeguards.
+    /// @dev The two oracle addresses must differ. Both must use token0 as their common numeraire.
+    /// @param _priceOracle Primary oracle used for vault accounting.
+    /// @param _maxPriceAge Maximum permitted age of the primary price, in seconds.
+    /// @param _referencePriceOracle Independent oracle used to validate primary prices.
+    /// @param _maxReferencePriceAge Maximum permitted age of reference prices, in seconds.
+    /// @param _maxPriceDeviationBps Maximum primary/reference deviation allowed, in basis points.
+    function setPriceOracleConfig(
+        address _priceOracle,
+        uint256 _maxPriceAge,
+        address _referencePriceOracle,
+        uint256 _maxReferencePriceAge,
+        uint256 _maxPriceDeviationBps
+    ) external onlyOwner {
+        if (_priceOracle == address(0) || _referencePriceOracle == address(0)) revert ZeroAddress();
+        if (_priceOracle == _referencePriceOracle) revert InvalidOracleConfiguration();
+        if (_maxPriceAge == 0 || _maxReferencePriceAge == 0) revert InvalidMaxPriceAge();
+        if (_maxPriceDeviationBps == 0 || _maxPriceDeviationBps > RebalanceTypes.BPS) revert InvalidMaxPriceDeviationBps();
+
         priceOracle = IPriceOracle(_priceOracle);
-        emit SetPriceOracle(_priceOracle);
+        maxPriceAge = _maxPriceAge;
+        referencePriceOracle = IPriceOracle(_referencePriceOracle);
+        maxReferencePriceAge = _maxReferencePriceAge;
+        maxPriceDeviationBps = _maxPriceDeviationBps;
+        emit SetPriceOracleConfig(
+            _priceOracle,
+            _referencePriceOracle,
+            _maxPriceAge,
+            _maxReferencePriceAge,
+            _maxPriceDeviationBps
+        );
     }
 
     /// @notice Sets the volatility oracle used by strategy rebalance guards.
@@ -747,14 +823,15 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Rebalances vault capital according to an owner-supplied target plan.
-    /// @dev The current minimal flow withdraws all tracked venue liquidity first, then deploys into non-zero targets.
-    /// An empty target array means withdraw all venues to idle. Reverts if the vault is already idle.
+    /// @dev Requires healthy valuation oracles, then withdraws all tracked venue liquidity before deploying
+    ///      into non-zero targets. An empty target array means withdraw all venues to idle.
     /// @param targets Desired post-rebalance venue deployments.
     /// @param withdrawalParams Venue-specific remove-liquidity params used when rebalance withdraws active positions.
     function rebalance(
         RebalanceTypes.RebalanceTarget[] calldata targets,
         VenueWithdrawalParams[] calldata withdrawalParams
     ) external onlyOwner whenNotPaused nonReentrant {
+        _checkValuationOracleGuards();
         _rebalance(targets, withdrawalParams);
         emit Rebalance(msg.sender);
     }
@@ -798,6 +875,141 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         }
 
         return "";
+    }
+
+    /// @notice Returns whether the valuation oracle timestamp is configured and fresh.
+    function _isOracleFresh(IPriceOracle oracle, uint256 allowedAge) internal view returns (bool) {
+        if (address(oracle) == address(0) || allowedAge == 0) return false;
+
+        uint256 updatedTimestamp;
+        try oracle.lastUpdatedAt() returns (uint256 timestamp) {
+            updatedTimestamp = timestamp;
+        } catch {
+            return false;
+        }
+
+        uint256 currentTimestamp = block.timestamp;
+        if (updatedTimestamp == 0 || updatedTimestamp > currentTimestamp) {
+            return false;
+        }
+
+        return (currentTimestamp - updatedTimestamp <= allowedAge);
+    }
+
+    /// @notice Reads non-zero oracle prices and enforces the configured freshness window.
+    /// @param oracle Oracle whose prices and timestamp are validated.
+    /// @param allowedAge Maximum permitted age of the current price snapshot, in seconds.
+    /// @return price0 Price of one whole token0 in token0, scaled by 1e18.
+    /// @return price1 Price of one whole token1 in token0, scaled by 1e18.
+    function _readFreshPrices(
+        IPriceOracle oracle,
+        uint256 allowedAge
+    ) internal view returns (uint256 price0, uint256 price1) {
+        (price0, price1) = oracle.getPrices();
+        if (price0 == 0) revert InvalidOraclePrice(address(oracle), 0);
+        if (price1 == 0) revert InvalidOraclePrice(address(oracle), 1);
+
+        uint256 updatedTimestamp = oracle.lastUpdatedAt();
+        uint256 currentTimestamp = block.timestamp;
+
+        if (updatedTimestamp == 0 || updatedTimestamp > currentTimestamp) {
+            revert InvalidOracleTimestamp(address(oracle), updatedTimestamp, currentTimestamp);
+        }
+
+        if (currentTimestamp - updatedTimestamp > allowedAge) {
+            revert StalePrice(address(oracle), updatedTimestamp, currentTimestamp);
+        }
+    }
+
+    /// @notice Calculates absolute primary/reference price deviation relative to the reference price.
+    function _calculatePriceDeviationBps(uint256 primaryPrice, uint256 referencePrice) internal pure returns (uint256) {
+        uint256 delta = _absDiff(primaryPrice, referencePrice);
+        return Math.mulDiv(delta, RebalanceTypes.BPS, referencePrice);
+    }
+
+    /// @notice Returns whether both oracle price pairs are valid and within the configured deviation.
+    /// @dev Converts oracle call failures and zero prices into status values instead of reverting.
+    function _getPriceDeviationStatus() internal view returns (bool pricesValid, bool withinLimit) {
+        uint256 primaryPrice0;
+        uint256 primaryPrice1;
+        uint256 referencePrice0;
+        uint256 referencePrice1;
+
+        try priceOracle.getPrices() returns (uint256 price0, uint256 price1) {
+            primaryPrice0 = price0;
+            primaryPrice1 = price1;
+        } catch {
+            return (false, false);
+        }
+
+        try referencePriceOracle.getPrices() returns (uint256 price0, uint256 price1) {
+            referencePrice0 = price0;
+            referencePrice1 = price1;
+        } catch {
+            return (false, false);
+        }
+
+        if (primaryPrice0 == 0 || primaryPrice1 == 0 || referencePrice0 == 0 || referencePrice1 == 0) {
+            return (false, false);
+        }
+
+        withinLimit = _calculatePriceDeviationBps(primaryPrice0, referencePrice0) <= maxPriceDeviationBps &&
+            _calculatePriceDeviationBps(primaryPrice1, referencePrice1) <= maxPriceDeviationBps;
+
+        return (true, withinLimit);
+    }
+
+    /// @notice Maps valuation-oracle freshness and deviation checks to the public health status.
+    function _getValuationOracleStatus() internal view returns (SystemStatus) {
+        if (!_isOracleFresh(priceOracle, maxPriceAge) || !_isOracleFresh(referencePriceOracle, maxReferencePriceAge)) {
+            return SystemStatus.ORACLE_STALE;
+        }
+
+        (bool pricesValid, bool withinDeviationLimit) = _getPriceDeviationStatus();
+
+        if (!pricesValid) {
+            return SystemStatus.ORACLE_STALE;
+        }
+
+        if (!withinDeviationLimit) {
+            return SystemStatus.ORACLE_DEVIATION;
+        }
+
+        return SystemStatus.NORMAL;
+    }
+
+    /// @notice Reverts when valuation oracles are stale, invalid, or outside the deviation limit.
+    function _checkValuationOracleGuards() internal view {
+        SystemStatus status = _getValuationOracleStatus();
+
+        if (status == SystemStatus.ORACLE_STALE) {
+            revert ValuationOracleStale();
+        }
+
+        if (status == SystemStatus.ORACLE_DEVIATION) {
+            revert ValuationOracleDeviation();
+        }
+    }
+
+    /// @notice Returns primary valuation prices after freshness and reference-deviation validation.
+    /// @return price0 Price of one whole token0 in token0, scaled by 1e18.
+    /// @return price1 Price of one whole token1 in token0, scaled by 1e18.
+    function _getValidatedPrices() internal view returns (uint256 price0, uint256 price1) {
+        if (address(priceOracle) == address(0)) revert PriceOracleNotSet();
+        if (address(referencePriceOracle) == address(0)) revert ReferencePriceOracleNotSet();
+
+        (price0, price1) = _readFreshPrices(priceOracle, maxPriceAge);
+        (uint256 referencePrice0, uint256 referencePrice1) = _readFreshPrices(referencePriceOracle, maxReferencePriceAge);
+
+        uint256 deviation0 = _calculatePriceDeviationBps(price0, referencePrice0);
+        if (deviation0 > maxPriceDeviationBps){
+            revert ExcessivePriceDeviation(0, deviation0, maxPriceDeviationBps);
+        }
+
+        uint256 deviation1 = _calculatePriceDeviationBps(price1, referencePrice1);
+        if (deviation1 > maxPriceDeviationBps){
+            revert ExcessivePriceDeviation(1, deviation1, maxPriceDeviationBps);
+        }
     }
 
     /// @notice Values idle balances and active venue positions using trusted accounting valuators.
@@ -1082,6 +1294,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         (failure, currentVolatilityBps) = _getStrategyRebalanceGuardStatus();
         if (failure == RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED) revert CooldownNotElapsed();
         if (failure == RebalanceGuardFailure.GAS_PRICE_TOO_HIGH) revert GasPriceTooHigh();
+        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_STALE) revert ValuationOracleStale();
+        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_DEVIATION) revert ValuationOracleDeviation();
         if (failure == RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET) revert VolatilityOracleNotSet();
         if (failure == RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL) revert VolatilityDeltaTooSmall();
     }
@@ -1092,6 +1306,14 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         view
         returns (RebalanceGuardFailure failure, uint256 currentVolatilityBps)
     {
+        SystemStatus valuationStatus = _getValuationOracleStatus();
+        if (valuationStatus == SystemStatus.ORACLE_STALE) {
+            return (RebalanceGuardFailure.VALUATION_ORACLE_STALE, 0);
+        }
+        if (valuationStatus == SystemStatus.ORACLE_DEVIATION) {
+            return (RebalanceGuardFailure.VALUATION_ORACLE_DEVIATION, 0);
+        }
+
         if (lastRebalance != 0 && 
             rebalanceConfig.minCooldown != 0 && 
             block.timestamp < lastRebalance + rebalanceConfig.minCooldown
@@ -1112,9 +1334,11 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             if (rebalanceConfig.minVolatilityDelta != 0) {
                 currentVolatilityBps = volatilityOracle.getVolatilityBps();
 
-                uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
-                if (delta < rebalanceConfig.minVolatilityDelta) {
-                    return (RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL, currentVolatilityBps);
+                if (lastRebalance != 0) {
+                    uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
+                    if (delta < rebalanceConfig.minVolatilityDelta) {
+                        return (RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL, currentVolatilityBps);
+                    }
                 }
             }
         }

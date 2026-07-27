@@ -21,7 +21,7 @@ This version includes:
 
 This version does not include:
 - multi-pair aggregation
-- staleness timeout policy beyond update gating
+- oracle-local staleness enforcement; the consuming vault applies its configured maximum price age
 - access control on `update()`
 - external keeper automation
 - fallback oracle logic
@@ -30,6 +30,7 @@ This version does not include:
 
 `V2TWAPOracle` implements:
 - `IPriceOracle.getPrices() -> (uint256 price0, uint256 price1)`
+- `IPriceOracle.lastUpdatedAt() -> uint256`
 
 Output contract:
 - configured `token0` is the base asset
@@ -70,6 +71,7 @@ Latest computed average:
 - `price0AverageX112`
 - `price1AverageX112`
 - `initialized`
+- `lastUpdatedAt`, set to the V2 pair observation timestamp used by the latest successful update
 
 ## Constructor Behavior
 
@@ -98,7 +100,11 @@ Important:
 5. Compute average price deltas in `UQ112x112`.
 6. Advance snapshot state to current cumulative/timestamp.
 7. Mark `initialized = true`.
-8. Emit `TwapUpdated(price0, price1, timeElapsed)` with token0-denominated 1e18 prices.
+8. Set `lastUpdatedAt` to the pair observation timestamp.
+9. Emit `TwapUpdated(price0, price1, timeElapsed)` with token0-denominated 1e18 prices.
+
+`lastUpdatedAt` intentionally records when the underlying pair observation was produced, not when
+the oracle transaction happened. A delayed oracle call therefore cannot make old pair data appear fresh.
 
 ## Read Behavior
 
@@ -160,6 +166,7 @@ These conditions should always hold:
 - both returned prices are denominated in configured token0
 - direct and reversed pair ordering produce the same output for the same economic price
 - successful update advances cumulative and timestamp snapshot
+- `lastUpdatedAt` equals the pair observation timestamp used by the latest successful update
 - second update window is computed from first update snapshot, not initial constructor snapshot
 - `getPrices()` never returns uninitialized values
 
@@ -173,6 +180,7 @@ Core tests should cover:
 - `update()` revert when no elapsed time
 - `update()` revert when interval too short
 - successful update average computation and 1e18 scaling
+- successful update records the pair observation timestamp as `lastUpdatedAt`
 - rolling-window snapshot advancement across multiple updates
 - token-decimal normalization
 - reversed pair-order base-denominated output

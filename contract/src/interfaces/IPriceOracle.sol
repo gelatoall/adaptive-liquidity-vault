@@ -9,4 +9,8 @@ interface IPriceOracle {
 	/// @return price0 Price of one whole token0 in token0, scaled by 1e18.
 	/// @return price1 Price of one whole token1 in token0, scaled by 1e18.
 	function getPrices() external view returns (uint256 price0, uint256 price1);
+
+	/// @notice Returns the timestamp of the latest successful price update.
+	/// @return timestamp Unix timestamp when the current prices were produced.
+	function lastUpdatedAt() external view returns (uint256 timestamp);
 }

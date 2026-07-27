@@ -4,8 +4,15 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import "../mocks/MockERC20.sol";
 import "../../src/AdaptiveLPVault.sol";
+import "../../src/interfaces/IPriceOracle.sol";
+import "../mocks/MockForwardingPriceOracle.sol";
 
 abstract contract VaultTestHelper is Test {
+    /// @notice Default oracle freshness window used by vault tests.
+    uint256 internal constant DEFAULT_MAX_PRICE_AGE = 1 days;
+
+    uint256 internal constant DEFAULT_MAX_PRICE_DEVIATION_BPS = 500;
+
     /// @notice Mints mock tokens, approves the vault, and deposits for the same user.
     /// @dev Use this helper for the common path where the token sender also receives the vault shares.
     /// For receiver-specific tests, use `_mintAndDepositToReceiver`.
@@ -62,5 +69,20 @@ abstract contract VaultTestHelper is Test {
         AdaptiveLPVault.VenueWithdrawalParams[] memory params
     ){
         params = new AdaptiveLPVault.VenueWithdrawalParams[](0);
+    }
+
+    function _configureMirroredPriceOracles(
+        AdaptiveLPVault vault,
+        IPriceOracle primaryOracle
+    ) internal returns (MockForwardingPriceOracle referenceOracle) {
+        referenceOracle = new MockForwardingPriceOracle(address(primaryOracle));
+
+        vault.setPriceOracleConfig(
+            address(primaryOracle),
+            DEFAULT_MAX_PRICE_AGE,
+            address(referenceOracle),
+            DEFAULT_MAX_PRICE_AGE,
+            DEFAULT_MAX_PRICE_DEVIATION_BPS
+        );
     }
 }

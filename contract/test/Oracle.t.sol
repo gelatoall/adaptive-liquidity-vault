@@ -137,8 +137,14 @@ contract OracleTest is Test {
         pair.setReserves(uint112(reserve0), uint112(reserve1)); // push pair timestamp forward
         pair.setCumulativePrices(cum0Now, cum1Now);
 
+        // Record when the pair data was actually updated.
+        (, , uint32 observationTimestamp) = pair.getReserves();
+        // Call the oracle later without refreshing the pair.
+        vm.warp(block.timestamp + 1 hours);
+
         oracle.update();
         
+        assertEq(oracle.lastUpdatedAt(), uint256(observationTimestamp));
         assertEq(oracle.price0AverageX112(), avg0X112);
         assertEq(oracle.price1AverageX112(), avg1X112);
         assertEq(oracle.price0CumulativeLast(), cum0Now);

@@ -46,7 +46,7 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         );
 
         oracle = new MockPriceOracle();
-        vault.setPriceOracle(address(oracle));
+        _configureMirroredPriceOracles(vault, oracle);
         oracle.setPrices(1e18, 1e18);
 
         // deploy pair/router/adapter

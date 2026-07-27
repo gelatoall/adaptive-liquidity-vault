@@ -32,7 +32,7 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         );
 
         oracle = new MockPriceOracle();
-        vault.setPriceOracle(address(oracle));
+        _configureMirroredPriceOracles(vault, oracle);
         oracle.setPrices(1e18, 1e18);
 
         strategy = new FixedWeightStrategy();

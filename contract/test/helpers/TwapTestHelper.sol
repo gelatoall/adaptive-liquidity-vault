@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import "forge-std/Test.sol";
 import "../mocks/MockERC20.sol";
 import "../mocks/MockUniswapV2Pair.sol";
+import "../mocks/MockForwardingPriceOracle.sol";
 import "../../src/oracles/V2TWAPOracle.sol";
 import "../../src/AdaptiveLPVault.sol";
 
@@ -23,8 +24,9 @@ abstract contract TwapTestHelper is Test {
 
         twapOracle = new V2TWAPOracle(address(twapPair), address(token0), address(token1), interval);
         
-        // Link the newly deployed oracle to the vault to override any existing mock oracles
-        vault.setPriceOracle(address(twapOracle));
+        // Mirror the TWAP oracle so existing integration tests focus on TWAP behavior.
+        MockForwardingPriceOracle referenceOracle = new MockForwardingPriceOracle(address(twapOracle));
+        vault.setPriceOracleConfig(address(twapOracle), 1 days, address(referenceOracle), 1 days, 500);
     }
 
     /** @dev Advances time and primes oracle. Formula: CumNow = CumLast + (avgPriceX112 * dt) */

@@ -52,7 +52,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         );
 
         oracle = new MockPriceOracle();
-        vault.setPriceOracle(address(oracle));
+        _configureMirroredPriceOracles(vault, oracle);
         oracle.setPrices(1e18, 1e18);
 
         // deploy V2 venue
