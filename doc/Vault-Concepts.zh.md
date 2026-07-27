@@ -1216,11 +1216,11 @@ function buildTargets(address vault, bytes calldata data)
   1. 检查 strategy 是否已配置
   2. 检查 `minCooldown`，如果不为 0
   3. 检查 `maxGasPrice`，如果不为 0
-  4. 检查 `minVolatilityDelta`，如果不为 0
+  4. 如果 `minVolatilityDelta` 不为 0 且已有有效 baseline，检查当前 volatility 与 baseline 的差值；否则由本次成功执行建立 baseline
   5. 调用 strategy 的 `buildTargets(...)`
   6. 把 strategy 返回的 targets 交给同一套 `_rebalance(...)` 执行，并把调用方传入的 withdrawal params 转发给旧 venue
   7. 成功后更新 `lastRebalance`
-  8. 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
+  8. 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps` 并把 baseline 标记为有效
 - 这表示 strategy 只负责“生成 plan”，vault 仍然负责校验和执行。
 - strategy 返回的 plan 不能绕过 vault 校验：
   - duplicate venue 会 revert
@@ -1410,7 +1410,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 仍然会复用同一套 rebalance value-loss guard
   - 受 `minCooldown` / `minVolatilityDelta` / `maxGasPrice` 限制
   - 成功后更新 `lastRebalance`
-  - 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps`
+  - 如果启用了 volatility guard，成功后更新 `lastRebalanceVolatilityBps` 并建立有效 baseline
 
 ### strategy rebalance guard
 - 当前 `rebalanceWithStrategy(...)` 有三类可选 guard：
@@ -1419,8 +1419,11 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - `minVolatilityDelta`：限制 volatility 变化太小时不执行
 - 其中 `minVolatilityDelta` 的逻辑是：
   1. 从 `volatilityOracle.getVolatilityBps()` 读取当前 volatility
-  2. 计算它和 `lastRebalanceVolatilityBps` 的绝对差值
-  3. 如果差值小于 `minVolatilityDelta`，就 revert `VolatilityDeltaTooSmall`
+  2. 如果 `volatilityBaselineInitialized == false`，不把当前值与默认值 `0` 比较；本次成功 rebalance 会把当前值记录为首个 baseline
+  3. 如果 baseline 已初始化，计算当前值和 `lastRebalanceVolatilityBps` 的绝对差值
+  4. 如果差值小于 `minVolatilityDelta`，就 revert `VolatilityDeltaTooSmall`
+- `lastRebalance != 0` 只说明以前执行过 strategy rebalance，不代表当时启用了 volatility delta guard，因此不能用它判断 baseline 是否有效。
+- 更换 volatility oracle，或者在 `0` 与非 `0` 之间切换 `minVolatilityDelta`，都会清除旧 baseline。
 - 如果 `minVolatilityDelta != 0`，必须先配置 `setVolatilityOracle(...)`。
 - 这些 guard 只作用于 `rebalanceWithStrategy(...)`。
 - owner 手动调用 `rebalance(targets, withdrawalParams)` 仍然是 manual override，不受这些 strategy guard 限制。

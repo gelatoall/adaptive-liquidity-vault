@@ -801,6 +801,7 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.lastRebalanceVolatilityBps(), 50);
+        assertTrue(vault.volatilityBaselineInitialized());
 
         // The new value differs from the baseline by only 30 bps,
         // below the configured 100 bps minimum.
@@ -814,6 +815,39 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+    }
+
+    /// @notice Enabling the delta guard after an earlier unguarded rebalance
+    ///         requires a new baseline instead of comparing against zero.
+    function test_VolatilityDelta_EnablingGuardResetsBaseline() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        uint256 liquidity = 10 ether;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.setStrategy(address(strategy));
+        vault.setVolatilityOracle(address(volatilityOracle));
+
+        // Execute once while the volatility delta guard is disabled.
+        strategy.setSingleTarget(V2_VENUE_ID, amount0, amount1, "");
+        routerV2.setNextAddLiquidityResult(amount0, amount1, liquidity);
+        vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
+
+        assertGt(vault.lastRebalance(), 0);
+        assertFalse(vault.volatilityBaselineInitialized());
+
+        // Enable a 100 bps delta guard while current volatility is only 50 bps.
+        volatilityOracle.setVolatilityBps(50);
+        vault.setRebalanceConfig(0, 100, 0);
+
+        // No valid baseline exists yet, so 50 must not be compared with zero.
+        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+
+        assertTrue(allowed);
+        assertEq(reason, "");
+        assertFalse(vault.volatilityBaselineInitialized());
+        assertEq(vault.lastRebalanceVolatilityBps(), 0);
     }
 
 }

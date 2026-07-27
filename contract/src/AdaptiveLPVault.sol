@@ -122,8 +122,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Volatility oracle used by strategy rebalance guards.
     IVolatilityOracle public volatilityOracle;
 
-    /// @notice Volatility recorded after the last successful strategy-driven rebalance.
+    /// @notice Volatility recorded after the last successful strategy rebalance executed with the delta guard enabled.
+    /// @dev This value is meaningful only while `volatilityBaselineInitialized` is true.
     uint256 public lastRebalanceVolatilityBps;
+
+    /// @notice Whether `lastRebalanceVolatilityBps` contains a valid baseline for the current oracle and guard lifecycle.
+    bool public volatilityBaselineInitialized;
 
     /// @notice Maximum allowed total-value loss during rebalance, in basis points. Zero disables the check.
     uint256 public maxRebalanceValueLossBps;
@@ -641,12 +645,18 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Sets the volatility oracle used by strategy rebalance guards.
+    /// @dev Replacing the oracle invalidates the previous volatility baseline because oracle methodologies may differ.
     /// @param _volatilityOracle Address of the volatility oracle contract.
     function setVolatilityOracle(address _volatilityOracle) external onlyOwner {
         if (_volatilityOracle == address(0)) {
             revert ZeroAddress();
         }
         volatilityOracle = IVolatilityOracle(_volatilityOracle);
+
+        // Values reported by the previous oracle are not valid baselines for the newly configured oracle.
+        volatilityBaselineInitialized = false;
+        lastRebalanceVolatilityBps = 0;
+
         emit SetVolatilityOracle(_volatilityOracle);
     }
 
@@ -672,10 +682,17 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Sets cooldown, volatility delta, and gas price guards for strategy-driven rebalances.
+    /// @dev Enabling or disabling the volatility delta guard invalidates the previous baseline.
     /// @param _minCooldown Minimum time between successful strategy-driven rebalances.
     /// @param _minVolatilityDelta Minimum volatility change required, or zero to disable.
     /// @param _maxGasPrice Maximum allowed transaction gas price, or zero to disable.
     function setRebalanceConfig(uint256 _minCooldown, uint256 _minVolatilityDelta, uint256 _maxGasPrice) external onlyOwner {
+        bool volatilityGuardToggled = (rebalanceConfig.minVolatilityDelta == 0) != (_minVolatilityDelta == 0);
+        if (volatilityGuardToggled) {
+            volatilityBaselineInitialized = false;
+            lastRebalanceVolatilityBps = 0;
+        }
+
         rebalanceConfig = RebalanceConfig({
             minCooldown: _minCooldown,
             minVolatilityDelta: _minVolatilityDelta,
@@ -854,7 +871,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         lastRebalance = block.timestamp;
 
         if (rebalanceConfig.minVolatilityDelta != 0) {
+            // A baseline becomes valid only after the guarded rebalance completes successfully.
             lastRebalanceVolatilityBps = currentVolatilityBps;
+            volatilityBaselineInitialized = true;
         }
 
         emit RebalanceWithStrategy(msg.sender, address(strategy), data);
@@ -1301,11 +1320,10 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @notice Returns the current strategy rebalance guard status without reverting.
-    function _getStrategyRebalanceGuardStatus()
-        internal
-        view
-        returns (RebalanceGuardFailure failure, uint256 currentVolatilityBps)
-    {
+    function _getStrategyRebalanceGuardStatus() internal view returns (
+        RebalanceGuardFailure failure,
+        uint256 currentVolatilityBps
+    ){
         SystemStatus valuationStatus = _getValuationOracleStatus();
         if (valuationStatus == SystemStatus.ORACLE_STALE) {
             return (RebalanceGuardFailure.VALUATION_ORACLE_STALE, 0);
@@ -1334,7 +1352,8 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
             if (rebalanceConfig.minVolatilityDelta != 0) {
                 currentVolatilityBps = volatilityOracle.getVolatilityBps();
 
-                if (lastRebalance != 0) {
+                // The first guarded rebalance establishes the baseline instead of comparing against a default zero value.
+                if (volatilityBaselineInitialized) {
                     uint256 delta = _absDiff(currentVolatilityBps, lastRebalanceVolatilityBps);
                     if (delta < rebalanceConfig.minVolatilityDelta) {
                         return (RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL, currentVolatilityBps);

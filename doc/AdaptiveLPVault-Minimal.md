@@ -172,6 +172,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure cooldown, volatility delta, and gas price guards for strategy-driven rebalances
+  - behavior: enabling or disabling the volatility delta guard clears any previously recorded volatility baseline
 
 - `setMaxRebalanceValueLossBps(maxRebalanceValueLossBps)`
   - purpose: configure the maximum total-value loss allowed during rebalance
@@ -339,11 +340,13 @@ The value-loss guard is downside-only. A rebalance that increases `totalAssets()
 
 1. Require the caller to be the owner or configured keeper.
 2. Require a configured strategy.
-3. Enforce `minCooldown`, `minVolatilityDelta`, and `maxGasPrice` when configured.
+3. Enforce `minCooldown` and `maxGasPrice`; enforce `minVolatilityDelta` only when a valid volatility baseline exists.
 4. Call `strategy.buildTargets(address(this), data)`.
 5. Execute the returned targets through the same internal rebalance flow, forwarding matching withdrawal params while exiting active venues.
 6. Update `lastRebalance` only after successful execution.
-7. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` after successful execution.
+7. If the volatility guard is enabled, update `lastRebalanceVolatilityBps` and mark the baseline initialized after successful execution.
+
+The first successful strategy rebalance after the volatility delta guard is enabled establishes the baseline and is not compared against Solidity's default zero value. Replacing the volatility oracle or toggling the delta guard invalidates the old baseline. `lastRebalance` is tracked separately because a rebalance performed while the delta guard was disabled does not create a volatility baseline.
 
 The keeper role is execution-only. It can trigger the already configured strategy path, but it cannot change oracles, strategies, venues, manual target plans, pause state, or emergency-exit behavior.
 

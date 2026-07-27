@@ -118,9 +118,11 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 
 - `setVolatilityOracle(volatilityOracle)`
   - purpose: configure the volatility oracle used by volatility delta guards
+  - behavior: clears the previous volatility baseline because a different oracle may use a different methodology or observation window
 
 - `setRebalanceConfig(minCooldown, minVolatilityDelta, maxGasPrice)`
   - purpose: configure strategy-driven rebalance guards
+  - behavior: switching `minVolatilityDelta` between disabled (`0`) and enabled (non-zero) clears the previous volatility baseline
 
 - `setMaxRebalanceValueLossBps(maxRebalanceValueLossBps)`
   - purpose: configure the maximum total-value loss allowed during rebalance
@@ -200,11 +202,13 @@ Flow:
 4. Vault checks `minCooldown` if it is non-zero.
 5. Vault checks `maxGasPrice` if it is non-zero.
 6. Vault requires a configured volatility oracle if `minVolatilityDelta` or optional oracle health checks are enabled.
-7. Vault checks `minVolatilityDelta` if it is non-zero.
+7. If `minVolatilityDelta` is non-zero and a baseline exists, vault compares current volatility with that baseline. Otherwise, the first successful guarded rebalance is allowed to establish the baseline.
 8. Vault calls `strategy.buildTargets(address(this), data)`.
 9. Vault executes the returned plan through the same internal rebalance flow used by manual `rebalance(targets, withdrawalParams)`, forwarding the caller-supplied withdrawal params to active venues.
 10. Vault updates `lastRebalance` only after successful execution.
-11. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` only after successful execution.
+11. If the volatility guard is enabled, vault updates `lastRebalanceVolatilityBps` and marks the baseline initialized only after successful execution.
+
+`lastRebalance` and volatility baseline initialization are separate concepts. A strategy rebalance may have succeeded while the delta guard was disabled, so a non-zero `lastRebalance` does not prove that `lastRebalanceVolatilityBps` contains a valid sample.
 
 If `maxRebalanceValueLossBps` is non-zero, strategy-driven rebalance also passes through the same post-execution value-loss guard.
 
