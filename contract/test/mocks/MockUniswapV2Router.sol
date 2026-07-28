@@ -25,9 +25,20 @@ contract MockUniswapV2Router is IUniswapV2Router {
     uint256 public lastRemoveAmountBMin;
     uint256 public lastRemoveDeadline;
 
+    /// @notice Whether the mock should revert remove-liquidity calls.
+    bool public revertOnRemoveLiquidity;
+
+    /// @notice Simulated venue failure used by emergency-exit isolation tests.
+    error MockRemoveLiquidityFailed();
+
     /// @param _pair LP token contract minted and burned by the router mock.
     constructor(MockUniswapV2Pair _pair) {
         pair = _pair;
+    }
+
+    /// @notice Configures whether removeLiquidity should revert.
+    function setRevertOnRemoveLiquidity(bool enabled) external {
+        revertOnRemoveLiquidity = enabled;
     }
 
     /// @notice Configures the next `addLiquidity` return values.
@@ -94,6 +105,10 @@ contract MockUniswapV2Router is IUniswapV2Router {
         address to,
         uint256 deadline
     ) external override returns (uint256 amountA, uint256 amountB) {
+        if (revertOnRemoveLiquidity) {
+            revert MockRemoveLiquidityFailed();
+        }
+
         lastRemoveAmountAMin = amountAMin;
         lastRemoveAmountBMin = amountBMin;
         lastRemoveDeadline = deadline;

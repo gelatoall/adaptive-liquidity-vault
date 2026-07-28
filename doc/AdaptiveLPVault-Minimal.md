@@ -209,8 +209,9 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - behavior: owner-only
 
 - `emergencyExit(withdrawalParams)`
-  - purpose: withdraw all tracked venue liquidity back to idle balances and pause the vault
-  - behavior: owner-only; can be called while already paused; forwards matching per-venue withdrawal params
+  - purpose: pause the vault and attempt to withdraw all tracked venue liquidity
+  - behavior: owner-only and processes each active venue through an isolated external self-call
+  - behavior: a failed venue remains deployed and emits `EmergencyExitFailed` while healthy venues continue exiting
 
 ## Core Flows
 
@@ -383,7 +384,7 @@ Paused state does not block exit-oriented operations:
 - `withdrawFromVenue`
 - `emergencyExit`
 
-`emergencyExit(withdrawalParams)` is an owner-only safety path. It iterates all registered venues, withdraws every venue with tracked liquidity, forwards matching withdrawal params to each adapter, and then pauses the vault. It intentionally does not call the normal `_rebalance(...)` path because emergency exit should not be blocked by normal rebalance semantics such as target validation or `NoRebalanceNeeded`.
+For fault-isolated recovery, the owner calls `emergencyExit(withdrawalParams)`. The function pauses the vault before making adapter calls and processes each active venue through an external self-call. `try/catch` keeps a reverting venue deployed, emits `EmergencyExitFailed`, and continues withdrawing healthy venues. The internal `_withdrawAllVenues(...)` function remains atomic because normal rebalances must fully succeed or revert.
 
 ## Failure Cases
 

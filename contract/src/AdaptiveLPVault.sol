@@ -216,9 +216,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     /// @notice Emitted after a strategy-driven rebalance executes successfully.
     event RebalanceWithStrategy(address indexed caller, address indexed strategy, bytes data);
 
-    /// @notice Emitted after the owner pulls venue liquidity back to idle and pauses the vault.
+    /// @notice Emitted after a best-effort emergency exit has attempted every active venue.
     event EmergencyExit(address indexed caller);
-    
+
+    /// @notice Emitted when one venue cannot be withdrawn during a best-effort emergency exit.
+    event EmergencyExitFailed(uint256 indexed venueId);
+
     // ============================================
     // Custom Errors
     // ============================================
@@ -344,6 +347,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when rebalance reduces total vault value beyond the configured guard.
     error ExcessiveRebalanceValueLoss();
+
+    /// @notice Thrown when an external caller invokes a function reserved for vault self-calls.
+    error OnlySelf();
 
     // ============================================
     // Modifiers
@@ -601,12 +607,37 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         _unpause();
     }
 
-    /// @notice Withdraws all venue liquidity back to the vault and pauses normal operations.
-    /// @dev Can be called even when the vault is already paused. Redeems remain available after emergency exit.
-    /// @param withdrawalParams Venue-specific remove-liquidity params used when exiting active positions.
+    /// @notice Withdraws all tracked liquidity from one venue through an isolated external call.
+    /// @dev Only callable by the vault itself to provide the call boundary required by `try/catch`.
+    ///      Successful withdrawals emit `WithdrawFromVenue`; failures revert only this subcall.
+    /// @param venueId Registered venue to withdraw from.
+    /// @param params Venue-specific remove-liquidity constraints.
+    function executeEmergencyExitVenue(uint256 venueId, bytes calldata params) external {
+        if (msg.sender != address(this)) revert OnlySelf();
+
+        _withdrawFromVenue(venueId, venueLiquidity[venueId], params, true);
+    }
+
+    /// @notice Pauses the vault and attempts to withdraw every active venue.
+    /// @dev Each venue executes through an isolated self-call. A failed venue remains deployed and
+    ///      emits `EmergencyExitFailed`, while the loop continues withdrawing healthy venues.
+    /// @param withdrawalParams Optional venue-specific remove-liquidity constraints.
     function emergencyExit(VenueWithdrawalParams[] calldata withdrawalParams) external onlyOwner nonReentrant {
-        _withdrawAllVenues(withdrawalParams);
-        _pause();
+        if (!paused()) {
+            _pause();
+        }
+
+        for (uint256 i = 0; i < venueIds.length; i++) {
+            uint256 id = venueIds[i];
+            if (venueLiquidity[id] == 0) continue;
+
+            bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
+            try this.executeEmergencyExitVenue(id, params) {
+                // Successful withdrawals emit WithdrawFromVenue.
+            } catch {
+                emit EmergencyExitFailed(id);
+            }
+        }
 
         emit EmergencyExit(msg.sender);
     }

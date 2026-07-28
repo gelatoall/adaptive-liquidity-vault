@@ -262,6 +262,48 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(adapterV3Low.tokenId(), 1);
     }
 
+    /// @notice Verifies a batch emergency exit skips a failing venue and withdraws a healthy venue.
+    function test_EmergencyExit_SkipsFailingVenue() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        uint256 v2Amount0 = 6 ether;
+        uint256 v2Amount1 = 12e6;
+        uint256 v2Liquidity = 3 ether;
+
+        uint256 v3Amount0 = 4 ether;
+        uint256 v3Amount1 = 8e6;
+
+        // Deposit funds and deploy them across V2 and V3.
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
+        assertTrue(adapterV2.hasPosition());
+        assertTrue(adapterV3Low.hasPosition());
+        assertFalse(vault.paused());
+
+        // Simulate a broken V2 venue and verify its isolated exit fails.
+        routerV2.setRevertOnRemoveLiquidity(true);
+        // Configure the healthy V3 venue to return its underlying tokens.
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, v3Amount0, v3Amount1);
+        positionManagerV3Low.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
+        vault.emergencyExit(_emptyWithdrawalParams());
+
+        // Failed V2 remains deployed while healthy V3 returns to idle.
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.totalLiquidity(), v2Liquidity);
+
+        assertTrue(adapterV2.hasPosition());
+        assertFalse(adapterV3Low.hasPosition());
+
+        assertEq(token0.balanceOf(address(vault)), v3Amount0);
+        assertEq(token1.balanceOf(address(vault)), v3Amount1);
+        assertTrue(vault.paused());
+    }
+
     function test_TotalAssets_SumsIdleAndAllVenues() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 

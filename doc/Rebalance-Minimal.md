@@ -34,7 +34,7 @@ This version includes:
 - deployment into one or more venues after withdrawal
 - optional total-value loss guard after rebalance execution
 - pause protection on normal rebalance entrypoints
-- emergency exit path that withdraws all venues to idle and pauses the vault
+- fault-isolated emergency exit that withdraws one venue per transaction after the vault is paused
 - no-op or revert semantics when no funds can be moved
 
 This version does not include:
@@ -53,7 +53,7 @@ Notes:
 - manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
 - `rebalanceWithStrategy(data, withdrawalParams)` can be called by the owner or configured keeper; the keeper cannot configure strategy, venues, or manual target plans.
 - normal `rebalance(...)` and `rebalanceWithStrategy(...)` are blocked while the vault is paused.
-- `emergencyExit(...)` is the paused-safe emergency path for pulling venue liquidity back to idle balances.
+- `emergencyExit(withdrawalParams)` pauses the vault and attempts each active venue independently, skipping venues that revert.
 
 ## Data Model
 
@@ -165,8 +165,9 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
   - behavior: forwards venue-specific removal params to the adapter
 
 - `emergencyExit(withdrawalParams)`
-  - purpose: withdraw all tracked venue liquidity to idle balances and pause the vault
-  - behavior: can be called while already paused and does not execute the normal rebalance target flow
+  - purpose: pause the vault and attempt to return all venue liquidity to idle balances
+  - behavior: collects claimable tokens and removes all tracked liquidity from each healthy venue
+  - behavior: isolates each venue through an external self-call, records failed venues, and continues the batch
 
 ## Manual vs Strategy Rebalance
 
@@ -346,16 +347,16 @@ The value-loss guard is downside-only. It should not reject a positive `totalAss
 
 ### emergency exit
 
-`emergencyExit(withdrawalParams)` is separate from normal rebalance.
+Emergency recovery uses a best-effort batch:
 
-Flow:
 1. Owner calls `emergencyExit(withdrawalParams)`.
-2. Vault iterates all registered venues.
-3. For each venue with tracked liquidity, vault forwards matching withdrawal params to the adapter and removes all tracked liquidity.
-4. Vault pauses normal operations.
-5. Users can still redeem after the emergency exit because `redeem` is not gated by `whenNotPaused`.
+2. The vault pauses before making adapter calls.
+3. Each active venue executes through an isolated external self-call.
+4. Successful venues collect claimable tokens and remove all tracked liquidity.
+5. A reverting venue emits `EmergencyExitFailed` and remains deployed while the loop continues.
+6. Users can still redeem while paused because `redeem` is not gated by `whenNotPaused`.
 
-This path intentionally bypasses target validation and redeployment. It is for reducing venue exposure during an incident, not for normal allocation changes.
+The self-call boundary allows `try/catch` to roll back only the failing venue. `_withdrawAllVenues(...)` remains an internal primitive for atomic normal rebalance execution, where any failed venue must revert the complete rebalance.
 
 ### rebalance to one venue
 

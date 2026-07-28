@@ -240,14 +240,19 @@
   - `withdrawFromVenue`
   - `emergencyExit`
 
-`emergencyExit(withdrawalParams)` 的作用是：
-- 遍历所有 registered venue
-- 把有 tracked liquidity 的 active position 全部撤回 vault idle balance
-- 然后暂停 vault
+应急退出使用 best-effort 批量隔离流程：
+1. owner 调用 `emergencyExit(withdrawalParams)`
+2. vault 在调用 adapter 前进入 paused 状态
+3. 每个 active venue 通过独立的 external self-call 尝试退出
+4. 某个 venue revert 时记录 `EmergencyExitFailed`，保留该仓位并继续退出其他健康 venue
+
+成功的 venue 会先收取可领取 token，再撤出其全部 tracked liquidity。`try/catch` 的 external self-call 边界保证普通 revert 只回滚当前 venue 的子调用。
+
+`_withdrawAllVenues(...)` 仍用于需要原子性的正常 rebalance；该路径中任意 venue 失败都应回滚整个 rebalance，不使用 best-effort 语义。
 
 它和普通 `rebalance` 的区别是：
 - `rebalance` 是正常运营，用来调整资产分配
-- `emergencyExit` 是应急路径，只负责把资金从 venue 拉回 idle 并暂停
+- `emergencyExit` 是自动暂停并逐 venue 隔离失败的应急恢复路径
 
 ### Oracle Circuit Breaker
 - `checkSystemHealth()` 是给 keeper / monitoring 看的健康状态接口。
@@ -265,7 +270,7 @@
 - `deposit()` 和 `totalAssets()` 会在 oracle 未配置、价格为 `0`、时间戳无效、价格过期或双源偏差超限时 revert。
 - 手动 `rebalance(...)` 和 `rebalanceWithStrategy(...)` 同样受 valuation oracle 熔断保护。
 - `redeem()` 不依赖价格估值，因此暂停、价格过期或双源偏差超限时仍允许用户按份额退出。
-- `emergencyExit` 不应该被 `whenNotPaused` 限制，因为 vault 已经 paused 时也可能还需要继续尝试撤仓
+- `emergencyExit` 会先暂停 vault，再通过 self-call 和 `try/catch` 逐 venue 尝试撤仓
 
 ### Keeper 执行权限
 - 当前 vault 支持配置一个 `keeper` 地址。

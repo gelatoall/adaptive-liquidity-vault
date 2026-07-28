@@ -232,14 +232,14 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertEq(pair.balanceOf(address(adapter)), 0);
     }
 
-    /// @notice Verifies only the vault owner can trigger the emergency exit path.
+    /// @notice Verifies only the vault owner can execute a batch emergency exit.
     function test_EmergencyExit_RevertsWhenCallerIsNotOwner() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         vault.emergencyExit(_emptyWithdrawalParams());
     }
 
-    /// @notice Verifies emergency exit withdraws active V2 liquidity to idle balances and pauses the vault.
+    /// @notice Verifies emergency exit withdraws an active V2 position and pauses the vault.
     function test_EmergencyExit_WithdrawsV2PositionAndPauses() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
