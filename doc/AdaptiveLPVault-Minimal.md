@@ -79,7 +79,7 @@ The vault stores:
 Venue state:
 - `venues[venueId]` stores the adapter, enabled flag, and optional label
 - `venueRegistered[venueId]` tracks whether a venue id has been registered
-- `venueIds` is used to iterate all registered venues in `totalAssets()` and withdrawal flows
+- `venueIds` is used to iterate all registered venues in `totalAssets()` and withdrawal flows; removal uses swap-and-pop, so ordering is not stable
 - `venueLiquidity[venueId]` tracks liquidity reported by each adapter
 - `venueValuators[venueId]` stores the trusted accounting valuator bound to the venue's current adapter
 - `totalLiquidity` is bookkeeping only; liquidity units can differ across venues and should not be treated as asset value
@@ -112,6 +112,13 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: register or update a venue adapter
   - behavior: updating an existing venue is blocked while that venue has tracked liquidity or adapter-reported position state
   - behavior: replacing an inactive venue's adapter clears its previous adapter-specific valuator
+
+- `removeVenue(venueId)`
+  - purpose: remove an obsolete venue from the iterable registry
+  - behavior: owner-only; requires the venue to be disabled with no tracked liquidity or adapter-reported position
+  - behavior: clears the adapter configuration, registration state, tracked liquidity, and valuator
+  - behavior: uses swap-and-pop, so callers must not rely on stable `venueIds` ordering
+  - behavior: the same id may be registered again later through `setVenue(...)` without inheriting the old valuator
 
 - `setVenueValuator(venueId, valuator)`
   - purpose: configure the trusted accounting valuator used by `totalAssets()` for an active venue position

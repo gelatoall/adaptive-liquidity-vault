@@ -148,6 +148,7 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     mapping(uint256 => IVenueValuator) public venueValuators;
     
     /// @notice List of registered venue ids used for iteration.
+    /// @dev Venue removal uses swap-and-pop, so list ordering is not stable.
     uint256[] public venueIds;
 
     /// @notice Sum of adapter-reported liquidity across all venues.
@@ -186,6 +187,9 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when the owner registers or updates a venue.
     event SetVenue(uint256 indexed venueId, address indexed adapter, bytes32 label, bool enabled);
+
+    /// @notice Emitted when an inactive venue is removed from the registry.
+    event RemoveVenue(uint256 indexed venueId, address indexed adapter);
 
     /// @notice Emitted when the trusted valuator for a venue is updated or cleared.
     /// @dev A zero valuator means the previous adapter-specific valuator was cleared.
@@ -296,6 +300,12 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when a requested venue id is not registered or has no adapter configured.
     error VenueNotSet();
+
+    /// @notice Thrown when attempting to remove a venue that is still enabled.
+    error VenueMustBeDisabled();
+
+    /// @notice Thrown when venue registration state and the iterable venue list disagree.
+    error VenueRegistryInconsistent(uint256 venueId);
 
     /// @notice Thrown when an active venue has no trusted accounting valuator.
     error VenueValuatorNotSet(uint256 venueId);
@@ -552,6 +562,11 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         (total0, total1) = _getTotalUnderlying();
     }
 
+    /// @notice Returns the number of currently registered venues.
+    function venueCount() external view returns (uint256) {
+        return venueIds.length;
+    }
+
     /// @notice Returns the current vault health status used by offchain keepers and monitoring.
     /// @dev Reports stale or invalid valuation data as `ORACLE_STALE`, excessive primary/reference
     ///      price divergence as `ORACLE_DEVIATION`, and gives pause state the highest priority.
@@ -786,6 +801,31 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
         emit SetVenue(_venueId, _adapter, _label, _enabled);
     }
 
+    /// @notice Removes a disabled venue with no tracked or adapter-reported position.
+    /// @dev Clears the venue configuration, registration state, tracked liquidity, and valuator.
+    ///      Removing a venue may change the ordering of `venueIds`.
+    /// @param _venueId Registered venue id to remove.
+    function removeVenue(uint256 _venueId) external onlyOwner {
+        if (!venueRegistered[_venueId]) revert VenueNotSet();
+
+        VenueConfig storage currentVenue = venues[_venueId];
+        address adapter = address(currentVenue.adapter);
+
+        if (venueLiquidity[_venueId] != 0 || (adapter != address(0) && currentVenue.adapter.hasPosition())) {
+            revert ActivePositionExists();
+        }
+
+        if (currentVenue.enabled) revert VenueMustBeDisabled();
+
+        _removeVenueId(_venueId);
+        delete venues[_venueId];
+        delete venueRegistered[_venueId];
+        delete venueLiquidity[_venueId];
+        delete venueValuators[_venueId];
+
+        emit RemoveVenue(_venueId, adapter);
+    }
+
     /// @notice Configures the trusted accounting valuator for a registered venue.
     /// @dev The valuator must declare the venue's current adapter, preventing stale or cross-venue configuration.
     /// @param _venueId Registered venue whose active position will be valued.
@@ -913,6 +953,25 @@ contract AdaptiveLPVault is ERC20, Ownable, ReentrancyGuard, Pausable {
     // ============================================
     // Internal Functions
     // ============================================
+    /// @notice Removes a venue id from the iterable registry using swap-and-pop.
+    /// @dev Reverts if registration state and the iterable venue list are inconsistent.
+    /// @param _venueId Registered venue id to remove.
+    function _removeVenueId(uint256 _venueId) internal {
+        uint256 length = venueIds.length;
+
+        for (uint256 i = 0; i < length; i++) {
+            if (venueIds[i] != _venueId) continue;
+
+            uint256 lastIndex = length - 1;
+            if (i != lastIndex) {
+                venueIds[i] = venueIds[lastIndex];
+            }
+            venueIds.pop();
+            return;
+        }
+        revert VenueRegistryInconsistent(_venueId);
+    }
+
     /// @notice Returns matching withdrawal params for a venue, or empty bytes when none are supplied.
     function _getVenueWithdrawalParams(
         uint256 venueId,

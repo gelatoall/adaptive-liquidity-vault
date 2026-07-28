@@ -186,6 +186,34 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         vault.setVenue(V2_VENUE_ID, address(newAdapter), bytes32("V2_NEW"), true);
     }
 
+    /// @notice Verifies a disabled inactive venue and its configuration can be removed.
+    function test_RemoveVenue_RemovesDisabledInactiveVenue() public {
+        // setUp registers [V2, V3_LOW].
+        assertEq(vault.venueCount(), 2);
+        assertEq(vault.venueIds(0), V2_VENUE_ID);
+        assertEq(vault.venueIds(1), V3_LOW_VENUE_ID);
+
+        // A venue must be disabled before removal.
+        vault.setVenue(V2_VENUE_ID, address(adapterV2), V2_LABEL, false);
+        vault.removeVenue(V2_VENUE_ID);
+
+        // V2 registry and associated configuration are cleared.
+        assertFalse(vault.venueRegistered(V2_VENUE_ID));
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(address(vault.venueValuators(V2_VENUE_ID)), address(0));
+        (IVenueAdapter removedAdapter,bool removedEnabled, bytes32 removedLabel) = vault.venues(V2_VENUE_ID);
+        assertEq(address(removedAdapter), address(0));
+        assertFalse(removedEnabled);
+        assertEq(removedLabel, bytes32(0));
+
+        // Swap-and-pop moves V3_LOW into the removed V2 slot.
+        assertEq(vault.venueCount(), 1);
+        assertEq(vault.venueIds(0), V3_LOW_VENUE_ID);
+        // The remaining venue is unaffected.
+        assertTrue(vault.venueRegistered(V3_LOW_VENUE_ID));
+        assertEq(address(vault.venueValuators(V3_LOW_VENUE_ID)), address(valuatorV3));
+    }
+
     function test_DeployToVenue_TracksPerVenueLiquidity() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 

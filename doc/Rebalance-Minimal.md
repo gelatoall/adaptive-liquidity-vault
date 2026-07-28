@@ -155,6 +155,12 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
   - purpose: register or update a venue adapter
   - behavior: updating an active venue is blocked
 
+- `removeVenue(venueId)`
+  - purpose: remove an obsolete venue from the iterable registry
+  - behavior: requires the venue to be disabled and have no tracked or adapter-reported position
+  - behavior: clears the venue configuration and valuator
+  - behavior: uses swap-and-pop, so `venueIds` ordering may change
+
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: manually deploy idle funds into a specific venue
   - behavior: blocked while the vault is paused

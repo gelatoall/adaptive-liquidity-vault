@@ -1159,12 +1159,19 @@
 
 ### venue registry
 - 每个 venue 通过 `setVenue(venueId, adapter, label, enabled)` 注册。
+- 不再使用的 venue 可以通过 `removeVenue(venueId)` 注销：
+  - 必须先 disabled
+  - 必须没有 tracked liquidity
+  - adapter 必须没有 active position
+  - 删除会清理 adapter 配置、注册状态、tracked liquidity 和 valuator
+  - 相同 id 之后可以重新注册，但不会继承旧 valuator
 - vault 里维护：
   - `venues[venueId]`
   - `venueRegistered[venueId]`
   - `venueIds`
   - `venueLiquidity[venueId]`
   - `totalLiquidity`
+- `venueIds` 删除使用 swap-and-pop，因此数组顺序不稳定；前端应通过 `venueCount()` 获取当前长度后按索引读取，不能依赖固定顺序。
 - `totalLiquidity` 只是 bookkeeping：
   - 它说明当前是否有 tracked liquidity
   - 但不同 venue 的 liquidity 单位不一定可比
@@ -1508,6 +1515,7 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
 - `rebalanceWithStrategy()` 可以由 owner 或 configured keeper 调用
 - keeper 是 execution-only，不能修改 strategy、oracle、venue，也不能执行 emergency 管理操作
 - `setVenue()` 在目标 venue 仍有 tracked liquidity 或 adapter-reported position 时会 revert
+- `removeVenue()` 只允许注销 disabled 且无仓位的 venue，并会将其从 `venueIds` 中移除
 - `rebalance()` 会拒绝 duplicate venue target
 - `rebalance()` 会拒绝 unset 或 disabled venue
 - `rebalance()` 会拒绝超过可用余额的 target plan
