@@ -6,29 +6,46 @@ import "../interfaces/ISlippageController.sol";
 import "../interfaces/IUniswapV3Pool.sol";
 import "../libraries/RebalanceTypes.sol";
 import "../libraries/V3TwapLib.sol";
+import "../adapters/UniswapV3Adapter.sol";
 
 /// @notice Computes min amounts and blocks execution when V3 spot price deviates too far from TWAP.
 contract TwapSlippageController is ISlippageController, Ownable {
-    /// @notice V3 pool expected for each target venue id.
-    mapping(uint256 => address) public venuePools;
+    /// @notice V3 adapter configured for each venue id.
+    mapping(uint256 => address) public override venueAdapters;
 
-    /// @notice Emitted when a venue id is bound to a V3 pool for TWAP validation.
-    event SetVenuePool(uint256 indexed venueId, address indexed pool);
+    /// @notice Emitted when a venue is bound to its V3 adapter and validation pool.
+    event SetVenueAdapter(
+        uint256 indexed venueId,
+        address indexed adapter,
+        address indexed pool
+    );
 
     error InvalidBps();
     error ZeroAddress();
     error ExcessiveTwapDeviation();
-    error VenuePoolNotSet();
-    error InvalidVenuePool();
+    error InvalidVenueAdapter();
+    error VenueAdapterNotSet();
 
     constructor() Ownable(msg.sender) {}
 
-    /// @notice Binds a venue id to the V3 pool used for spot/TWAP validation.
-    function setVenuePool(uint256 venueId, address pool) external onlyOwner {
-        if (pool == address(0)) revert ZeroAddress();
+    /// @notice Binds a venue id to the V3 adapter used for spot/TWAP validation.
+    /// @dev Reads the validation pool from the adapter instead of accepting a caller-supplied pool.
+    function setVenueAdapter(uint256 venueId, address adapter) external onlyOwner {
+        if (adapter == address(0)) revert ZeroAddress();
 
-        venuePools[venueId] = pool;
-        emit SetVenuePool(venueId, pool);
+        IUniswapV3Pool pool;
+        try UniswapV3Adapter(adapter).pool() returns (IUniswapV3Pool adapterPool) {
+            pool = adapterPool;
+        } catch {
+            revert InvalidVenueAdapter();
+        }
+
+        if (address(pool) == address(0)) {
+            revert InvalidVenueAdapter();
+        }
+
+        venueAdapters[venueId] = adapter;
+        emit SetVenueAdapter(venueId, adapter, address(pool));
     }
 
     /// @inheritdoc ISlippageController
@@ -39,11 +56,12 @@ contract TwapSlippageController is ISlippageController, Ownable {
         SlippageParams calldata params
     ) external view returns (uint256 minAmount0, uint256 minAmount1) {
         if (params.maxSlippageBps > RebalanceTypes.BPS) revert InvalidBps();
-        
-        address expectedPool = venuePools[targetVenueId];
-        if (expectedPool == address(0)) revert VenuePoolNotSet();
-        if (params.pool != expectedPool) revert InvalidVenuePool();
-        IUniswapV3Pool pool = IUniswapV3Pool(expectedPool);
+
+        address adapter = venueAdapters[targetVenueId];
+        if (adapter == address(0)) {
+            revert VenueAdapterNotSet();
+        }
+        IUniswapV3Pool pool = UniswapV3Adapter(adapter).pool();
 
         uint256 spotPrice = V3TwapLib.getSpotPrice(pool);
         uint256 twapPrice = V3TwapLib.getTwapPrice(pool, params.twapWindow);

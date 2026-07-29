@@ -6,6 +6,7 @@ import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../interfaces/IVolatilityOracle.sol";
 import "../interfaces/ISlippageController.sol";
+import "../interfaces/IVenueAdapter.sol";
 import "../adapters/UniswapV3Adapter.sol";
 import "./V3TickCalculations.sol";
 
@@ -52,7 +53,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     event SetSlippageController(address indexed controller);
 
     /// @notice Emitted when a venue's slippage inputs are configured.
-    event SetVenueSlippageParams(uint256 indexed venueId, uint256 maxSlippageBps, uint32 twapWindow, address indexed pool);
+    event SetVenueSlippageParams(uint256 indexed venueId, uint256 maxSlippageBps, uint32 twapWindow);
     
     error ZeroAddress();
     error ZeroWeight();
@@ -63,6 +64,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     error InvalidBps();
     error InvalidTwapWindow();
     error SlippageParamsNotSet();
+    error SlippageControllerAdapterMismatch();
 
     // ============================================
     // Constructor
@@ -123,7 +125,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
                 venueId: configs[i].venueId,
                 amount0: amount0,
                 amount1: amount1,
-                params: _buildTargetParams(configs[i], volatilityBps, amount0, amount1)
+                params: _buildTargetParams(targetVault, configs[i], volatilityBps, amount0, amount1)
             });
         }
     }
@@ -215,10 +217,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
     ) external onlyOwner {
         if (params.maxSlippageBps > RebalanceTypes.BPS) revert InvalidBps();
         if (params.twapWindow == 0) revert InvalidTwapWindow();
-        if (params.pool == address(0)) revert ZeroAddress();
         venueSlippageParams[venueId] = params;
         
-        emit SetVenueSlippageParams(venueId, params.maxSlippageBps, params.twapWindow, params.pool); 
+        emit SetVenueSlippageParams(venueId, params.maxSlippageBps, params.twapWindow);
     }
 
     // ============================================
@@ -234,6 +235,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
 
     /// @notice Returns static params or generated dynamic V3 tick and slippage params for a target config.
     function _buildTargetParams(
+        AdaptiveLPVault targetVault,
         RebalanceTypes.TargetConfig memory config, 
         uint256 volatilityBps,
         uint256 amount0,
@@ -244,7 +246,7 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
             return config.params;
         }
 
-        (uint256 amount0Min, uint256 amount1Min) = _calculateMinAmounts(config.venueId, amount0, amount1);
+        (uint256 amount0Min, uint256 amount1Min) = _calculateMinAmounts(targetVault, config.venueId, amount0, amount1);
         (int24 tickLower, int24 tickUpper) = calculator.calculateTickRange(volatilityBps);
         return abi.encode(UniswapV3Adapter.LiquidityParams({
             amount0Min: amount0Min,
@@ -255,8 +257,10 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         }));
     }
 
-    /// @notice Returns controller-computed minimum amounts, or zero minimums when slippage control is not configured.
+    /// @notice Returns V3 controller-computed minimum amounts after verifying the vault and controller adapter match.
+    /// @dev Returns zero minimums when no slippage controller is configured.
     function _calculateMinAmounts(
+        AdaptiveLPVault targetVault,
         uint256 venueId, 
         uint256 amount0, 
         uint256 amount1
@@ -266,10 +270,14 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
         }
 
         ISlippageController.SlippageParams memory params = venueSlippageParams[venueId];
-        if (params.pool == address(0)) {
+        if (params.twapWindow == 0) {
             revert SlippageParamsNotSet();
         }
 
-        return slippageController.calculateMinAmounts(venueId, amount0, amount1, params);  
+        (IVenueAdapter vaultAdapter,,) = targetVault.venues(venueId);
+        address controllerAdapter = slippageController.venueAdapters(venueId);
+        if (address(vaultAdapter) != controllerAdapter) revert SlippageControllerAdapterMismatch();
+
+        return slippageController.calculateMinAmounts(venueId, amount0, amount1, params);
     }
 }

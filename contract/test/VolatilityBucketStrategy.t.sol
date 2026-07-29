@@ -12,6 +12,7 @@ import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockVolatilityOracle.sol";
 import "./mocks/MockUniswapV3Pool.sol";
+import "./mocks/MockNonfungiblePositionManager.sol";
 import "./helpers/VaultTestHelper.sol";
 import "./helpers/VenueTestHelper.sol";
 
@@ -133,20 +134,32 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         pool.setTwapTick(199);
         vm.warp(1800);
 
+        MockNonfungiblePositionManager positionManager = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterV3 = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(pool),
+            -600,
+            600
+        );
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterV3), V3_LOW_LABEL, true);
+
         V3TickCalculations calculations = new V3TickCalculations(address(pool));
         strategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
 
         volatilityOracle.setVolatilityBps(49); // low volatility => tickRange = 200
 
         TwapSlippageController slippageController = new TwapSlippageController();
-        slippageController.setVenuePool(V3_LOW_VENUE_ID, address(pool));
+        slippageController.setVenueAdapter(V3_LOW_VENUE_ID, address(adapterV3));
+
         strategy.setSlippageController(address(slippageController));
         strategy.setVenueSlippageParams(
             V3_LOW_VENUE_ID, 
             ISlippageController.SlippageParams({
                 maxSlippageBps: 50,
-                twapWindow: 1800,
-                pool: address(pool)
+                twapWindow: 1800
             })
         );
 
@@ -164,6 +177,63 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         // With spacing 60, outward rounding produces [-60, 420].
         assertEq(params.tickLower, -60);
         assertEq(params.tickUpper, 420);
+    }
+
+    /// @notice Target construction rejects a controller bound to a different adapter than the vault venue.
+    function test_BuildTargets_RevertsWhenControllerAdapterDoesNotMatchVaultVenue() public {
+        uint24 fee = 3000;
+
+        _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
+
+        _setLowBucketTargets();
+        volatilityOracle.setVolatilityBps(49);
+
+        // poolA belongs to the adapter actually registered by the vault.
+        MockUniswapV3Pool poolA = new MockUniswapV3Pool(address(token0), address(token1), fee);
+        // poolB represents an unrelated V3 venue.
+        MockUniswapV3Pool poolB = new MockUniswapV3Pool(address(token0), address(token1), fee);
+        MockNonfungiblePositionManager positionManager = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterA = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(poolA),
+            -600,
+            600
+        );
+        UniswapV3Adapter adapterB = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(poolB),
+            -600,
+            600
+        );
+
+        // The vault records adapterA as the actual V3_LOW venue.
+        vault.setVenue(V3_LOW_VENUE_ID, address(adapterA), V3_LOW_LABEL, true);
+
+        V3TickCalculations calculations = new V3TickCalculations(address(poolA));
+        strategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
+
+        TwapSlippageController controller = new TwapSlippageController();
+        // Deliberate configuration error: controller points to adapterB.
+        controller.setVenueAdapter(V3_LOW_VENUE_ID, address(adapterB));
+        strategy.setSlippageController(address(controller));
+
+        strategy.setVenueSlippageParams(
+            V3_LOW_VENUE_ID,
+            ISlippageController.SlippageParams({
+                maxSlippageBps: 50,
+                twapWindow: 1800
+            })
+        );
+
+        vm.expectRevert(VolatilityBucketStrategy.SlippageControllerAdapterMismatch.selector);
+
+        strategy.buildTargets(address(vault), "");
     }
 
     /// @notice Medium volatility selects the configured medium-bucket allocation.

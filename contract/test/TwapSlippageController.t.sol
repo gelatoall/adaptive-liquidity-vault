@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "../src/interfaces/ISlippageController.sol";
 import "../src/slippage/TwapSlippageController.sol";
+import "../src/adapters/UniswapV3Adapter.sol";
+import "./mocks/MockNonfungiblePositionManager.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockUniswapV3Pool.sol";
 import "./helpers/VenueTestHelper.sol";
@@ -16,22 +18,34 @@ contract TwapSlippageControllerTest is Test, VenueTestHelper {
     MockERC20 public token1;
     MockUniswapV3Pool public pool;
     TwapSlippageController public slippageController;
+    MockNonfungiblePositionManager public positionManager;
+    UniswapV3Adapter public adapter;
 
     function setUp() public {
         token0 = new MockERC20("Token0", "TK0", 18);
         token1 = new MockERC20("token1", "TK1", 6);
         uint24 feeTier = 3000;  // 0.30% fee
         pool = new MockUniswapV3Pool(address(token0), address(token1), feeTier);
+        positionManager = new MockNonfungiblePositionManager();
+        adapter = new UniswapV3Adapter(
+            address(this),
+            address(token0),
+            address(token1),
+            address(positionManager),
+            address(pool),
+            -600,
+            600
+        );
+
         slippageController = new TwapSlippageController();
-        slippageController.setVenuePool(V3_LOW_VENUE_ID, address(pool));
+        slippageController.setVenueAdapter(V3_LOW_VENUE_ID, address(adapter));
         vm.warp(TWAP_WINDOW);
     }
 
     function _slippageParams(uint256 _maxSlippageBps) internal view returns (ISlippageController.SlippageParams memory){
         return ISlippageController.SlippageParams({
             maxSlippageBps: _maxSlippageBps,      
-            twapWindow: TWAP_WINDOW,
-            pool: address(pool)
+            twapWindow: TWAP_WINDOW
         });
     }
 
@@ -57,17 +71,10 @@ contract TwapSlippageControllerTest is Test, VenueTestHelper {
         slippageController.calculateMinAmounts(V3_LOW_VENUE_ID, 100 ether, 20_000e6, _slippageParams(50));
     }
 
-    /// @notice The target venue id must match the pool used for TWAP validation.
-    function test_CalculateMinAmounts_RevertsWhenPoolDoesNotMatchVenue() public {
-        MockUniswapV3Pool otherPool = new MockUniswapV3Pool(address(token0), address(token1), 500);
-        ISlippageController.SlippageParams memory otherParams = ISlippageController.SlippageParams({
-            maxSlippageBps: 50,      
-            twapWindow: TWAP_WINDOW,
-            pool: address(otherPool)
-        });
-
-        vm.expectRevert(TwapSlippageController.InvalidVenuePool.selector);
-        slippageController.calculateMinAmounts(V3_LOW_VENUE_ID, 100 ether, 20_000e6, otherParams);
+    /// @notice A venue without a bound V3 adapter cannot request TWAP-validated minimum amounts.
+    function test_CalculateMinAmounts_RevertsWhenVenueAdapterNotSet() public {
+        vm.expectRevert(TwapSlippageController.VenueAdapterNotSet.selector);
+        slippageController.calculateMinAmounts(V3_MID_VENUE_ID, 100 ether, 20_000e6, _slippageParams(50));
     }
 
     function test_CalculateMinAmounts_RevertsWhenBpsExceedsMax() public {

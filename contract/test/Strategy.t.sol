@@ -729,14 +729,13 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         V3TickCalculations calculations = new V3TickCalculations(address(pool));
         volatilityStrategy.setV3TickCalculations(V3_LOW_VENUE_ID, address(calculations));
 
-        slippageController.setVenuePool(V3_LOW_VENUE_ID, address(pool));
+        slippageController.setVenueAdapter(V3_LOW_VENUE_ID, address(adapterV3));
         volatilityStrategy.setSlippageController(address(slippageController));
         volatilityStrategy.setVenueSlippageParams(
             V3_LOW_VENUE_ID, 
             ISlippageController.SlippageParams({
                 maxSlippageBps: 50,
-                twapWindow: 1800,
-                pool: address(pool)
+                twapWindow: 1800
             })
         );
 

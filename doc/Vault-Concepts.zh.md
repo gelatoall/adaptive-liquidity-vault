@@ -1312,7 +1312,8 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   - 把返回的 `tickLower/tickUpper` 编码进 `UniswapV3Adapter.LiquidityParams`
   - 使用 `deadline = block.timestamp`
   - 如果配置了 `TwapSlippageController` 和该 venue 的 slippage params，则动态计算 `amount0Min/amount1Min`
-  - 如果没有配置 slippage controller 或该 venue 的 slippage params，则保持兼容默认值 `amount0Min = 0`、`amount1Min = 0`
+  - 如果没有配置 slippage controller，则保持兼容默认值 `amount0Min = 0`、`amount1Min = 0`
+  - 如果已经配置 controller，但动态 V3 target 缺少对应的 venue slippage params，则 revert
 - 这表示 V3 动态 range 和 V3 add-liquidity 的 TWAP slippage min amount 都已经接入 strategy 层。
 
 ### 当前 TwapSlippageController
@@ -1320,19 +1321,21 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 - 它实现 `ISlippageController`，作用是给 strategy 生成 V3 add-liquidity 的最低可接受 token 数量。
 - 它不是一个 venue adapter，不直接移动资产。
 - 它的职责是：
-  1. 通过 `targetVenueId` 查出该 venue 绑定的 V3 pool
-  2. 确认传入 params 里的 pool 和 venue 绑定 pool 一致
-  3. 用 `V3TwapLib` 读取 spot price 和 TWAP price
-  4. 计算 spot-vs-TWAP deviation
-  5. 如果 deviation 超过 `maxSlippageBps`，revert
-  6. 如果 deviation 在允许范围内，返回：
+  1. 通过 `targetVenueId` 查出 controller 绑定的 V3 adapter
+  2. 从该 adapter 的 immutable `pool()` 读取验证 pool，而不是相信调用方传入 pool
+  3. 由 strategy 确认 controller adapter 与 vault 为该 venue 注册的 adapter 完全一致
+  4. 用 `V3TwapLib` 读取 spot price 和 TWAP price
+  5. 计算 spot-vs-TWAP deviation
+  6. 如果 deviation 超过 `maxSlippageBps`，revert
+  7. 如果 deviation 在允许范围内，返回：
 
 ```text
 amount0Min = amount0 * (10_000 - maxSlippageBps) / 10_000
 amount1Min = amount1 * (10_000 - maxSlippageBps) / 10_000
 ```
 
-- `targetVenueId -> pool` 的检查是为了避免真实 fork 配置里把 V3 0.05%、0.30%、1.00% 的 pool 搞混。
+- `targetVenueId -> adapter -> pool` 的绑定和 vault/controller adapter 一致性检查，可以避免把 V3 0.05%、0.30%、1.00% 的 adapter 或 pool 搞混。
+- V2 target 不调用这个 V3 TWAP controller，而是继续使用 `UniswapV2Adapter.LiquidityParams` 中的 venue-specific minimum amounts。这样不会用另一个 V3 pool 的价格状态替代对实际 V2 pair 的执行保护，也不依赖 V2/V3 同币对价格始终同步。
 - 当前 controller 保护的是 strategy 生成的 V3 add-liquidity params。
 - strategy-driven withdrawal 阶段现在可以接收 caller-supplied withdrawal params；如果要让 strategy 也动态生成 remove-liquidity minimums，需要后续单独扩展。
 

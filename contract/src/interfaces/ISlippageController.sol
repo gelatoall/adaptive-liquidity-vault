@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @notice Calculates minimum acceptable token amounts for venue liquidity execution.
+/// @notice Calculates minimum acceptable token amounts for V3 liquidity execution.
 interface ISlippageController {
     /// @notice Per-target slippage and TWAP validation inputs.
     struct SlippageParams {
-        uint256 maxSlippageBps;      // e.g., 50 = 0.5%
-        uint32 twapWindow;          // Time window for oracle price validation
-        address pool;                // Pool used for TWAP/spot validation
+        /// @notice Maximum allowed slippage and spot-to-TWAP deviation in basis points.
+        uint256 maxSlippageBps;
+        /// @notice Historical window used to read the V3 TWAP.
+        uint32 twapWindow;
     }
+
+    /// @notice Returns the V3 adapter bound to a venue id for pool validation.
+    function venueAdapters(uint256 venueId) external view returns (address);
 
     /// @notice Returns minimum acceptable amounts for a target venue and desired token amounts.
     /// @param targetVenueId Venue id receiving liquidity.
