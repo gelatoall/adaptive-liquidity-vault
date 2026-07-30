@@ -2,12 +2,13 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../libraries/RebalanceTypes.sol";
 
 /// @notice Builds rebalance targets by splitting total vault underlying by fixed venue weights.
-contract FixedWeightStrategy is IRebalanceStrategy, Ownable {
+contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     /// @notice Configured fixed-weight venue allocations.
     RebalanceTypes.TargetConfig[] public targetConfigs;
 

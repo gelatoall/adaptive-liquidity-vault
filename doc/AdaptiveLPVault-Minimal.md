@@ -32,6 +32,7 @@ This version includes:
 - minimal oracle health circuit breaker for strategy-driven rebalances
 - fixed-weight and volatility-bucket total-underlying allocation strategies
 - reentrancy protection on user and capital-moving entrypoints
+- two-step ownership transfers through OpenZeppelin `Ownable2Step`
 - owner-controlled pause and unpause
 - emergency exit that withdraws all venue liquidity to idle balances and pauses normal operations
 
@@ -42,6 +43,7 @@ This version does not include:
 - threshold-based rebalance conditions
 - deposit ratio optimization
 - full single-underlying-asset ERC4626 compliance
+- a governance timelock, multisig policy, or separate emergency guardian role
 
 Notes:
 - the vault depends on `IPriceOracle` for prices
@@ -54,6 +56,12 @@ Notes:
 - V2 price TWAP implementation details are documented in `doc/V2TWAPOracle-Minimal.md`
 - V3 spot-vs-TWAP volatility details are documented in `doc/V3TwapVolatilityOracle-Minimal.md`
 - rebalance details are documented in `doc/Rebalance-Minimal.md`
+
+## Ownership And Governance
+
+The vault, fixed-weight strategy, volatility-bucket strategy, and TWAP slippage controller use OpenZeppelin `Ownable2Step`. Calling `transferOwnership(newOwner)` only records `newOwner` as the pending owner. Control changes only after that address calls `acceptOwnership()`, at which point the previous owner loses access to `onlyOwner` functions.
+
+This protects against an accidental ownership transfer to an address that cannot operate the contracts. It does not delay actions initiated by the current owner. Sensitive configuration and capital-management calls remain immediately executable until ownership is transferred to a separately deployed timelock governed by an appropriate multisig. A production deployment should also separate delayed governance from any role that must pause the vault immediately.
 
 ## State
 

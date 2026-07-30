@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "../AdaptiveLPVault.sol";
 import "../interfaces/IRebalanceStrategy.sol";
 import "../interfaces/IVolatilityOracle.sol";
@@ -11,7 +12,7 @@ import "../adapters/UniswapV3Adapter.sol";
 import "./V3TickCalculations.sol";
 
 /// @notice Builds total-underlying allocations from configured volatility buckets.
-contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable {
+contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
     /// @notice Supported volatility ranges.
     enum Bucket {
         LOW,

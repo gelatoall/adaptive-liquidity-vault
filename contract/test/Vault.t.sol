@@ -81,6 +81,33 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         );
     }
 
+    /// @notice Ownership changes only after the pending owner accepts the transfer.
+    function test_OwnershipTransfer_RequiresPendingOwnerAcceptance() public {
+        assertEq(vault.owner(), address(this));
+        assertEq(vault.pendingOwner(), address(0));
+
+        vault.transferOwnership(alice);
+
+        // Starting the transfer does not immediately replace the current owner.
+        assertEq(vault.owner(), address(this));
+        assertEq(vault.pendingOwner(), alice);
+
+        vm.prank(alice);
+        vault.acceptOwnership();
+
+        assertEq(vault.owner(), alice);
+        assertEq(vault.pendingOwner(), address(0));
+
+        // Acceptance removes privileged access from the previous owner.
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
+        vault.pause();
+
+        vm.prank(alice);
+        vault.pause();
+
+        assertTrue(vault.paused());
+    }
+
     // pause
     /// @notice Verifies the owner can pause and unpause the vault.
     function test_PauseAndUnpause_UpdatesPausedState() public {

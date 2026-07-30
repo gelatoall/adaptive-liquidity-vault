@@ -228,6 +228,14 @@
 - `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
 - `redeem` 不受 paused 状态限制。这样在紧急情况下，即使 owner 暂停了正常运营，用户仍然可以退出。
 
+### 两步所有权转移
+- `AdaptiveLPVault`、两个 strategy 和 `TwapSlippageController` 都继承 OpenZeppelin `Ownable2Step`。
+- 当前 owner 调用 `transferOwnership(newOwner)` 时，只会设置 `pendingOwner`，不会立即交出权限。
+- `pendingOwner` 必须主动调用 `acceptOwnership()`，所有权才会正式转移。
+- 接管完成后，原 owner 会失去所有 `onlyOwner` 权限。
+- 这可以防止把所有权误转给错误地址或无法调用合约的地址，但不会延迟当前 owner 发起的管理操作。
+- 当前版本尚未接入 timelock、multisig 治理策略或独立 guardian。生产部署仍应使用 timelock 延迟敏感配置，并为紧急暂停设计可即时响应的权限。
+
 ### Pause / Emergency Exit
 - `pause()` 是 owner 控制的安全开关。
 - paused 后会禁止正常运营动作：
@@ -754,8 +762,9 @@
 #### 3. `owner` 不是每个合约天然都有
 - `owner` 只有在合约自己专门定义了 owner 语义时才存在。
 - 例如：
-  - `AdaptiveLPVault` 继承了 `Ownable`
+  - `AdaptiveLPVault` 继承了 `Ownable2Step`
   - 所以它有 `owner()`
+  - 同时还有 `pendingOwner()` 和 `acceptOwnership()`
 - 但像：
   - `pair.balanceOf(...)`
   - `adapter.addLiquidity(...)`

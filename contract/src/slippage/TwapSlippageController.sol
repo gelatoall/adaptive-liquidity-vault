@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/Ownable2Step.sol";
 import "../interfaces/ISlippageController.sol";
 import "../interfaces/IUniswapV3Pool.sol";
 import "../libraries/RebalanceTypes.sol";
@@ -9,7 +10,7 @@ import "../libraries/V3TwapLib.sol";
 import "../adapters/UniswapV3Adapter.sol";
 
 /// @notice Computes min amounts and blocks execution when V3 spot price deviates too far from TWAP.
-contract TwapSlippageController is ISlippageController, Ownable {
+contract TwapSlippageController is ISlippageController, Ownable2Step {
     /// @notice V3 adapter configured for each venue id.
     mapping(uint256 => address) public override venueAdapters;
 
