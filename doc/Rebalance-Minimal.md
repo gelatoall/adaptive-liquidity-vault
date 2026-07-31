@@ -10,7 +10,7 @@ Build a minimal rebalance executor for the vault that:
 - includes a fixed-weight strategy for simple static venue allocation
 - includes a volatility-bucket strategy for selecting among configured allocations
 - can move capital from idle balances into one or more venues
-- can move deployed capital from one venue allocation into another through withdraw-all-then-redeploy
+- can move deployed capital between venue allocations by withdrawing excess and deploying deficits
 - can withdraw all venue liquidity back to idle balances
 - stays as an execution layer, not a venue-selection algorithm
 
@@ -30,8 +30,9 @@ This version includes:
 - `TwapSlippageController` for TWAP-validated V3 add-liquidity minimum amounts
 - duplicate venue target validation
 - unset and disabled venue validation
-- full withdrawal of all tracked venue liquidity before redeployment
-- deployment into one or more venues after withdrawal
+- proportional withdrawal of excess tracked venue liquidity
+- in-place deployment of deficits into compatible positions
+- full replacement of removed, zero-target, or structurally incompatible positions
 - optional total-value loss guard after rebalance execution
 - pause protection on normal rebalance entrypoints
 - fault-isolated emergency exit that withdraws one venue per transaction after the vault is paused
@@ -42,7 +43,7 @@ This version does not include:
 - TWAP-driven target weighting
 - statistical or annualized volatility calculation
 - keeper resolver integration or keeper rewards
-- partial in-place rebalancing
+- automatic dust-tolerance thresholds
 - strategy-generated withdrawal slippage params
 
 Notes:
@@ -70,8 +71,8 @@ struct RebalanceTarget {
 
 Field meanings:
 - `venueId`: registered venue receiving capital
-- `amount0`: raw token0 amount to deploy into that venue
-- `amount1`: raw token1 amount to deploy into that venue
+- `amount0`: desired final raw token0 amount represented by that venue
+- `amount1`: desired final raw token1 amount represented by that venue
 - `params`: venue-specific adapter params for deployment, for example V3 mint limits and deadline
 
 ```solidity
@@ -81,9 +82,9 @@ struct VenueWithdrawalParams {
 }
 ```
 
-Withdrawal params are matched by `venueId` during the withdraw-all phase. Venues without a matching entry receive empty params.
+Withdrawal params are matched by `venueId` when the delta flow removes venue liquidity. Venues without a matching entry receive empty params.
 
-Zero-amount targets are skipped during deployment. They are still checked for duplicate venue ids.
+Zero-amount targets explicitly withdraw the venue and are skipped during deployment. They are still checked for duplicate venue ids.
 
 ## Venue Id Convention
 
@@ -104,7 +105,8 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 - `rebalance(targets, withdrawalParams)`
   - purpose: execute an owner-supplied target allocation
   - behavior: blocked while the vault is paused
-  - behavior: withdraw all venues first, then deploy non-zero targets
+  - behavior: withdraw venue excess and deploy only non-zero target deficits
+  - behavior: fully replace a V3 position when its active range is incompatible with target params
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase
   - behavior: applies the configured value-loss guard after execution
 
@@ -181,7 +183,7 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 
 `rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault first validates valuation-oracle health, asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies cooldown, gas price, volatility delta, and optional volatility-oracle checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
 
-Both paths ultimately reuse the same internal withdraw-all-then-deploy execution logic.
+Both paths ultimately reuse the same internal delta execution logic.
 
 ## Core Flow
 
@@ -243,8 +245,8 @@ Rules:
 
 Current limitation:
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
-- it does not compute in-place deltas
-- execution still withdraws all tracked venue liquidity before redeploying the target plan
+- the strategy produces final targets while the vault execution layer computes in-place deltas
+- exact token comparisons do not yet include a production dust-tolerance threshold
 
 ### volatility-bucket strategy
 
@@ -288,7 +290,7 @@ Current limitations:
 - volatility is read from an external oracle contract
 - the strategy does not calculate TWAP or statistical volatility itself
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
-- execution still withdraws all tracked venue liquidity before redeploying the target plan
+- execution compares exact raw token targets and does not yet apply a production dust-tolerance threshold
 - strategy-driven withdrawal params are owner-supplied through `rebalanceWithStrategy(data, withdrawalParams)`; automatic remove-side min amount generation remains out of scope
 - valuation-oracle health checks reject missing, invalid, future-dated, stale, or excessively divergent prices; the optional volatility-oracle check currently validates configuration availability only
 - calculated V3 tick bounds are rounded outward to legal `tickSpacing()` values, so the executable range covers the raw strategy range instead of narrowing it
@@ -344,10 +346,11 @@ vault.rebalance(targets, withdrawalParams);
 
 Flow:
 1. Validate the empty plan.
-2. Revert with `NoRebalanceNeeded` if `totalLiquidity == 0`.
-3. Withdraw all tracked liquidity from every registered venue.
-4. Check that share supply did not change and, if enabled, that total value did not fall below the configured loss threshold.
-5. Leave all returned token balances idle in the vault.
+2. Collect claimable venue tokens.
+3. Treat every active venue as omitted and withdraw all tracked liquidity.
+4. Revert with `NoRebalanceNeeded` if no withdrawal or deployment moved funds.
+5. Check that share supply did not change and, if enabled, that total value did not fall below the configured loss threshold.
+6. Leave all returned token balances idle in the vault.
 
 The value-loss guard is downside-only. It should not reject a positive `totalAssets()` deviation because fees, donations, or price movement can legitimately increase vault value during execution. In tests without such sources, large positive deviations should be treated as a valuation/accounting signal rather than a revert condition.
 
@@ -362,7 +365,7 @@ Emergency recovery uses a best-effort batch:
 5. A reverting venue emits `EmergencyExitFailed` and remains deployed while the loop continues.
 6. Users can still redeem while paused because `redeem` is not gated by `whenNotPaused`.
 
-The self-call boundary allows `try/catch` to roll back only the failing venue. `_withdrawAllVenues(...)` remains an internal primitive for atomic normal rebalance execution, where any failed venue must revert the complete rebalance.
+The self-call boundary allows `try/catch` to roll back only the failing venue. Normal delta rebalance execution remains atomic, so any failed venue must revert the complete rebalance.
 
 ### rebalance to one venue
 
@@ -379,10 +382,11 @@ targets[0] = RebalanceTypes.RebalanceTarget({
 
 Flow:
 1. Validate the venue id.
-2. Sum required token amounts.
-3. Withdraw all existing venue liquidity first.
-4. Check idle balances after withdrawal.
-5. Deploy the requested amounts into the target venue.
+2. Fully withdraw active venues omitted from the plan.
+3. Withdraw only excess liquidity from a compatible target venue.
+4. Fully replace an incompatible target position, such as a V3 position with a changed tick range.
+5. Check idle balances for each target deficit.
+6. Deploy only the missing token amounts.
 
 ### rebalance to multiple venues
 
@@ -407,20 +411,20 @@ targets[1] = RebalanceTypes.RebalanceTarget({
 Flow:
 1. Reject duplicate venue ids.
 2. Validate every non-zero target.
-3. Sum total required `amount0` and `amount1`.
-4. Withdraw all current venues back to idle balances.
-5. Check the idle balances can cover the full plan.
-6. Deploy each non-zero target.
+3. Collect claimable venue tokens into idle balances.
+4. Withdraw omitted, zero-target, incompatible, and excess venue liquidity.
+5. Check idle balances can cover each remaining target deficit.
+6. Add only the missing amounts to compatible positions and create replacement positions where required.
 
-## Why Withdraw All First
+## Delta Rebalance
 
-The current implementation uses a simple two-phase model:
-- phase 1: pull all tracked venue liquidity back to idle
-- phase 2: deploy the desired target plan
+The current implementation treats each `RebalanceTarget` as a final allocation:
+- phase 1: withdraw liquidity that is omitted, zero-target, structurally incompatible, or above target
+- phase 2: deploy only the deficits below each target
 
-This avoids complex in-place delta accounting between venues. It is less gas efficient, but easier to reason about and test. A later strategy layer can optimize by calculating deltas and only moving the changed capital.
+Compatible V2 positions and V3 positions with unchanged tick ranges remain active. A changed V3 tick range requires a full withdrawal and a new NFT because one V3 NFT cannot change its range in place.
 
-Because strategies build targets from `getTotalUnderlying()`, they can request a new allocation even when capital is already deployed. The vault then realizes that plan by withdrawing all tracked venue liquidity to idle first, checking the resulting idle balances, and deploying the requested target amounts.
+Exact raw token comparisons currently have no dust tolerance. Mainnet-fork tests should execute the same V3 plan twice and measure returned dust, repeated increases, NFT continuity, and gas before a tolerance policy is selected.
 
 ## Failure Cases
 

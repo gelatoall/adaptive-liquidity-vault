@@ -290,6 +290,16 @@ contract UniswapV3Adapter is IVenueAdapter {
         return _hasActivePosition(tokenId);
     }
 
+    /// @inheritdoc IVenueAdapter
+    function isPositionCompatible(bytes calldata params) external override view returns (bool) {
+        if (tokenId == 0) return true;
+
+        LiquidityParams memory p = _decodeLiquidityParams(params);
+
+        (int24 currentLower, int24 currentUpper, , ,) = _getPositionMetadata(tokenId);
+        return p.tickLower == currentLower && p.tickUpper == currentUpper;
+    }
+
     // ============================================
     // Internal Functions
     // ============================================

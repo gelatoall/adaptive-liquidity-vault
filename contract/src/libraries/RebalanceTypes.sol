@@ -5,7 +5,8 @@ library RebalanceTypes {
     /// @notice Basis point denominator used for weight configs.
     uint256 internal constant BPS = 10_000;
 
-    /// @notice One desired venue allocation used by the rebalance entrypoint.
+    /// @notice Desired final underlying allocation for one venue after rebalance.
+    /// @dev `amount0` and `amount1` are final target amounts, not amounts to add in this transaction.
     struct RebalanceTarget {
         uint256 venueId;
         uint256 amount0;

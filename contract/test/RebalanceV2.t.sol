@@ -105,24 +105,6 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertTrue(adapter.hasPosition());
     }
 
-    /// @notice Verifies rebalance to V2 reverts when the vault has no idle balances left to deploy.
-    function test_Rebalance_DepositedToV2_RevertsWhenNoIdleFunds() public {
-        uint256 amount0 = 10 ether;
-        uint256 amount1 = 20e6;
-        uint256 liquidityMinted = 5 ether;
-        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-
-        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
-
-        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
-
-        assertEq(token0.balanceOf(address(vault)), 0);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
-
-        vm.expectRevert(AdaptiveLPVault.InsufficientBalances.selector);
-        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
-    }
-
     /// @notice Verifies rebalance to IDLE withdraws all DEPLOYED_V2 liquidity from the adapter.
     function test_Rebalance_V2ToIdle_WithdrawsAllLiquidity() public {
         uint256 amount0 = 10 ether;

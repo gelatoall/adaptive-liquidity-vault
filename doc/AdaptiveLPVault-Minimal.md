@@ -25,7 +25,7 @@ This version includes:
 - owner- or keeper-triggered fee harvesting through `harvestVenueFees(...)`
 - in-place fee compounding through `compoundVenueFees(...)` for venues that support explicit claims
 - multi-venue asset accounting
-- a minimal owner-only rebalance executor that withdraws all venues first, then deploys according to a target plan
+- an owner-only delta rebalance executor that withdraws venue excess and deploys target deficits
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
 - strategy-driven rebalance through `IRebalanceStrategy`
 - keeper-triggered strategy rebalance through a configured `keeper`
@@ -340,11 +340,11 @@ Harvesting and compounding are permissioned execution operations, not self-execu
 
 1. Reject duplicate venue targets.
 2. Validate every non-zero target points to a registered and enabled venue.
-3. Sum required `amount0` and `amount1` across the target plan.
-4. If the vault is already idle and the plan requires no funds, revert `NoRebalanceNeeded`.
-5. Withdraw all tracked venue liquidity back to idle balances.
-6. Require idle balances to cover the target plan.
-7. Deploy each non-zero target into its requested venue.
+3. Collect claimable venue tokens into idle balances.
+4. Fully withdraw venues omitted from the plan, assigned a zero target, or incompatible with target structure.
+5. Proportionally withdraw only excess liquidity from compatible venues.
+6. Deploy only the token deficits needed to approach each non-zero target.
+7. Revert `NoRebalanceNeeded` if neither withdrawal nor deployment moved funds.
 8. Verify share supply did not change.
 9. If `maxRebalanceValueLossBps` is non-zero, verify post-rebalance `totalAssets()` did not fall below the configured loss threshold.
 
@@ -370,7 +370,9 @@ The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
 - `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value and can generate dynamic V3 tick-range params for configured V3 venues
 
-Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault execution path still withdraws all tracked venue liquidity before redeploying the returned plan. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault treats the returned amounts as final per-venue targets and moves only excesses and deficits. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+
+Delta comparisons currently use exact raw token amounts. Real V3 mint and increase operations may return rounding dust, so repeated identical strategy execution must be checked in mainnet-fork tests before choosing a production dust-tolerance threshold.
 
 `VolatilityBucketStrategy` can optionally map a venue id to a `V3TickCalculations` contract. When a target venue has a configured calculator, the strategy encodes fresh `UniswapV3Adapter.LiquidityParams` with tick bounds calculated from current pool tick, pool `tickSpacing()`, and the current `volatilityBps`.
 
@@ -401,7 +403,7 @@ Paused state does not block exit-oriented operations:
 - `withdrawFromVenue`
 - `emergencyExit`
 
-For fault-isolated recovery, the owner calls `emergencyExit(withdrawalParams)`. The function pauses the vault before making adapter calls and processes each active venue through an external self-call. `try/catch` keeps a reverting venue deployed, emits `EmergencyExitFailed`, and continues withdrawing healthy venues. The internal `_withdrawAllVenues(...)` function remains atomic because normal rebalances must fully succeed or revert.
+For fault-isolated recovery, the owner calls `emergencyExit(withdrawalParams)`. The function pauses the vault before making adapter calls and processes each active venue through an external self-call. `try/catch` keeps a reverting venue deployed, emits `EmergencyExitFailed`, and continues withdrawing healthy venues. Normal delta rebalances remain atomic, so any failed venue operation reverts the complete rebalance.
 
 ## Failure Cases
 
@@ -476,6 +478,8 @@ Rebalance coverage:
 - rebalance can deploy to V2
 - rebalance can deploy to V3
 - rebalance can split capital across multiple venues
+- rebalance can move only the required delta between existing venues
+- rebalance preserves a compatible V3 NFT and rebuilds it only when its tick range changes
 - rebalance can withdraw all venues back to idle
 - rebalance rejects duplicate venue targets
 - rebalance rejects plans that exceed available balances

@@ -33,4 +33,9 @@ interface IVenueAdapter {
 
     /// @notice Check if venue has active position
     function hasPosition() external view returns (bool);
+
+    /// @notice Checks whether an existing position can be reused for the target parameters.
+    /// @param params Venue-specific target parameters.
+    /// @return compatible True when the existing position supports an in-place delta update.
+    function isPositionCompatible(bytes calldata params) external view returns (bool compatible);
 }

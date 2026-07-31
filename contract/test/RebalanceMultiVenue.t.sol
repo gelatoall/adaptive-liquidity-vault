@@ -128,7 +128,69 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         assertEq(vault.totalLiquidity(), v2Liquidity + uint256(v3Liquidity));
     }
 
-    
+    /// @notice Verifies rebalance moves only the required delta from V2 into an existing V3 position.
+    function test_Rebalance_MovesOnlyDeltaBetweenExistingVenues() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint256 v2Amount0 = 6 ether;
+        uint256 v2Amount1 = 12e6;
+        uint256 v2Liquidity = 3 ether;
+
+        uint256 v3Amount0 = 4 ether;
+        uint256 v3Amount1 = 8e6;
+
+        routerV2.setNextAddLiquidityResult(v2Amount0, v2Amount1, v2Liquidity);
+
+        uint128 initialV3Liquidity = _primeV3Mint(token0, token1, poolV3, positionManagerV3, tickLower, tickUpper, v3Amount0, v3Amount1);
+
+        bytes memory v3Params = _defaultV3Params(tickLower, tickUpper);
+        RebalanceTypes.RebalanceTarget[] memory initialTargets = _buildTwoTargets(
+            V2_VENUE_ID, v2Amount0, v2Amount1, "",
+            V3_LOW_VENUE_ID, v3Amount0, v3Amount1, v3Params
+        );
+
+        vault.rebalance(initialTargets, _emptyWithdrawalParams());
+
+        // The V2 adapter uses reserves and LP supply to calculate its current value.
+        pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
+
+        uint256 v3TokenIdBefore = adapterV3.tokenId();
+        (uint256 currentV3Amount0, uint256 currentV3Amount1) = adapterV3.getPositionValue();
+
+        uint256 movedAmount0 = v2Amount0 / 2;
+        uint256 movedAmount1 = v2Amount1 / 2;
+        uint256 remainingV2Liquidity = v2Liquidity / 2;
+
+        routerV2.setNextRemoveLiquidityResult(movedAmount0, movedAmount1);
+
+        (uint128 addedV3Liquidity, uint256 poolAmount0, uint256 poolAmount1) = _quoteV3Liquidity(
+            token0,
+            token1,
+            poolV3,
+            tickLower,
+            tickUpper,
+            movedAmount0,
+            movedAmount1
+        );
+
+        positionManagerV3.setNextIncreaseResult(addedV3Liquidity, poolAmount0, poolAmount1);
+
+        RebalanceTypes.RebalanceTarget[] memory deltaTargets = _buildTwoTargets(
+            V2_VENUE_ID, v2Amount0 / 2, v2Amount1 / 2, "",
+            V3_LOW_VENUE_ID, currentV3Amount0 + movedAmount0, currentV3Amount1 + movedAmount1, v3Params
+        );
+        vault.rebalance(deltaTargets, _emptyWithdrawalParams());
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), remainingV2Liquidity);
+        assertTrue(adapterV2.hasPosition());
+
+        assertEq(adapterV3.tokenId(), v3TokenIdBefore);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(initialV3Liquidity) + uint256(addedV3Liquidity));
+        assertEq(positionManagerV3.nextTokenId(), 2);
+    }
+
     function test_Rebalance_WithdrawsMultipleVenuesToIdle() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;

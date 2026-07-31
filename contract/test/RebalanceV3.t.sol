@@ -96,7 +96,70 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(token0.balanceOf(address(positionManager)), amount0);
         assertEq(token1.balanceOf(address(positionManager)), amount1);
     }
-    
+
+    /// @notice Verifies an unchanged V3 target does not recreate the position.
+    function test_Rebalance_UnchangedV3TargetDoesNotRecreatePosition() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+
+        // user -> vault
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        // vault -> adapter
+        uint128 initialLiquidity = _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
+        bytes memory params = _defaultV3Params(tickLower, tickUpper);
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, params);
+
+        uint256 tokenIdBefore = adapter.tokenId();
+        (uint256 current0, uint256 current1) = adapter.getPositionValue();
+
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V3_LOW_VENUE_ID, current0, current1, params);
+
+        vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
+        vault.rebalance(targets, _emptyWithdrawalParams());
+
+        assertEq(adapter.tokenId(), tokenIdBefore);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), initialLiquidity);
+        assertTrue(adapter.hasPosition());
+    }
+
+    /// @notice Verifies a changed V3 range fully replaces the incompatible position.
+    function test_Rebalance_ChangedV3RangeRecreatesPosition() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+        int24 newTickLower = -1200;
+        int24 newTickUpper = 1200;
+
+        // user -> vault
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        // vault -> adapter
+        _primeV3Mint(token0, token1, pool, positionManager, tickLower, tickUpper, amount0, amount1);
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params(tickLower, tickUpper));
+
+        uint256 oldTokenId = adapter.tokenId();
+        assertEq(oldTokenId, 1);
+
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
+        uint128 newLiquidity = _primeV3Mint(token0, token1, pool, positionManager, newTickLower, newTickUpper, amount0, amount1);
+        bytes memory newParams = _defaultV3Params(newTickLower, newTickUpper);
+        RebalanceTypes.RebalanceTarget[] memory targets = _buildSingleTarget(V3_LOW_VENUE_ID, amount0, amount1, newParams);
+
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: _v3Params(0, 0, block.timestamp + 1, tickLower, tickUpper)
+        });
+
+        vault.rebalance(targets, withdrawalParams);
+
+        assertEq(adapter.tokenId(), 2);
+        assertNotEq(adapter.tokenId(), oldTokenId);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), newLiquidity);
+        assertEq(positionManager.lastMintTickLower(), newTickLower);
+        assertEq(positionManager.lastMintTickUpper(), newTickUpper);
+        assertTrue(adapter.hasPosition());
+    }
+
     /// @notice Verifies rebalance to IDLE withdraws all deployed liquidity from V3.
     function test_Rebalance_V3ToIdle_WithdrawsAllLiquidity() public {
         uint256 amount0 = 1 ether;

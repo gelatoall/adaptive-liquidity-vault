@@ -912,8 +912,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     /// @notice Rebalances vault capital according to an owner-supplied target plan.
-    /// @dev Requires healthy valuation oracles, then withdraws all tracked venue liquidity before deploying
-    ///      into non-zero targets. An empty target array means withdraw all venues to idle.
+    /// @dev Requires healthy valuation oracles, then withdraws venue excess and deploys only target deficits.
+    ///      Removed, zero-target, and structurally incompatible venues are fully withdrawn.
+    ///      An empty target array means withdraw all venues to idle.
     /// @param targets Desired post-rebalance venue deployments.
     /// @param withdrawalParams Venue-specific remove-liquidity params used when rebalance withdraws active positions.
     function rebalance(
@@ -1307,6 +1308,42 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Finds a venue target by id.
+    function _findTarget(
+        RebalanceTypes.RebalanceTarget[] memory targets,
+        uint256 venueId
+    ) internal pure returns (bool found, uint256 index) {
+        for (uint256 i = 0; i < targets.length; i++) {
+            if (targets[i].venueId == venueId) {
+                return (true, i);
+            }
+        }
+
+        return (false, 0);
+    }
+
+    /// @notice Calculates the proportional liquidity that exceeds a venue's final token targets.
+    function _calculateLiquidityToWithdraw(
+        uint256 currentLiquidity,
+        uint256 current0,
+        uint256 current1,
+        uint256 target0,
+        uint256 target1
+    ) internal pure returns (uint256 liquidityToWithdraw) {
+        uint256 keepBps = RebalanceTypes.BPS;
+
+        if (current0 > target0) {
+            keepBps = Math.min(keepBps, Math.mulDiv(target0, RebalanceTypes.BPS, current0));
+        }
+
+        if (current1 > target1) {
+            keepBps = Math.min(keepBps, Math.mulDiv(target1, RebalanceTypes.BPS, current1));
+        }
+
+        uint256 liquidityToKeep = Math.mulDiv(currentLiquidity, keepBps, RebalanceTypes.BPS);
+        liquidityToWithdraw = currentLiquidity - liquidityToKeep;
+    }
+
     /// @notice Reverts if a non-zero rebalance target points to an unset or disabled venue.
     function _validateRebalanceTargets(RebalanceTypes.RebalanceTarget[] memory targets) internal view {
         for (uint256 i = 0; i < targets.length; i++) {
@@ -1327,16 +1364,95 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @notice Withdraws all tracked liquidity from every registered venue.
-    /// @dev Forwards matching per-venue withdrawal params to adapters; venues with zero tracked liquidity are skipped.
-    function _withdrawAllVenues(VenueWithdrawalParams[] memory withdrawalParams) internal {
+    // 遍历当前 venue
+    //     |
+    //     |-- liquidity == 0
+    //     |      -> 跳过
+    //     |
+    //     |-- 不在新 targets
+    //     |      -> 全撤
+    //     |
+    //     |-- 在 targets，但目标为 (0, 0)
+    //     |      -> 全撤
+    //     |
+    //     |-- 在 targets，但 V3 range 不兼容
+    //     |      -> 这个 venue 全撤，稍后重建
+    //     |
+    //     |-- 在 targets，且兼容
+    //            |
+    //            |-- 当前没有超额
+    //            |      -> 不撤
+    //            |
+    //            |-- 当前存在超额
+    //                   -> 只撤超额比例
+    /// @notice Withdraws only liquidity that exceeds or conflicts with final venue targets.
+    function _withdrawVenueDeltas(
+        RebalanceTypes.RebalanceTarget[] memory targets,
+        VenueWithdrawalParams[] memory withdrawalParams
+    ) internal returns (bool moved) {
         for (uint256 i = 0; i < venueIds.length; i++) {
             uint256 id = venueIds[i];
             uint256 liquidity = venueLiquidity[id];
-            if (liquidity > 0) {
-                bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
-                _withdrawFromVenue(id, liquidity, params, true);
+
+            if (liquidity == 0) continue;
+
+            (bool found, uint256 index) = _findTarget(targets, id);
+            bytes memory removeParams = _getVenueWithdrawalParams(id, withdrawalParams);
+
+            if (!found) {
+                _withdrawFromVenue(id, liquidity, removeParams, false);
+                moved = true;
+                continue;
             }
+
+            RebalanceTypes.RebalanceTarget memory target = targets[index];
+            if (target.amount0 == 0 && target.amount1 == 0) {
+                _withdrawFromVenue(id, liquidity, removeParams, false);
+                moved = true;
+                continue;
+            }
+
+            IVenueAdapter adapter = venues[id].adapter;
+            if (!adapter.isPositionCompatible(target.params)) {
+                _withdrawFromVenue(id, liquidity, removeParams, false);
+                moved = true;
+                continue;
+            }
+
+            (uint256 current0, uint256 current1) = adapter.getPositionValue();
+            uint256 liquidityToWithdraw = _calculateLiquidityToWithdraw(liquidity, current0, current1, target.amount0, target.amount1);
+
+            if (liquidityToWithdraw == 0) continue;
+
+            _withdrawFromVenue(id, liquidityToWithdraw, removeParams, false);
+            moved = true;
+        }
+    }
+
+    /// @notice Adds only the token deficits required to approach each venue's final target.
+    function _deployVenueDeltas(RebalanceTypes.RebalanceTarget[] memory targets) internal returns (bool moved) {
+        for (uint256 i = 0; i < targets.length; i++) {
+            RebalanceTypes.RebalanceTarget memory target = targets[i];
+            if (target.amount0 == 0 && target.amount1 == 0) continue;
+
+            IVenueAdapter adapter = venues[target.venueId].adapter;
+
+            uint256 current0;
+            uint256 current1;
+            if (adapter.hasPosition()) {
+                (current0, current1) = adapter.getPositionValue();
+            }
+
+            uint256 add0 = (target.amount0 > current0) ? (target.amount0 - current0) : 0;
+            uint256 add1 = (target.amount1 > current1) ? (target.amount1 - current1) : 0;
+            if (add0 == 0 && add1 == 0) continue;
+
+            if (add0 > token0.balanceOf(address(this)) || add1 > token1.balanceOf(address(this))) {
+                revert InsufficientBalances();
+            }
+
+            _deployToVenue(target.venueId, add0, add1, target.params);
+            moved = true;
         }
     }
 
@@ -1354,35 +1470,14 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
             totalValueBefore = totalAssets();
         }
 
-        uint256 required0;
-        uint256 required1;
-        for (uint256 i = 0; i < targets.length; i++) {
-            required0 += targets[i].amount0;
-            required1 += targets[i].amount1;
-        }
+        // Collect claimable venue tokens into idle balances so delta rebalance can redeploy them.
+        _collectAllVenueFees();
 
-        // idle -> idle
-        if (totalLiquidity == 0 && required0 == 0 && required1 == 0) {
-            revert NoRebalanceNeeded();
-        }
+        bool withdrew = _withdrawVenueDeltas(targets, withdrawalParams);
 
-        // Phase 1: pull all capital back to idle first.
-        _withdrawAllVenues(withdrawalParams);
+        bool deployed = _deployVenueDeltas(targets);
 
-        // Phase 2: redistribute from idle to venues.
-        if (targets.length != 0) {
-            uint256 idle0 = token0.balanceOf(address(this));
-            uint256 idle1 = token1.balanceOf(address(this));
-
-            if (required0 > idle0 || required1 > idle1) {
-                revert InsufficientBalances();
-            }
-
-            for (uint256 i = 0; i < targets.length; i++) {
-                if (targets[i].amount0 == 0 && targets[i].amount1 == 0) continue;
-                _deployToVenue(targets[i].venueId, targets[i].amount0, targets[i].amount1, targets[i].params);
-            }
-        }
+        if (!withdrew && !deployed) revert NoRebalanceNeeded();
 
         _checkRebalanceValueInvariant(totalSharesBefore, totalValueBefore);
     }

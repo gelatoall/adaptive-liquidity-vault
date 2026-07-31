@@ -278,6 +278,11 @@ contract UniswapV2Adapter is IVenueAdapter {
         return pair.balanceOf(address(this)) > 0;
     }
 
+    /// @inheritdoc IVenueAdapter
+    function isPositionCompatible(bytes calldata) external pure override returns (bool) {
+        return true;
+    }
+
     // ============================================
     // Internal Functions
     // ============================================

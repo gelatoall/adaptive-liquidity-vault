@@ -256,7 +256,7 @@
 
 成功的 venue 会先收取可领取 token，再撤出其全部 tracked liquidity。`try/catch` 的 external self-call 边界保证普通 revert 只回滚当前 venue 的子调用。
 
-`_withdrawAllVenues(...)` 仍用于需要原子性的正常 rebalance；该路径中任意 venue 失败都应回滚整个 rebalance，不使用 best-effort 语义。
+正常 delta rebalance 仍保持原子性；该路径中任意 venue 失败都应回滚整个 rebalance，不使用 best-effort 语义。
 
 它和普通 `rebalance` 的区别是：
 - `rebalance` 是正常运营，用来调整资产分配
@@ -1147,7 +1147,7 @@
 - 更准确地说：
   - `deployToVenue(venueId, ...)` 负责把 idle 资金送进指定 venue adapter
   - `withdrawFromVenue(venueId, liquidity, params)` 负责把指定 venue 仓位撤回成 idle balances
-  - `rebalance(targets, withdrawalParams)` 只是把“全部撤回 -> 按计划重新部署”包装成一个 owner-only 执行入口
+  - `rebalance(targets, withdrawalParams)` 把 targets 当成最终状态，只撤出超额并补充不足
   - `rebalanceWithStrategy(data, withdrawalParams)` 会先向已配置 strategy 要一个 plan，然后复用同一套执行逻辑
 
 ### 当前 multi-venue 模型
@@ -1200,8 +1200,8 @@ struct RebalanceTarget {
 
 - 含义是：
   - `venueId`：目标 venue
-  - `amount0`：部署到该 venue 的 token0 原始数量
-  - `amount1`：部署到该 venue 的 token1 原始数量
+  - `amount0`：rebalance 后该 venue 应代表的 token0 最终原始数量
+  - `amount1`：rebalance 后该 venue 应代表的 token1 最终原始数量
   - `params`：透传给 adapter 的部署参数，也就是 addLiquidity params
 
 ### VenueWithdrawalParams
@@ -1276,9 +1276,8 @@ struct TargetConfig {
 
 当前限制：
 - `FixedWeightStrategy` 使用 adapter 上报的 deployed amounts，不额外做独立市场 quote。
-- 它不会计算 venue-to-venue delta。
+- strategy 只生成最终 targets，venue-to-venue delta 由 vault 执行层计算。
 - 它也不做 TWAP / volatility 判断。
-- vault 执行时仍然会先把所有 tracked venue liquidity 撤回 idle，再按 plan 重新部署。
 
 ### 当前 VolatilityBucketStrategy
 - 当前还实现了 [VolatilityBucketStrategy.sol](../contract/src/strategies/VolatilityBucketStrategy.sol)。
@@ -1313,7 +1312,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 - 它不再是 idle-only：
   - 会通过 `getTotalUnderlying()` 读取 idle + deployed amounts
   - 可以在 vault 已有 tracked liquidity 时生成新 plan
-  - 但不计算 in-place delta，执行层仍然是先全撤再部署
+  - strategy 返回最终 plan，执行层会原地计算需要撤出和补充的 delta
 - 当前它证明的是“根据外部 volatility oracle 动态选择不同权重表”。
 - 当前它还可以通过 `setV3TickCalculations(venueId, calculator)` 给特定 V3 venue 配置动态 tick calculator。
 - 如果 target 的 `venueId` 配了 calculator，strategy 会：
@@ -1468,10 +1467,10 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
   1. 传入一个或多个 `RebalanceTarget`
   2. vault 检查是否有重复 `venueId`
   3. vault 检查非零 target 对应的 venue 是否已注册且 enabled
-  4. vault 汇总本次计划需要的 `required0/required1`
-  5. vault 先把所有已有 venue liquidity 撤回 idle
-  6. vault 检查撤回后的 idle balances 是否足够覆盖计划
-  7. vault 逐个把非零 target 部署进对应 venue
+  4. vault 先 collect 可领取的 venue tokens
+  5. 对不在 targets、目标为零或结构不兼容的仓位执行全撤
+  6. 对兼容但超过目标的仓位只撤出超额比例
+  7. vault 检查 idle balances，并只向各 target 补充不足部分
   8. 检查 rebalance 前后 share supply 没有变化
   9. 如果开启了 `maxRebalanceValueLossBps`，检查 `totalAssets()` 没有低于允许下限
 
@@ -1504,23 +1503,12 @@ totalAssetsAfter >= totalAssetsBefore * (10_000 - maxRebalanceValueLossBps) / 10
   - vault 直接持有的 idle token
   - 所有 registered adapter 通过 `getPositionValue()` 上报的 deployed token amounts
 - 所以如果资金已经在 V2 里，strategy 仍然可以生成“全部去另一个 venue”的 plan。
-- 但这个 plan 只是目标状态，不是精细 delta。
-- 真正执行时，vault 仍然会：
-  1. 先把所有 tracked venue liquidity 撤回 idle
-  2. 检查 idle balances 是否够覆盖 strategy plan
-  3. 再按 strategy plan 部署到目标 venues
-- 这就是现在的“total-underlying strategy + withdraw-all-then-redeploy executor”模型。
-
-### 为什么当前实现是“先全撤，再部署”
-- 这是最小实现的刻意选择：
-  - accounting 简单
-  - 测试简单
-  - 不需要先做 venue-to-venue delta 计算
-  - 不需要处理某个 venue 增仓、另一个 venue 减仓的复杂路径
-- 代价是：
-  - gas 更高
-  - 对真实 AMM 来说可能多一次退出和进入
-- 后续如果做策略层，可以再优化成 delta rebalance。
+- plan 表示最终状态，真正执行时由 vault：
+  1. 撤出被移除、目标为零、结构不兼容或超出目标的 liquidity
+  2. 检查 idle balances 是否够覆盖剩余 deficit
+  3. 只向低于目标的 venue 补充差额
+- V3 tick range 不变时沿用原 NFT；range 改变时旧 NFT 必须全撤并重建。
+- 当前使用 raw token 精确比较，没有 dust tolerance。mainnet fork 测试需要连续执行两次相同 V3 plan，确认是否出现重复 increase、dust 残留或无意义 gas 消耗，再决定容差阈值。
 
 ### 权限和边界
 - `rebalance()` 是 owner-only 策略入口
