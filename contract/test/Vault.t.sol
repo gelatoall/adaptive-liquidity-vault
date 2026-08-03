@@ -331,7 +331,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         // Alice must not recover more than her initial deposit plus donation.
         vm.prank(alice);
-        (uint256 amount0Out,) = vault.redeem(aliceShares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        (uint256 amount0Out,) = vault.redeem(aliceShares, alice, alice, 0, 0);
 
         assertLe(amount0Out, attackerCost);
     }
@@ -372,7 +372,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 amount1 = 0;
         oracle.setPrices(price0, price1);
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        
+
         assertEq(vault.totalAssets(), 1e18);
         assertEq(vault.totalSupply(), 1e18);
 
@@ -452,8 +452,8 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
     }
 
     // redeem
-    /// @notice Verifies pause and stale oracle conditions do not block user redemption.
-    function test_Redeem_WorksWhenPausedAndOraclePriceIsStale() public {
+    /// @notice Verifies pausing does not block redemption while valuation prices remain valid.
+    function test_Redeem_WorksWhenPaused() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
@@ -467,15 +467,37 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 expectedAmount1Out = amount1 * shares / totalSharesBefore;
 
         vault.pause();
-        vm.warp(oracle.lastUpdatedAt() + DEFAULT_MAX_PRICE_AGE + 1);
 
         vm.prank(alice);
-        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, 0, 0);
 
         assertEq(amount0Out, expectedAmount0Out);
         assertEq(amount1Out, expectedAmount1Out);
         assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
         assertEq(vault.balanceOf(alice), 0);
+    }
+
+    /// @notice Redeem rejects stale valuation prices.
+    function test_Redeem_RevertsWhenOraclePriceIsStale() public {
+        oracle.setPrices(1e18, 5e14);
+
+        uint256 shares = _mintAndDeposit(token0, token1, vault, alice, 1 ether, 2000e6);
+
+        uint256 updatedTimestamp = oracle.lastUpdatedAt();
+        vm.warp(updatedTimestamp + DEFAULT_MAX_PRICE_AGE + 1);
+        uint256 currentTimestamp = block.timestamp;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AdaptiveLPVault.StalePrice.selector,
+                address(oracle),
+                updatedTimestamp,
+                currentTimestamp
+            )
+        );
+
+        vm.prank(alice);
+        vault.redeem(shares, alice, alice, 0, 0);
     }
 
     function test_Redeem_RevertsWhenUserRedeemsMoreSharesThanOwned() public {
@@ -495,29 +517,32 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.startPrank(alice);
         uint256 shares = 3e18;
         vm.expectRevert(AdaptiveLPVault.InsufficientShares.selector);
-        vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        vault.redeem(shares, alice, alice, 0, 0);
         vm.stopPrank();
     }
 
     function test_Redeem_RevertsWhenSharesIsZero() public {
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.ZeroShares.selector);
-        vault.redeem(0, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        vault.redeem(0, alice, alice, 0, 0);
     }
 
-    function test_Redeem_BurnsUserShares() public {
+    function test_Redeem_RevertsWhenTokenOutputsRoundToZero() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
         uint256 amount1 = 2000e6;
+
         oracle.setPrices(price0, price1);
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
-        assertEq(vault.balanceOf(alice), 2e18 - vault.MINIMUM_LOCKED_SHARES());
 
-        uint256 shares = 1e18;
+        uint256 sharesBefore = vault.balanceOf(alice);
+
+        vm.expectRevert(AdaptiveLPVault.RedeemAmountTooSmall.selector);
         vm.prank(alice);
-        vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
-        assertEq(vault.balanceOf(alice), 1e18 - vault.MINIMUM_LOCKED_SHARES());
+        vault.redeem(1, alice, alice, 0, 0);
+
+        assertEq(vault.balanceOf(alice), sharesBefore);
     }
 
     function test_Redeem_ReducesTotalSupply() public {
@@ -537,7 +562,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         uint256 shares = 1e18;
         vm.prank(alice);
-        vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        vault.redeem(shares, alice, alice, 0, 0);
 
         assertEq(vault.balanceOf(alice), 1e18 - vault.MINIMUM_LOCKED_SHARES());
         assertEq(vault.totalSupply(), 3e18);
@@ -555,7 +580,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         
         uint256 shares = 1e18;
         vm.prank(alice);
-        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), 0, 0);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, 0, 0);
 
         assertEq(amount0Out, 0.5e18);
         assertEq(amount1Out, 1000e6);
@@ -573,7 +598,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         vm.prank(alice);
         vm.expectRevert(AdaptiveLPVault.InsufficientRedeemOutput.selector);
-        vault.redeem(shares, alice, alice, _emptyWithdrawalParams(), amount0 + 1, amount1);
+        vault.redeem(shares, alice, alice, amount0 + 1, amount1);
     }
 
     /// @notice Verifies an approved operator can burn owner shares and send underlying tokens to a separate receiver.
@@ -598,7 +623,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
 
         vm.prank(operator);
         (uint256 amount0Out, uint256 amount1Out) =
-            vault.redeem(shares, bob, alice, _emptyWithdrawalParams(), 0, 0);
+            vault.redeem(shares, bob, alice, 0, 0);
 
         assertEq(amount0Out, expectedAmount0Out);
         assertEq(amount1Out, expectedAmount1Out);

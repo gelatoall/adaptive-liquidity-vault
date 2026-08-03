@@ -239,9 +239,9 @@ Rules:
 - `weightBps` uses `10_000` as 100%
 - every target weight must be non-zero
 - venue ids must be unique
-- all weights must sum to `10_000`
+- total weight must not exceed `10_000`; unallocated weight remains idle
 
-`buildTargets(vault, data)` reads the vault's current total underlying `token0` and `token1` amounts through `vault.getTotalUnderlying()`, then splits those amounts by the configured weights. Total underlying means idle balances plus adapter-reported deployed position amounts. The final target receives any integer-division rounding dust so the returned target amounts sum back to the original totals.
+`buildTargets(vault, data)` reads the vault's current total underlying `token0` and `token1` amounts through `vault.getTotalUnderlying()`, then splits those amounts by the configured weights. Total underlying means idle balances plus adapter-reported deployed position amounts. When weights total `10_000`, the final target receives integer-division dust. With a lower total weight, the unallocated amounts remain idle as a redemption buffer.
 
 Current limitation:
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
@@ -273,7 +273,7 @@ Bucket selection is:
 - `lowThreshold < volatilityBps <= highThreshold`: `MEDIUM`
 - `volatilityBps > highThreshold`: `HIGH`
 
-The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, the last target receives rounding dust.
+The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, bucket weights may total less than `10_000` to retain idle liquidity; the last target receives rounding dust only for a fully allocated bucket.
 
 `getRecommendedTargets()` exposes the current bucket's configured `TargetConfig[]` for keepers, frontends, and monitoring. This is the multi-venue equivalent of a single `getRecommendedVenue()` helper: it reports the selected venue ids and weights, but it does not calculate token amounts or execute a rebalance.
 
@@ -449,7 +449,7 @@ These conditions should always hold:
 - rebalance only wraps existing deploy and withdraw helpers
 - per-venue liquidity is updated through the same path as manual venue operations
 - total tracked liquidity equals the sum of tracked liquidity changes applied by venue operations
-- direct user redemption withdraws the caller's proportional tracked venue liquidity
+- direct user redemption uses idle balances and leaves tracked venue liquidity unchanged
 - venue ids are caller-defined identifiers, not enum states
 - strategy-built plans must pass the same validation as manual plans
 - failed strategy rebalances must not update `lastRebalance`

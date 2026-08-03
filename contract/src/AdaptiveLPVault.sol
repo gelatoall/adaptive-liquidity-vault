@@ -272,6 +272,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Thrown when redeemed token amounts are below the caller's minimums.
     error InsufficientRedeemOutput();
 
+    /// @notice Thrown when idle balances cannot cover a synchronous redemption.
+    error InsufficientIdleLiquidity(uint256 requiredValue, uint256 idleValue);
+
     /// @notice Thrown when the primary valuation oracle is not configured.
     error PriceOracleNotSet();
 
@@ -320,7 +323,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Thrown when an operation is blocked because at least one venue still has an active position.
     error ActivePositionExists();
 
-    /// @notice Thrown when redeemed shares are too small to withdraw any tracked venue liquidity.
+    /// @notice Thrown when a positive redemption value produces zero output for both underlying tokens.
     error RedeemAmountTooSmall();
 
     /// @notice Thrown when a rebalance request would not move any funds.
@@ -470,13 +473,12 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         emit Deposit(msg.sender, receiver, amount0, amount1, shares);
     } 
 
-    /// @notice Redeems vault shares for proportional underlying token balances.
-    /// @dev Harvests claimable venue tokens into idle balances before calculating the redeemer's pro-rata claim.
-    ///      Burns shares from `owner`. If the caller is not `owner`, the caller must have share allowance.
+    /// @notice Redeems vault shares using available idle token balances.
+    /// @dev Values the redeemed shares using validated prices and pays them using the current idle token composition
+    ///      without removing venue liquidity. Burns shares from `owner`; delegated callers need share allowance.
     /// @param shareToRedeem Amount of vault shares to burn.
     /// @param receiver Address that receives the withdrawn token0 and token1 amounts.
     /// @param owner Address whose vault shares are burned.
-    /// @param withdrawalParams Venue-specific remove-liquidity params used when redeem withdraws active positions.
     /// @param minAmount0Out Minimum acceptable token0 amount sent to `receiver`.
     /// @param minAmount1Out Minimum acceptable token1 amount sent to `receiver`.
     /// @return amount0Out Raw token0 amount sent to `receiver`.
@@ -485,7 +487,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 shareToRedeem,
         address receiver,
         address owner,
-        VenueWithdrawalParams[] calldata withdrawalParams,
         uint256 minAmount0Out,
         uint256 minAmount1Out
     ) external nonReentrant returns (uint256 amount0Out, uint256 amount1Out) {
@@ -506,27 +507,10 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
             _spendAllowance(owner, msg.sender, shareToRedeem);
         }
 
-        // Keep the denominator stable while harvested fees are moved into idle balances.
+        // Snapshot total supply before quoting and burning the redeemed shares.
         uint256 totalSharesBefore = totalSupply();
 
-        // Historical venue fees become part of the proportional idle claim for every shareholder.
-        _collectAllVenueFees();
-
-        // Snapshot idle balances after harvesting so fee ownership follows share ownership.
-        uint256 idle0Before = IERC20(token0).balanceOf(address(this));
-        uint256 idle1Before = IERC20(token1).balanceOf(address(this));
-
-        // Compute the proportional idle token amounts owed for the redeemed shares.
-        amount0Out = shareToRedeem * idle0Before / totalSharesBefore;
-        amount1Out = shareToRedeem * idle1Before / totalSharesBefore;
-
-        (uint256 venue0Out, uint256 venue1Out) = _withdrawProportionalVenueLiquidity(
-            shareToRedeem,
-            totalSharesBefore,
-            withdrawalParams
-        );
-        amount0Out += venue0Out;
-        amount1Out += venue1Out;
+        (amount0Out, amount1Out) = _quoteIdleRedeem(shareToRedeem, totalSharesBefore);
         if (amount0Out < minAmount0Out || amount1Out < minAmount1Out) {
             revert InsufficientRedeemOutput();
         }
@@ -872,7 +856,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 liquidity, 
         bytes calldata params
     ) external onlyOwner nonReentrant returns (
-        uint256 amount0Out, 
+        uint256 amount0Out,
         uint256 amount1Out
     ) {
         return _withdrawFromVenue(venueId, liquidity, params, true);
@@ -1152,6 +1136,31 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
+    /// @notice Quotes an idle-only redemption using validated valuation prices.
+    /// @dev Pays the claim using the current idle token composition without removing venue liquidity.
+    function _quoteIdleRedeem(uint256 shares, uint256 totalShares) internal view returns (
+        uint256 amount0Out,
+        uint256 amount1Out
+    ) {
+        (uint256 price0, uint256 price1) = _getValidatedPrices();
+        uint256 totalValue = _totalAssetsAtPrices(price0, price1);
+
+        uint256 redeemValue = Math.mulDiv(totalValue, shares, totalShares);
+        if (redeemValue == 0) revert RedeemAmountTooSmall();
+
+        uint256 idle0 = token0.balanceOf(address(this));
+        uint256 idle1 = token1.balanceOf(address(this));
+        uint256 idleValue = VaultMath.getAssetsTotalValue(idle0, price0, decimals0, idle1, price1, decimals1);
+
+        if (redeemValue > idleValue) revert InsufficientIdleLiquidity(redeemValue, idleValue);
+
+        amount0Out = Math.mulDiv(idle0, redeemValue, idleValue);
+        amount1Out = Math.mulDiv(idle1, redeemValue, idleValue);
+        if (amount0Out == 0 && amount1Out == 0) {
+            revert RedeemAmountTooSmall();
+        }
+    }
+
     /// @notice Sums idle token balances and adapter-reported deployed amounts.
     /// @dev This amount view is intended for strategy planning and reporting, not vault share pricing.
     function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
@@ -1223,7 +1232,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     /// @notice Collects claimable tokens from every registered venue.
-    /// @dev Used before redeem snapshots idle balances so collected V3 fees are distributed pro rata by shares.
+    /// @dev Used before delta rebalance so claimable tokens participate in the same target-allocation flow.
     function _collectAllVenueFees() internal returns (uint256 totalCollected0, uint256 totalCollected1) {
         for (uint256 i = 0; i < venueIds.length; i++) {
             (uint256 collected0, uint256 collected1) = _collectVenueFees(venueIds[i]);
@@ -1232,10 +1241,10 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         }
     }
 
-    /// @notice Shared internal withdraw flow for manual withdraws, rebalances, and redemptions.
+    /// @notice Shared internal withdraw flow for manual withdrawals, rebalances, and emergency exits.
     /// @dev When `collectFeesBeforeRemove` is true, returns collected tokens plus removed liquidity proceeds.
-    ///      Redeem harvests before its idle-balance snapshot and passes false to prevent whole-position fees
-    ///      from being attributed to only the current redeemer. `params` is forwarded for exit constraints.
+    ///      Delta rebalance harvests all venues first and passes false to avoid collecting the same owed tokens twice.
+    ///      `params` is forwarded to the adapter as venue-specific exit constraints.
     function _withdrawFromVenue(
         uint256 venueId, 
         uint256 liquidity, 
@@ -1264,33 +1273,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         totalLiquidity -= liquidity;
 
         emit WithdrawFromVenue(venueId, liquidity, amount0Out, amount1Out);
-    }
-
-    /// @notice Removes liquidity from each venue in proportion to redeemed shares after fees are harvested.
-    function _withdrawProportionalVenueLiquidity(
-        uint256 shares, 
-        uint256 totalSharesBefore,
-        VenueWithdrawalParams[] calldata withdrawalParams
-    ) internal returns (uint256 amount0Out, uint256 amount1Out) {
-        for (uint256 i = 0; i < venueIds.length; i++) {
-            uint256 id = venueIds[i];
-            uint256 liquidity = venueLiquidity[id];
-            if (liquidity == 0) continue;
-
-            uint256 liquidityToWithdraw; 
-            if (shares == totalSharesBefore) { // Final withdraw
-                liquidityToWithdraw = liquidity;
-            } else {
-                liquidityToWithdraw = liquidity * shares / totalSharesBefore;
-            }
-
-            if (liquidityToWithdraw == 0) revert RedeemAmountTooSmall();
-
-            bytes memory params = _getVenueWithdrawalParams(id, withdrawalParams);
-            (uint256 venue0Out, uint256 venue1Out) = _withdrawFromVenue(id, liquidityToWithdraw, params, false);
-            amount0Out += venue0Out;
-            amount1Out += venue1Out;
-        }
     }
 
     /// @notice Reverts if a rebalance plan contains duplicate venue ids.

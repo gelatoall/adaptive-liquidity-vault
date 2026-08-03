@@ -12,6 +12,9 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     /// @notice Configured fixed-weight venue allocations.
     RebalanceTypes.TargetConfig[] public targetConfigs;
 
+    /// @notice Total venue allocation weight; unallocated weight remains idle.
+    uint256 public totalTargetWeightBps;
+
     /// @notice Emitted after the target config set is replaced.
     event SetTargets(uint256 count);
 
@@ -30,7 +33,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     // View Functions
     // ============================================
     /// @notice Builds a rebalance plan from the vault's total underlying token balances.
-    /// @dev The last target receives any rounding dust.
+    /// @dev When weights total 10_000 bps, the final target receives rounding dust.
+    ///      Otherwise unallocated underlying remains idle.
     function buildTargets(
         address vault, 
         bytes calldata
@@ -47,11 +51,12 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
 
         uint256 used0;
         uint256 used1;
+        bool fullyAllocated = totalTargetWeightBps == RebalanceTypes.BPS;
         for (uint256 i = 0; i < length; i++) {
             uint256 amount0;
             uint256 amount1;
 
-            if (i == length - 1) {
+            if (fullyAllocated && (i == length - 1)) {
                 amount0 = total0 - used0;
                 amount1 = total1 - used1;
             } else {
@@ -79,7 +84,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     // Admin Functions
     // ============================================
     /// @notice Replaces fixed venue weights.
-    /// @dev Weights must be nonzero, unique by venue id, and sum to 10_000 bps.
+    /// @dev Weights must be nonzero and unique, and their sum must not exceed 10_000 bps.
+    ///      Unallocated weight remains in the vault as idle liquidity.
     function setTargets(RebalanceTypes.TargetConfig[] calldata configs) external onlyOwner {
         if (configs.length == 0) revert EmptyTargets();
 
@@ -102,7 +108,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
             }));
         }
 
-        if (totalWeight != RebalanceTypes.BPS) revert InvalidTotalWeight();
+        if (totalWeight > RebalanceTypes.BPS) revert InvalidTotalWeight();
+        totalTargetWeightBps = totalWeight;
 
         emit SetTargets(configs.length);
     }

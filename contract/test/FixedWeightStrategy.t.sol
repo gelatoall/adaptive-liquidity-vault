@@ -39,13 +39,13 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
     }
 
     /// @notice buildTargets returns four targets using configured bps weights.
-    function test_BuildTargets_ReturnsFourWeightedTargets() public {
+    function test_BuildTargets_LeavesUnallocatedWeightIdle() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 2000);
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 1000);
         strategy.setTargets(configs);
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(vault), "");
@@ -65,8 +65,8 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(targets[2].amount1, 6e6);
 
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
-        assertEq(targets[3].amount0, 2 ether);
-        assertEq(targets[3].amount1, 4e6);
+        assertEq(targets[3].amount0, 1 ether);
+        assertEq(targets[3].amount1, 2e6);
     }
 
     /// @notice buildTargets assigns integer division dust to the final target.
@@ -123,9 +123,9 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         strategy.setTargets(configs);
     }
 
-    /// @notice setTargets requires weights to sum to 10_000 bps.
-    function test_SetTargets_RevertsWhenTotalWeightIsNotBps() public {
-        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 1000);
+    /// @notice setTargets rejects allocation weights above 10_000 bps.
+    function test_SetTargets_RevertsWhenTotalWeightExceedsBps() public {
+        RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 3000); // 11_000 bps
         vm.expectRevert(FixedWeightStrategy.InvalidTotalWeight.selector);
         strategy.setTargets(configs);
     }

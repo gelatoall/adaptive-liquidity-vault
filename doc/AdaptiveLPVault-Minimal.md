@@ -5,7 +5,7 @@
 Build a minimal two-asset vault that:
 - accepts deposits of `token0` and `token1`
 - mints vault shares based on deposit value
-- allows users to redeem shares for proportional idle balances and deployed venue liquidity
+- allows synchronous share redemption from a valuation-aware idle liquidity buffer
 - tracks total vault assets across idle balances and registered venue positions
 - supports multiple venue adapters through a simple venue registry
 - supports owner-supplied rebalance plans across registered venues
@@ -149,13 +149,13 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - behavior: reverts if minted shares are below `minShares`
   - returns: `uint256 shares`
 
-- `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`
-  - purpose: burn `owner` shares and return proportional token balances across idle assets and active venue positions to `receiver`
+- `redeem(shares, receiver, owner, minAmount0Out, minAmount1Out)`
+  - purpose: burn `owner` shares and pay their base-denominated value from idle token balances to `receiver`
   - behavior: if the caller is not `owner`, the caller must have sufficient ERC20 share allowance from `owner`
-  - behavior: withdraws the redeemed share ratio of tracked liquidity from each active venue before transferring tokens
-  - behavior: forwards matching per-venue withdrawal params to adapters; venues without a matching entry receive empty params
+  - behavior: uses validated valuation prices and the current idle token composition without removing venue liquidity
+  - behavior: reverts with `InsufficientIdleLiquidity` when idle value cannot cover the requested redemption
   - behavior: reverts if final token outputs are below `minAmount0Out` or `minAmount1Out`
-  - behavior: does not depend on valuation oracles, so stale or divergent prices do not block exits
+  - behavior: reverts when valuation prices are stale, invalid, or outside the configured deviation limit
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `deployToVenue(venueId, amount0, amount1, params)`
@@ -216,7 +216,8 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `pause()`
   - purpose: pause deposits, venue deployment, and normal rebalance operations
-  - behavior: owner-only; redemptions, direct venue withdrawals, and fee harvesting remain available
+  - behavior: owner-only; redemptions, direct venue withdrawals, and fee harvesting remain callable
+  - behavior: redemptions still require valid valuation prices and sufficient idle liquidity
   - behavior: fee compounding remains blocked because it redeploys idle assets into a venue
 
 - `unpause()`
@@ -255,20 +256,18 @@ The permanent initial-share lock prevents a first depositor from owning 100% of 
 3. Revert if `shareToRedeem` exceeds `owner`'s share balance.
 4. If the caller is not `owner`, spend the caller's ERC20 share allowance from `owner`.
 5. Read `totalSupply()` before burning.
-6. Read idle `token0` and `token1` balances held by the vault.
-7. Compute the proportional idle token amounts owed for the redeemed shares.
-8. Iterate registered venues and withdraw `shareToRedeem / totalSupplyBefore` of each tracked venue liquidity amount.
-9. For each venue withdrawal, forward the matching `VenueWithdrawalParams.params` entry to the adapter; if no entry matches the venue id, forward empty params.
-10. Add the tokens returned from venue withdrawals to the output amounts.
+6. Read validated primary/reference valuation prices and compute total vault value.
+7. Convert the redeemed shares into a base-denominated `redeemValue`.
+8. Value current idle balances and revert with `InsufficientIdleLiquidity` if they cannot cover `redeemValue`.
+9. Preserve the idle token ratio while converting `redeemValue` into `amount0Out` and `amount1Out`.
+10. Revert with `RedeemAmountTooSmall` if both token outputs round down to zero.
 11. Revert if final token outputs are below `minAmount0Out` or `minAmount1Out`.
 12. Burn `owner`'s shares.
 13. Transfer `token0` and `token1` to `receiver`.
 
-The withdrawal helper still handles `shareToRedeem == totalSupplyBefore` by withdrawing all tracked liquidity. Under normal operation after initialization, however, the permanently locked shares remain in `totalSupply`, so redeeming all shares held by a user preserves the assets and venue liquidity backing the locked shares.
+Synchronous redemption never harvests fees or removes venue liquidity. Large redemptions that exceed the idle buffer must wait for a management or rebalance transaction to return capital to idle balances.
 
-If a partial redemption is very small relative to total shares, `venueLiquidity * shares / totalSupplyBefore` can round down to zero for an active venue. In that case, the vault reverts with `RedeemAmountTooSmall` instead of burning shares for no venue output.
-
-Redemptions remain available while the vault is paused so users can exit.
+Redemptions remain callable while the vault is paused, but still require valid valuation prices and sufficient idle liquidity.
 
 ### totalAssets
 
@@ -309,7 +308,7 @@ Current valuators:
 6. Return the sum of collected tokens and removed liquidity proceeds.
 7. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
 
-User redemptions can pass per-venue withdrawal params through `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`. Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
+Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Synchronous user redemption does not remove venue liquidity and therefore does not accept withdrawal params. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
 ### Fee Harvest and Compounding
 
@@ -317,7 +316,7 @@ User redemptions can pass per-venue withdrawal params through `redeem(shares, re
 
 `compoundVenueFees(venueId, params)` collects claimable tokens and redeploys them into the same enabled venue in one transaction. It is paused with other deployment operations. For an active V3 adapter with matching tick params, this uses `increaseLiquidity` on the existing NFT rather than withdrawing and minting a new position. Any unused token dust is returned to vault idle balances by the adapter.
 
-`redeem(...)` collects claimable tokens from all venues before taking its idle-balance snapshot. Therefore, a partial redemption receives its pro-rata portion of previously accrued V3 fees through the idle component, while the remaining portion stays in the vault for remaining shares. The subsequent proportional liquidity withdrawal does not collect whole-position fees again.
+Uncollected venue fees remain part of trusted venue valuation. `redeem(...)` does not collect them; it pays the redeemed share value from existing idle balances. Harvesting and compounding remain explicit owner/keeper operations.
 
 Harvesting and compounding are permissioned execution operations, not self-executing timers. An owner or configured keeper must submit the transaction after applying its own frequency, gas-cost, and slippage policy.
 
@@ -439,7 +438,7 @@ These conditions should always hold:
 - non-zero deposits must not mint zero shares
 - `totalAssets()` reflects idle balances plus trusted valuator output for all active venues
 - redeeming shares reduces the user's share balance and total share supply
-- redeeming shares withdraws the caller's proportional tracked liquidity from active venues
+- redeeming shares uses idle balances and leaves active venue liquidity unchanged
 - per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
 - rebalance reuses the same deploy and withdraw helpers as manual venue operations
 - strategy-built plans pass through the same validation as manual rebalance plans
@@ -465,12 +464,12 @@ Venue integration:
 - deployment tracks per-venue liquidity
 - withdrawal reduces per-venue liquidity and total liquidity
 - `totalAssets()` includes directly valued idle balances and trusted V2/V3 venue valuations
-- redeeming all user-owned shares preserves the V2, V3, and multi-venue liquidity backing locked shares
-- partial redeem withdraws only the caller's pro-rata active V2, V3, and multi-venue liquidity
-- partial V3 redeem distributes previously accrued claimable tokens pro rata by shares
+- idle-buffer redemption leaves V2, V3, and multi-venue positions unchanged
+- redemption reverts without burning shares when idle value is insufficient
+- redemption reverts when both token outputs round down to zero
 - harvesting returns claimable V3 tokens to idle balances without removing the active position
 - compounding increases an existing V3 position without changing its `tokenId` or vault share supply
-- redeem forwards per-venue withdrawal params to V2 and V3 adapters
+- rebalance and manual withdrawal forward per-venue withdrawal params to V2 and V3 adapters
 - venue updates are blocked while the target venue is active
 
 Rebalance coverage:

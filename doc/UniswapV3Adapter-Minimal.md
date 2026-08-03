@@ -384,13 +384,13 @@ After the adapter unit tests are stable, add a separate vault integration file f
 
 That integration layer should verify:
 - `setVenue()` wires the vault to the V3 adapter
-- `deposit -> deployToVenue(venueId, ...) -> redeem` works as a closed loop by withdrawing proportional active V3 liquidity during redemption
+- `deposit -> partial deploy -> redeem` uses the vault's idle buffer without decreasing active V3 liquidity
 - `totalAssets()` includes the position through the configured `V3TwapPositionValuator`
-- redeeming all user-owned shares preserves the position liquidity backing permanently locked shares
+- synchronous redeem preserves the position NFT and tracked liquidity
 
 The vault can call `harvestVenueFees(venueId)` to collect owed V3 tokens into idle balances without removing liquidity. It can call `compoundVenueFees(venueId, params)` to collect and redeploy those tokens into the same venue. When this adapter has an active NFT and the supplied ticks match that NFT, `addLiquidity(...)` uses `increaseLiquidity` rather than minting a new position.
 
-During redemption, the vault collects claimable tokens from all venues before its idle-balance snapshot. The redeemer therefore receives its share of previously accrued V3 fees through the idle component; proportional liquidity removal then executes without a second whole-position collection. This prevents a partial redeemer from receiving fees owned by remaining shareholders.
+During redemption, the vault values the active V3 position, including owed tokens, through its trusted valuator but does not collect or decrease the position. The redeemed value is paid from existing idle balances. Fee harvesting and compounding remain explicit owner/keeper operations.
 
 The adapter-level `collectFees()` name is retained for the generic venue interface. For V3, it collects currently owed position-manager tokens, which can include swap fees and tokens made owed by a prior `decreaseLiquidity`.
 
@@ -402,7 +402,7 @@ The current vault can integrate this adapter without changing `IVenueAdapter`:
 - the owner can call `deployToVenue(venueId, amount0, amount1, params)`
 - the owner can call `withdrawFromVenue(venueId, liquidity, params)`
 - `totalAssets()` values active V3 positions through a configured `V3TwapPositionValuator`; `getPositionValue()` remains an informational amount view
-- direct user redemption withdraws the caller's proportional tracked V3 liquidity before transferring underlying tokens
+- synchronous user redemption uses idle balances and leaves the V3 NFT and liquidity unchanged
 
 This means each V3 fee tier can be represented by a separate adapter instance and registered as a separate venue while preserving the current vault abstraction.
 

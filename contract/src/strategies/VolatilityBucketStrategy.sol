@@ -32,6 +32,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
     /// @notice Upper bound of the medium-volatility bucket.
     uint256 public highVolatilityThresholdBps;
 
+    /// @notice Total venue weight configured for each volatility bucket.
+    mapping(Bucket => uint256) public bucketTotalWeightBps;
+
     /// @notice Venue allocations configured for each bucket.
     mapping(Bucket => RebalanceTypes.TargetConfig[]) public bucketTargets;
     
@@ -107,11 +110,12 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
 
         uint256 used0;
         uint256 used1;
+        bool fullyAllocated = bucketTotalWeightBps[bucket] == RebalanceTypes.BPS;
         for(uint256 i = 0; i < length; i++) {
             uint256 amount0;
             uint256 amount1;
 
-            if (i == length - 1) {
+            if (fullyAllocated && (i == length - 1)) {
                 amount0 = total0 - used0;
                 amount1 = total1 - used1;
             } else {
@@ -185,7 +189,8 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
             totalWeight += configs[i].weightBps;
         }
 
-        if (totalWeight != RebalanceTypes.BPS) revert InvalidTotalWeight();
+        if (totalWeight > RebalanceTypes.BPS) revert InvalidTotalWeight();
+        bucketTotalWeightBps[bucket] = totalWeight;
 
         delete bucketTargets[bucket];
         for(uint256 i = 0; i < length; i++) {

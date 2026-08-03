@@ -189,44 +189,34 @@
 
 ### Redeem
 - `redeem` 的流程是：
-  - `shares -> ownership ratio -> amount0Out/amount1Out`
-- `redeem` 会按 shares 占比返还底层 token。
-- 当前签名是 `redeem(shares, receiver, owner, withdrawalParams, minAmount0Out, minAmount1Out)`。
+  - `shares -> redeemValue -> idle amount0Out/amount1Out`
+- `redeem` 会把 shares 对应的总 vault 价值从当前 idle token 组合中支付。
+- 当前签名是 `redeem(shares, receiver, owner, minAmount0Out, minAmount1Out)`。
 - `owner` 是 shares 被 burn 的地址。
 - `receiver` 是最终收到 `token0/token1` 的地址。
 - `msg.sender` 是发起 redeem 的地址。
 - `minAmount0Out/minAmount1Out` 是用户愿意接受的最少赎回输出。如果最终输出低于任一最小值，交易会 revert `InsufficientRedeemOutput`。
 - 如果 `msg.sender != owner`，则 `msg.sender` 必须先获得 `owner` 对 vault shares 的 ERC20 allowance。
-- 在当前集成里，`redeem` 会同时处理：
-  - vault 里直接持有的 idle token
-  - 已注册 venue 里按 vault 记账追踪的 deployed liquidity
+- 同步 `redeem` 只转出 vault 直接持有的 idle token，不 harvest fee，也不撤出 active venue liquidity。
 
 ### Redeem 的输出公式
-- `idle0Out = vaultIdle0 * shares / totalSupplyBefore`
-- `idle1Out = vaultIdle1 * shares / totalSupplyBefore`
-- `venueLiquidityToWithdraw = venueLiquidity * shares / totalSupplyBefore`
-- 最终输出是 idle 部分加上所有 venue 撤仓返回的 token。
+- `redeemValue = totalAssets * shares / totalSupplyBefore`
+- `idleValue = valueInBase(idle0, price0) + valueInBase(idle1, price1)`
+- `amount0Out = idle0 * redeemValue / idleValue`
+- `amount1Out = idle1 * redeemValue / idleValue`
 
 ### 当前 `redeem()` 要特别注意什么
-- 当前实现里，`redeem()` 不是先把 shares 换算成一个统一的 `assets`，再去买回 token。
-- 它当前做的是：
-  - 按 shares 占总 shares 的比例
-  - 直接拿走 vault 当前 idle token 余额中的同样比例
-  - 同时从每个 active venue 中撤出相同比例的 tracked liquidity
-- 所以当前实现更准确地说是：
-  - `amount0Out = idle0Out + venue0Out`
-  - `amount1Out = idle1Out + venue1Out`
-- withdrawal helper 在 `shares == totalSupplyBefore` 时仍会撤出全部 tracked liquidity。但正常初始化后，永久锁定 shares 始终包含在 `totalSupplyBefore` 中，因此普通用户赎回自己的全部 shares 时，locked shares 对应的资产和 venue liquidity 会继续保留。
-- 如果用户部分赎回的 shares 相对总 shares 太小，`venueLiquidity * shares / totalSupplyBefore` 可能会因为整数除法向下取整变成 0。此时 vault 会 revert `RedeemAmountTooSmall`，避免用户 shares 被 burn 但拿不到 deployed liquidity 对应资产。
-- `redeem` 现在接收 `withdrawalParams`，可以按 `venueId` 给不同 venue 的 withdrawal 传入不同的 slippage/deadline 参数。
-- 如果某个 active venue 没有对应的 `withdrawalParams`，vault 会向该 adapter 传空 `params`，adapter 使用自己的默认值。
+- `redeem()` 使用经过 freshness 和双源 deviation 校验的估值价格，因此 stale 或偏差超限会阻止同步赎回。
+- 如果 `redeemValue > idleValue`，交易会 revert `InsufficientIdleLiquidity`，shares 不会被 burn。
+- 如果两个 token 输出都因整数除法向下取整为 0，交易会 revert `RedeemAmountTooSmall`。
+- active venue 的 adapter、liquidity 和 V3 `tokenId` 在同步赎回中保持不变。
+- venue withdrawal params 只用于 manual withdrawal、rebalance 和 emergency exit，不再属于 redeem 接口。
 
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
-- 当前版本下，如果资金仍然部署在任意 venue 里，`redeem()` 会按 shares 比例调用内部 withdrawal flow，把用户对应比例的 liquidity 撤回后再转出 token。
-- `minAmount0Out/minAmount1Out` 是 redeem 的用户侧保护。它可以防止撤仓滑点、rounding 或 venue 返回值低于用户预期。
+- `minAmount0Out/minAmount1Out` 是 redeem 的用户侧保护，可以防止估值变化或 rounding 导致输出低于用户预期。
 - `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
-- `redeem` 不受 paused 状态限制。这样在紧急情况下，即使 owner 暂停了正常运营，用户仍然可以退出。
+- `redeem` 不受 paused 状态限制，但仍要求估值价格有效且 idle buffer 足够。
 
 ### 两步所有权转移
 - `AdaptiveLPVault`、两个 strategy 和 `TwapSlippageController` 都继承 OpenZeppelin `Ownable2Step`。
@@ -277,7 +267,7 @@
 - `setPriceOracleConfig(...)` 会同时设置 primary/reference oracle、各自 freshness window 和最大偏差；两个 oracle 必须使用 token0 作为同一计价基准，生产配置还应保证来源相互独立。
 - `deposit()` 和 `totalAssets()` 会在 oracle 未配置、价格为 `0`、时间戳无效、价格过期或双源偏差超限时 revert。
 - 手动 `rebalance(...)` 和 `rebalanceWithStrategy(...)` 同样受 valuation oracle 熔断保护。
-- `redeem()` 不依赖价格估值，因此暂停、价格过期或双源偏差超限时仍允许用户按份额退出。
+- `redeem()` 不受 pause 限制，但依赖有效估值价格；价格过期或双源偏差超限会阻止同步赎回。
 - `emergencyExit` 会先暂停 vault，再通过 self-call 和 `try/catch` 逐 venue 尝试撤仓
 
 ### Keeper 执行权限
@@ -657,7 +647,7 @@
   - `deadline = block.timestamp`
 - 这表示：
   - manual deploy / withdraw 已经可以向 V2 adapter 传入 slippage/deadline 参数
-  - redeem 已经可以通过 `withdrawalParams` 向 active V2 withdrawal 传入 slippage/deadline 参数
+  - redeem 不触发 V2 withdrawal；同步赎回只使用 vault idle buffer
   - manual rebalance 已经可以通过 `withdrawalParams` 向 active V2 withdrawal 传入 slippage/deadline 参数
 
 ### 当前 adapter 的资产流
@@ -863,7 +853,7 @@
 - 所以更准确地说：
   - 现在已经接通了 vault 和 adapter 的资产流主干
   - multi-venue 执行层已经接上
-  - `redeem()` 已经可以按 shares 比例拆出 active venue 仓位，并支持按 venue 转发 withdrawal params
+  - `redeem()` 会按 shares 价值使用 idle buffer，并保持 active venue 仓位不变
   - 但策略层还没有接上
 
 ## 10. 我已经发现的常见错误
@@ -1269,10 +1259,10 @@ struct TargetConfig {
 - 配置规则：
   - 每个 weight 必须大于 0
   - venueId 不能重复
-  - 所有 weight 加起来必须等于 `10_000`
+  - 所有 weight 加起来不能超过 `10_000`；未分配权重保留为 idle buffer
 - `buildTargets(...)` 会调用 vault 的 `getTotalUnderlying()`。
 - `getTotalUnderlying()` 会把 vault idle balances 和所有 adapter-reported deployed amounts 加总。
-- `buildTargets(...)` 会把整数除法产生的 rounding dust 分给最后一个 target，保证所有 target 的 `amount0/amount1` 加起来等于 vault 当前 total underlying。
+- 当总权重等于 `10_000` 时，`buildTargets(...)` 会把整数除法产生的 rounding dust 分给最后一个 target；总权重较低时，未分配金额留在 idle。
 
 当前限制：
 - `FixedWeightStrategy` 使用 adapter 上报的 deployed amounts，不额外做独立市场 quote。
@@ -1969,16 +1959,14 @@ tick range 有两个基本约束：
 - 这组测试的目标不是重复 adapter 的内部细节，而是验证 vault 到 V3 的完整闭环
 - 最小闭环建议覆盖：
   - `setVenue()` 正确接入 V3 adapter
-  - `deposit -> deployToVenue(venueId, ...) -> redeem` 可以通过 redeem 自动按比例撤出 active V3 仓位
-  - 用户赎回自己的全部 shares 后，locked shares 对应的 V3 liquidity 仍会保留，因此 position 和 `tokenId` 仍然存在
-  - partial redeem 会保留原 `tokenId`，只减少 position liquidity
+  - `deposit -> partial deploy -> redeem` 可以通过 idle buffer 支付，而不撤出 active V3 仓位
+  - 同步 redeem 前后 V3 position、`tokenId` 和 liquidity 保持不变
   - `totalAssets()` 会通过该 venue 配置的 `V3TwapPositionValuator` 计算 V3 position 价值
-  - 当 `adapter.hasPosition()` 为 true 时，redeem 会撤出用户对应比例的 liquidity；只有 venue liquidity 被管理操作全部撤出时才会清理 position
+  - 只有 withdrawal、rebalance 或 emergency exit 等管理路径会减少或清理 position
   - strategy-driven rebalance 可以把 idle 资金部署进 V3，并验证 dynamic tick / slippage params 被传到 V3 mint
   - strategy-driven rebalance 可以从 V3 撤出，并验证 withdrawal params 被传到 V3 decrease liquidity
 - `harvestVenueFees(venueId)` 允许 owner 或 keeper 在不撤仓的情况下，把 venue 可收取的 token 收回 vault idle；该操作在 paused 状态仍可执行，因为它只回收资产，不重新承担 AMM 风险。
-- `redeem(...)` 会在读取 idle balance 前，对所有 venue 执行 collect。这样历史 V3 fees 先进入 idle，再按 `shares / totalSharesBefore` 分配给赎回者；随后按比例撤出的 liquidity 不会再次收取整个 position 的历史 fees。
-- 因此 partial redeem 的 V3 fees 已按 shares 精确分配：赎回者得到自己的比例，剩余部分留在 vault，属于剩余 shares。
+- `redeem(...)` 不执行 collect。V3 owed tokens 由 trusted valuator 计入总价值，赎回价值从现有 idle buffer 支付。
 - `compoundVenueFees(venueId, params)` 会在同一笔交易中 collect 后重新部署到相同 venue。对于已有且 tick range 匹配的 V3 NFT，adapter 会调用 `increaseLiquidity`，不需要全撤、burn NFT 或重新 mint。
 - harvest 和 compound 都需要 owner 或 keeper 主动发交易；合约没有内置定时器。keeper 应在链下结合 gas 成本、slippage params 和执行频率决定何时调用。
 - `collectFees()` 是 adapter 的通用接口名；对 V3 而言它收取的是 position manager 当前记录的 owed tokens，其中可能同时包含 swap fees 和此前 `decreaseLiquidity` 产生的 owed tokens。

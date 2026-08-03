@@ -83,7 +83,7 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
                 5000, // V2: 50%
                 500,  // V3 0.05%: 5%
                 1500, // V3 0.30%: 15%
-                3000  // V3 1.00%: 30%
+                2000  // V3 1.00%: 20%
             )
         );
     }
@@ -265,7 +265,7 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
     }
 
     /// @notice High volatility selects the configured high-bucket allocation.
-    function test_BuildTargets_UsesHighBucket() public {
+    function test_BuildTargets_LeavesUnallocatedHighBucketWeightIdle() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
 
         _setHighBucketTargets();
@@ -288,8 +288,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[2].amount1, 3e6);
 
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
-        assertEq(targets[3].amount0, 3 ether);
-        assertEq(targets[3].amount1, 6e6);
+        assertEq(targets[3].amount0, 2 ether);
+        assertEq(targets[3].amount1, 4e6);
     }
 
     /// @notice Integer division dust is assigned to the final target.

@@ -206,7 +206,7 @@ These conditions should always hold:
 - `getPositionValue()` reflects the adapter's proportional share of pair reserves
 - withdrawn assets return to the vault, not to arbitrary callers
 - public read methods do not grant any additional ability to move funds
-- if the adapter still has an active position, the current vault implementation blocks direct user redemption until funds are withdrawn back to idle balances
+- synchronous redemption uses the vault's idle buffer and never calls this adapter's removal path
 
 ## Test Plan
 
@@ -242,16 +242,16 @@ The current repository now goes beyond an isolated standalone adapter unit.
 - `totalAssets()` adds:
   - idle token balances held by the vault
   - trusted base-denominated values returned by the configured venue valuators
-- direct user redemption withdraws the caller's proportional tracked venue liquidity before transferring underlying tokens
+- synchronous user redemption uses idle balances and leaves V2 LP liquidity unchanged
 
 This means the current implementation already validates:
 - vault-to-adapter capital movement
 - adapter-to-vault withdrawal flow
 - total asset accounting across idle balances and one or more deployed venues
-- redemption-triggered proportional withdrawal from active V2 liquidity
+- idle-buffer redemption while active V2 liquidity remains unchanged
 
 It does not yet implement:
-- slippage controls for redemption-triggered withdrawal
+- asynchronous user exits that wait for venue liquidity to return to idle
 - oracle-driven deployment decisions
 - autonomous strategy selection
 
@@ -265,8 +265,8 @@ The current integration tests for `AdaptiveLPVault + UniswapV2Adapter` cover:
 - successful deployment moving idle vault funds into an adapter-held LP position
 - unused dust remaining in the vault after deployment
 - successful withdrawal returning underlying token balances back to the vault
-- redemption reverting while the adapter still has an active position
-- redemption succeeding again after the owner withdraws liquidity back to the vault
+- redemption succeeding from a sufficient idle buffer without removing the active V2 position
+- redemption reverting without burning shares when idle value is insufficient
 - per-venue liquidity tracking in the multi-venue vault
 
 These tests are intentionally focused on:
