@@ -290,6 +290,94 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(adapterV3Low.tokenId(), 1);
     }
 
+    /// @notice Verifies a queued redemption survives one venue failure and settles after both venues return funds.
+    function test_AsyncRedeem_SettlesAfterMultiVenueLiquidityReturnsSeparately() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        uint256 v2Amount0 = 6 ether;
+        uint256 v2Amount1 = 12e6;
+        uint256 v2Liquidity = 3 ether;
+
+        uint256 v3Amount0 = 4 ether;
+        uint256 v3Amount1 = 8e6;
+
+        // Deploy Alice's entire deposit across V2 and V3, leaving no idle funds for a synchronous redemption.
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low, V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+
+        // V2 valuation requires initialized reserves.
+        pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        // Alice queues her shares, and the owner activates the request so future idle funds are reserved for it.
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.prank(alice);
+        uint256 requestId = vault.requestRedeem(aliceShares, alice, alice, 0, 0, deadline);
+        vault.activateNextRedeemRequest();
+        assertEq(vault.activeRedeemRequestId(), requestId);
+
+        // Simulate a temporary V2 failure: attempting to withdraw V2 must revert without changing its position.
+        routerV2.setRevertOnRemoveLiquidity(true);
+
+        vm.expectRevert(MockUniswapV2Router.MockRemoveLiquidityFailed.selector);
+        vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity, "");
+
+        // V2 remains deployed after its isolated withdrawal call fails.
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
+        assertTrue(adapterV2.hasPosition());
+
+        // The V2 failure does not prevent a separate transaction from successfully withdrawing V3.
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, v3Amount0, v3Amount1);
+        positionManagerV3Low.setNextDecreaseResult(poolAmount0, poolAmount1);
+        vault.withdrawFromVenue(V3_LOW_VENUE_ID, v3Liquidity, _v3Params(0, 0, deadline, tickLower, tickUpper));
+
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
+        assertEq(token0.balanceOf(address(vault)), v3Amount0);
+        assertEq(token1.balanceOf(address(vault)), v3Amount1);
+
+        // Only the V3 portion is now idle, so the vault still cannot pay Alice's full share claim.
+        vm.expectPartialRevert(AdaptiveLPVault.InsufficientIdleLiquidity.selector);
+        vault.processNextRedeemRequest();
+
+        // Failed settlement does not burn Alice's escrowed shares or remove her request from the queue.
+        assertEq(vault.activeRedeemRequestId(), requestId);
+        assertEq(vault.redeemQueueHead(), requestId);
+        assertEq(vault.balanceOf(address(vault)), aliceShares);
+
+        // Simulate V2 recovery, then withdraw its remaining liquidity in a later transaction.
+        routerV2.setRevertOnRemoveLiquidity(false);
+        routerV2.setNextRemoveLiquidityResult(v2Amount0, v2Amount1);
+
+        vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity, "");
+
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+
+        // With both venue positions returned to idle, any caller can now complete Alice's active request.
+        vm.prank(bob);
+        (uint256 amount0Out, uint256 amount1Out) = vault.processNextRedeemRequest();
+
+        assertEq(token0.balanceOf(alice), amount0Out);
+        assertEq(token1.balanceOf(alice), amount1Out);
+        assertGt(amount0Out, 0);
+        assertGt(amount1Out, 0);
+
+        // Successful settlement burns the escrowed shares and clears the active one-item queue.
+        assertEq(vault.balanceOf(address(vault)), 0);
+        assertEq(vault.activeRedeemRequestId(), 0);
+        assertEq(vault.redeemQueueHead(), 0);
+        assertEq(vault.redeemQueueTail(), 0);
+        assertEq(vault.totalPendingRedeemShares(), 0);
+    }
+
     /// @notice Verifies a batch emergency exit skips a failing venue and withdraws a healthy venue.
     function test_EmergencyExit_SkipsFailingVenue() public {
         uint256 amount0 = 10 ether;

@@ -249,9 +249,10 @@ This means the current implementation already validates:
 - adapter-to-vault withdrawal flow
 - total asset accounting across idle balances and one or more deployed venues
 - idle-buffer redemption while active V2 liquidity remains unchanged
+- asynchronous redemption after V2 and V3 liquidity returns to idle in separate transactions
+- preservation of a queued request when one venue withdrawal fails or idle value remains insufficient
 
 It does not yet implement:
-- asynchronous user exits that wait for venue liquidity to return to idle
 - oracle-driven deployment decisions
 - autonomous strategy selection
 
@@ -267,6 +268,7 @@ The current integration tests for `AdaptiveLPVault + UniswapV2Adapter` cover:
 - successful withdrawal returning underlying token balances back to the vault
 - redemption succeeding from a sufficient idle buffer without removing the active V2 position
 - redemption reverting without burning shares when idle value is insufficient
+- queued redemption surviving an isolated V2 withdrawal failure and settling after V2 recovers
 - per-venue liquidity tracking in the multi-venue vault
 
 These tests are intentionally focused on:

@@ -387,10 +387,13 @@ That integration layer should verify:
 - `deposit -> partial deploy -> redeem` uses the vault's idle buffer without decreasing active V3 liquidity
 - `totalAssets()` includes the position through the configured `V3TwapPositionValuator`
 - synchronous redeem preserves the position NFT and tracked liquidity
+- asynchronous redeem can escrow shares, wait for V3 liquidity to return to idle, and settle without withdrawing inside the settlement call
 
 The vault can call `harvestVenueFees(venueId)` to collect owed V3 tokens into idle balances without removing liquidity. It can call `compoundVenueFees(venueId, params)` to collect and redeploy those tokens into the same venue. When this adapter has an active NFT and the supplied ticks match that NFT, `addLiquidity(...)` uses `increaseLiquidity` rather than minting a new position.
 
 During redemption, the vault values the active V3 position, including owed tokens, through its trusted valuator but does not collect or decrease the position. The redeemed value is paid from existing idle balances. Fee harvesting and compounding remain explicit owner/keeper operations.
+
+When idle value is insufficient, a user can queue an asynchronous redemption. Venue liquidity is recovered through separate owner transactions, and the active request is settled only after enough value has returned to idle. This separation allows healthy venues to return funds even if another venue withdrawal temporarily fails; a failed settlement leaves the request and escrowed shares intact.
 
 The adapter-level `collectFees()` name is retained for the generic venue interface. For V3, it collects currently owed position-manager tokens, which can include swap fees and tokens made owed by a prior `decreaseLiquidity`.
 

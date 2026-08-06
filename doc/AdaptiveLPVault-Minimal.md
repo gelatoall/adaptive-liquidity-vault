@@ -6,6 +6,7 @@ Build a minimal two-asset vault that:
 - accepts deposits of `token0` and `token1`
 - mints vault shares based on deposit value
 - allows synchronous share redemption from a valuation-aware idle liquidity buffer
+- queues asynchronous redemptions when venue liquidity must return to idle first
 - tracks total vault assets across idle balances and registered venue positions
 - supports multiple venue adapters through a simple venue registry
 - supports owner-supplied rebalance plans across registered venues
@@ -16,6 +17,7 @@ Build a minimal two-asset vault that:
 This version includes:
 - `deposit`
 - `redeem`
+- asynchronous redemption request, activation, settlement, cancellation, and expiration
 - `totalAssets`
 - share minting and burning
 - ERC4626-style receiver/owner semantics for deposit and redeem
@@ -156,7 +158,38 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - behavior: reverts with `InsufficientIdleLiquidity` when idle value cannot cover the requested redemption
   - behavior: reverts if final token outputs are below `minAmount0Out` or `minAmount1Out`
   - behavior: reverts when valuation prices are stale, invalid, or outside the configured deviation limit
+  - behavior: blocked while an asynchronous request is actively processing
   - returns: `uint256 amount0Out, uint256 amount1Out`
+
+- `requestRedeem(shares, receiver, owner, minAmount0Out, minAmount1Out, deadline)`
+  - purpose: escrow shares in a FIFO queue when current idle value cannot cover synchronous redemption
+  - behavior: shares remain in total supply and exposed to vault NAV until settlement, cancellation, or expiration
+  - behavior: delegated callers must have sufficient ERC20 share allowance from `owner`
+  - behavior: rejects requests that current idle liquidity can already cover
+  - behavior: accepts deadlines no more than `MAX_REDEEM_REQUEST_DURATION` in the future
+  - returns: `uint256 requestId`
+
+- `activateNextRedeemRequest()`
+  - purpose: move the FIFO queue head from `PENDING` to `PROCESSING`
+  - behavior: owner or keeper only; one request may be active at a time
+  - behavior: activation reserves subsequently returned idle liquidity by blocking synchronous redemption and new venue deployment
+
+- `deactivateRedeemRequest()`
+  - purpose: return the active request to `PENDING` when activation occurred before sufficient liquidity was recovered
+  - behavior: owner-only; does not remove the request or return its escrowed shares
+
+- `processNextRedeemRequest()`
+  - purpose: settle the active queue head from current idle balances
+  - behavior: permissionless after activation and uses settlement-time NAV and idle token composition
+  - behavior: checks the request's minimum token outputs before burning escrowed shares
+  - returns: `uint256 amount0Out, uint256 amount1Out`
+
+- `cancelRedeemRequest(requestId)`
+  - purpose: let the request owner cancel a `PENDING` request and recover its escrowed shares
+
+- `expireRedeemRequest(requestId)`
+  - purpose: remove an expired `PENDING` or `PROCESSING` request and return its escrowed shares
+  - behavior: permissionless after the request deadline; expiring the active request also exits processing mode
 
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: deploy idle funds into a registered venue adapter
@@ -268,6 +301,18 @@ The permanent initial-share lock prevents a first depositor from owning 100% of 
 Synchronous redemption never harvests fees or removes venue liquidity. Large redemptions that exceed the idle buffer must wait for a management or rebalance transaction to return capital to idle balances.
 
 Redemptions remain callable while the vault is paused, but still require valid valuation prices and sufficient idle liquidity.
+
+### asynchronous redemption
+
+1. `requestRedeem(...)` verifies that idle value is insufficient, records the request, appends it to the FIFO queue, and transfers the owner's shares into vault escrow.
+2. The owner or keeper calls `activateNextRedeemRequest()` to mark the queue head as `PROCESSING`.
+3. While that request is active, synchronous redemption and new venue deployment are blocked so returned idle liquidity cannot be consumed by those paths.
+4. Venue withdrawals occur in separate transactions. A failed venue withdrawal does not remove the request or roll back successful withdrawals from other transactions.
+5. Once idle value is sufficient, any caller may call `processNextRedeemRequest()`.
+6. Settlement quotes the request at current NAV, enforces `minAmount0Out` and `minAmount1Out`, removes the request, burns its escrowed shares, and transfers tokens to its receiver.
+7. A request owner may cancel while it is `PENDING`. After its deadline, anyone may expire a `PENDING` or `PROCESSING` request and return its shares.
+
+Pending requests do not reserve idle liquidity. Reservation begins only when the queue head is activated. Operational keepers should therefore activate an accepted queue head before recovering venue liquidity for it.
 
 ### totalAssets
 
@@ -399,6 +444,7 @@ Paused state blocks normal capital entry and allocation operations:
 
 Paused state does not block exit-oriented operations:
 - `redeem`
+- asynchronous redemption request management and settlement
 - `withdrawFromVenue`
 - `emergencyExit`
 
@@ -429,6 +475,10 @@ The vault should revert when:
 - strategy-driven rebalance violates cooldown, volatility delta, or max gas price guards
 - volatility delta guard is enabled before a volatility oracle is configured
 - redeem output is below `minAmount0Out` or `minAmount1Out`
+- an asynchronous request is submitted when idle liquidity can already cover it
+- an asynchronous request uses an invalid deadline or is activated or processed after expiry
+- queue activation is attempted without a pending head or while another request is active
+- asynchronous settlement lacks sufficient idle value or violates the request's minimum outputs
 
 ## Invariants
 
@@ -439,6 +489,10 @@ These conditions should always hold:
 - `totalAssets()` reflects idle balances plus trusted valuator output for all active venues
 - redeeming shares reduces the user's share balance and total share supply
 - redeeming shares uses idle balances and leaves active venue liquidity unchanged
+- queued shares remain in total supply while held in vault escrow
+- only the FIFO queue head can enter `PROCESSING` and be settled
+- failed asynchronous settlement does not burn escrowed shares or unlink the request
+- processed, cancelled, and expired requests are unlinked and reduce `totalPendingRedeemShares`
 - per-venue liquidity and total tracked liquidity stay in sync with deploy and withdraw flows
 - rebalance reuses the same deploy and withdraw helpers as manual venue operations
 - strategy-built plans pass through the same validation as manual rebalance plans
@@ -467,6 +521,10 @@ Venue integration:
 - idle-buffer redemption leaves V2, V3, and multi-venue positions unchanged
 - redemption reverts without burning shares when idle value is insufficient
 - redemption reverts when both token outputs round down to zero
+- asynchronous redemption escrows shares, activates the queue head, and settles permissionlessly after liquidity returns
+- cancelling a middle request preserves the surrounding FIFO links
+- minimum-output failure preserves an active request until it is processed, deactivated, or expired
+- independent V2 and V3 withdrawals can fund one request across separate transactions even when one venue initially fails
 - harvesting returns claimable V3 tokens to idle balances without removing the active position
 - compounding increases an existing V3 position without changing its `tokenId` or vault share supply
 - rebalance and manual withdrawal forward per-venue withdrawal params to V2 and V3 adapters

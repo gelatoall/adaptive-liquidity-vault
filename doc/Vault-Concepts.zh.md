@@ -212,6 +212,19 @@
 - active venue 的 adapter、liquidity 和 V3 `tokenId` 在同步赎回中保持不变。
 - venue withdrawal params 只用于 manual withdrawal、rebalance 和 emergency exit，不再属于 redeem 接口。
 
+### 异步赎回队列
+- 当同步 `redeem` 所需价值大于当前 idle value 时，用户可以调用 `requestRedeem(shares, receiver, owner, minAmount0Out, minAmount1Out, deadline)`。
+- 请求创建后，shares 会从 `owner` 转到 vault 托管，但暂时不会 burn，仍然计入 `totalSupply` 并继续承担 vault NAV 的变化。
+- 请求按双向链表组成 FIFO 队列：`redeemQueueHead` 是最早请求，`redeemQueueTail` 是最新请求。
+- owner 或 keeper 调用 `activateNextRedeemRequest()` 后，队首从 `PENDING` 进入 `PROCESSING`，并记录到 `activeRedeemRequestId`。
+- 只有进入 `PROCESSING` 后才开始预留未来返回的 idle liquidity：同步 `redeem` 和新的 venue deployment 会被阻止。仅处于 `PENDING` 的请求不会自动预留 idle。
+- owner 可以通过 `withdrawFromVenue(...)` 分多笔交易、按 venue 把资金撤回 idle。某个 venue 调用失败不会删除请求，也不会回滚其他独立交易中已经成功撤回的资金。
+- idle 足够后，任何地址都可以调用 `processNextRedeemRequest()`；token 始终发送给请求记录的 `receiver`，而不是处理交易的 caller。
+- 结算使用当时的 `totalAssets / totalSupply`，不是请求创建时固定 NAV。`minAmount0Out/minAmount1Out` 用于保护等待期间的最终输出。
+- 最低输出或 idle 检查失败时，请求保持 active，托管 shares 不会被 burn。
+- `PENDING` 请求可以由 request owner 取消；超过 deadline 后，任何人都可以 expire `PENDING` 或 `PROCESSING` 请求并把 shares 退回 owner。
+- `deactivateRedeemRequest()` 是 owner 的恢复操作：它把 active 请求退回 `PENDING`，但不会取消请求或退回 shares。
+
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
 - `minAmount0Out/minAmount1Out` 是 redeem 的用户侧保护，可以防止估值变化或 rounding 导致输出低于用户预期。
