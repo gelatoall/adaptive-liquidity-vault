@@ -212,6 +212,19 @@
 - active venue 的 adapter、liquidity 和 V3 `tokenId` 在同步赎回中保持不变。
 - venue withdrawal params 只用于 manual withdrawal、rebalance 和 emergency exit，不再属于 redeem 接口。
 
+### Minimum idle buffer
+- `minIdleBufferBps` 表示 vault 总价值中至少要保留为 idle 的比例，`10_000` 代表 100%。
+- 计算公式是：
+  - `requiredIdleValue = ceil(totalAssets * minIdleBufferBps / 10_000)`
+  - `availableToDeployValue = max(idleValue - requiredIdleValue, 0)`
+  - `bufferDeficit = max(requiredIdleValue - idleValue, 0)`
+- `getIdleBufferState()` 返回当前 idle value、最低要求、可部署余额和缺口。
+- manual deploy、manual rebalance、strategy rebalance 和 fee compound 最终都会经过 `_deployToVenue(...)`，因此共享同一个 value-based buffer 检查。
+- 检查使用调用方请求部署的 token amounts，在 adapter 返回未使用 dust 之前进行，因此是保守检查。
+- buffer 是为同步赎回预留的流动性，不会禁止合法 redeem 消耗 idle 资金。
+- 提高 `minIdleBufferBps` 不会自动撤回 active position；如果当前已经低于要求，view 会报告 deficit，新的部署会被阻止，直到 idle 被补足。
+- FixedWeight 和 VolatilityBucket strategy 在构建计划时还会要求 venue 总权重不超过 `10_000 - minIdleBufferBps`，Vault 的精确价值检查仍是最终保护。
+
 ### 异步赎回队列
 - 当同步 `redeem` 所需价值大于当前 idle value 时，用户可以调用 `requestRedeem(shares, receiver, owner, minAmount0Out, minAmount1Out, deadline)`。
 - 请求创建后，shares 会从 `owner` 转到 vault 托管，但暂时不会 burn，仍然计入 `totalSupply` 并继续承担 vault NAV 的变化。
@@ -860,14 +873,13 @@
   - 通过 `deployToVenue(venueId, ...)` 把 idle 资金部署到指定 venue
   - 通过 `withdrawFromVenue(venueId, liquidity, params)` 把指定 venue 的 deployed 资金撤回
   - 通过 `totalAssets()` 把 idle balances 和所有 registered venue reported amounts 一起估值
-- 当前这版还没有做到：
-  - 自动根据价格决定什么时候 deploy
-  - 自动生成 rebalance plan
 - 所以更准确地说：
   - 现在已经接通了 vault 和 adapter 的资产流主干
   - multi-venue 执行层已经接上
   - `redeem()` 会按 shares 价值使用 idle buffer，并保持 active venue 仓位不变
-  - 但策略层还没有接上
+  - FixedWeight 和 VolatilityBucket strategy 已能生成 multi-venue target plan
+  - delta rebalance 会保留兼容仓位，只撤出超额部分并部署不足部分
+  - keeper 触发仍依赖链下调用，尚未接入 Gelato 或 Chainlink Automation
 
 ## 10. 我已经发现的常见错误
 

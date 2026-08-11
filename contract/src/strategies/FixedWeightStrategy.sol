@@ -23,6 +23,8 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     error ZeroWeight();
     error DuplicateVenue();
     error InvalidTotalWeight();
+    /// @notice Thrown when configured venue weights would consume the vault's required idle buffer.
+    error IdleBufferWeightExceeded(uint256 targetWeightBps, uint256 maxDeployableWeightBps);
 
     // ============================================
     // Constructor
@@ -33,8 +35,9 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
     // View Functions
     // ============================================
     /// @notice Builds a rebalance plan from the vault's total underlying token balances.
-    /// @dev When weights total 10_000 bps, the final target receives rounding dust.
-    ///      Otherwise unallocated underlying remains idle.
+    /// @dev Target weights cannot exceed the vault's deployable weight after its idle buffer.
+    ///      When weights total 10_000 bps, the final target receives rounding dust; otherwise
+    ///      unallocated underlying remains idle.
     function buildTargets(
         address vault, 
         bytes calldata
@@ -44,6 +47,11 @@ contract FixedWeightStrategy is IRebalanceStrategy, Ownable2Step {
         AdaptiveLPVault targetVault = AdaptiveLPVault(vault);
         uint256 length = targetConfigs.length;
         if (length == 0) revert EmptyTargets();
+
+        uint256 maxDeployableWeightBps = RebalanceTypes.BPS - targetVault.minIdleBufferBps();
+        if (totalTargetWeightBps > maxDeployableWeightBps) {
+            revert IdleBufferWeightExceeded(totalTargetWeightBps, maxDeployableWeightBps);
+        }
 
         (uint256 total0, uint256 total1) = targetVault.getTotalUnderlying();
 

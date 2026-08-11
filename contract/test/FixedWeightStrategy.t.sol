@@ -38,12 +38,14 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         strategy = new FixedWeightStrategy();
     }
 
-    /// @notice buildTargets returns four targets using configured bps weights.
-    function test_BuildTargets_LeavesUnallocatedWeightIdle() public {
+    /// @notice Fixed targets leave their unallocated weight idle and respect the vault buffer.
+    function test_BuildTargets_LeavesIdleWeightAndRespectsBuffer() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        vault.setMinIdleBufferBps(1_000); // 10%
 
         RebalanceTypes.TargetConfig[] memory configs = _buildFourTargetConfigs(2500, 2500, 3000, 1000);
         strategy.setTargets(configs);
@@ -67,6 +69,10 @@ contract FixedWeightStrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
         assertEq(targets[3].amount0, 1 ether);
         assertEq(targets[3].amount1, 2e6);
+
+        vault.setMinIdleBufferBps(2_000);
+        vm.expectRevert(abi.encodeWithSelector(FixedWeightStrategy.IdleBufferWeightExceeded.selector, 9_000, 8_000));
+        strategy.buildTargets(address(vault), "");
     }
 
     /// @notice buildTargets assigns integer division dust to the final target.

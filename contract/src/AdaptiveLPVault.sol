@@ -159,6 +159,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Maximum allowed total-value loss during rebalance, in basis points. Zero disables the check.
     uint256 public maxRebalanceValueLossBps;
 
+    /// @notice Minimum vault value that must remain idle, in basis points.
+    uint256 public minIdleBufferBps;
+
     /// @notice Whether strategy rebalances require a configured volatility oracle.
     bool public oracleHealthCheckEnabled;
 
@@ -242,6 +245,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when the owner updates the rebalance value-loss guard.
     event SetMaxRebalanceValueLossBps(uint256 maxRebalanceValueLossBps);
+
+    /// @notice Emitted when the minimum idle liquidity buffer is updated.
+    event SetMinIdleBufferBps(uint256 minIdleBufferBps);
 
     /// @notice Emitted when strategy rebalance oracle health checks are toggled.
     event SetOracleHealthCheckEnabled(bool enabled);
@@ -460,6 +466,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     error RedeemRequestNotCancellable();
     /// @notice Thrown when synchronous redemption or venue deployment is attempted during request processing.
     error RedeemProcessingActive();
+    /// @notice Thrown when a deployment would leave insufficient idle value.
+    error IdleBufferViolation(uint256 requiredIdleValue, uint256 idleValueAfter);
 
     // ============================================
     // Modifiers
@@ -827,6 +835,20 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         (total0, total1) = _getTotalUnderlying();
     }
 
+    /// @notice Returns the vault's current idle-buffer state in the base denomination.
+    /// @return idleValue Current value held directly by the vault.
+    /// @return requiredIdleValue Minimum idle value required by `minIdleBufferBps`.
+    /// @return availableToDeployValue Idle value available above the required buffer.
+    /// @return bufferDeficit Value required to restore the buffer, or zero when satisfied.
+    function getIdleBufferState() external view returns (
+        uint256 idleValue,
+        uint256 requiredIdleValue,
+        uint256 availableToDeployValue,
+        uint256 bufferDeficit
+    ) {
+        return _getIdleBufferState();
+    }
+
     /// @notice Returns the number of currently registered venues.
     function venueCount() external view returns (uint256) {
         return venueIds.length;
@@ -1019,6 +1041,16 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         if (_maxRebalanceValueLossBps > RebalanceTypes.BPS) revert InvalidBps();
         maxRebalanceValueLossBps = _maxRebalanceValueLossBps;
         emit SetMaxRebalanceValueLossBps(_maxRebalanceValueLossBps);
+    }
+
+    /// @notice Sets the minimum vault value that must remain idle.
+    /// @dev Increasing the requirement does not withdraw active positions; it reports any resulting
+    ///      deficit through `getIdleBufferState()` and blocks deployments that would violate the buffer.
+    /// @param newBufferBps Minimum idle allocation in basis points.
+    function setMinIdleBufferBps(uint256 newBufferBps) external onlyOwner {
+        if (newBufferBps > RebalanceTypes.BPS) revert InvalidBps();
+        minIdleBufferBps = newBufferBps;
+        emit SetMinIdleBufferBps(newBufferBps);
     }
 
     /// @notice Toggles the volatility-oracle health requirement for strategy-driven rebalances.
@@ -1489,6 +1521,62 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         request.nextRequestId = 0;
     }
 
+    /// @dev Values the idle balances that would remain after a proposed deployment.
+    ///      Requested deployment amounts are used conservatively before the adapter returns any dust.
+    function _getIdleBufferValuesAfterDeployment(
+        uint256 amount0ToDeploy,
+        uint256 amount1ToDeploy
+    ) internal view returns (
+        uint256 idleValueAfter,
+        uint256 requiredIdleValue
+    ) {
+        uint256 idle0 = token0.balanceOf(address(this));
+        uint256 idle1 = token1.balanceOf(address(this));
+        if (amount0ToDeploy > idle0 || amount1ToDeploy > idle1) {
+            revert InsufficientBalances();
+        }
+
+        (uint256 price0, uint256 price1) = _getValidatedPrices();
+        uint256 totalValue = _totalAssetsAtPrices(price0, price1);
+        requiredIdleValue = Math.mulDiv(totalValue, minIdleBufferBps, RebalanceTypes.BPS, Math.Rounding.Ceil);
+
+        idleValueAfter = VaultMath.getAssetsTotalValue(
+            idle0 - amount0ToDeploy, price0, decimals0,
+            idle1 - amount1ToDeploy, price1, decimals1
+        );
+    }
+
+    /// @dev Splits current idle value into deployable excess or a buffer deficit.
+    function _getIdleBufferState() internal view returns (
+        uint256 idleValue,
+        uint256 requiredIdleValue,
+        uint256 availableToDeployValue,
+        uint256 bufferDeficit
+    ) {
+        (idleValue, requiredIdleValue) = _getIdleBufferValuesAfterDeployment(0, 0);
+
+        if (idleValue >= requiredIdleValue) {
+            availableToDeployValue = idleValue - requiredIdleValue;
+        } else {
+            bufferDeficit = requiredIdleValue - idleValue;
+        }
+    }
+
+    /// @dev Reverts when a proposed deployment would consume the required idle buffer.
+    function _validateIdleBufferForDeployment(
+        uint256 amount0ToDeploy,
+        uint256 amount1ToDeploy
+    ) internal view {
+        if (minIdleBufferBps == 0) return;
+
+        (uint256 idleValueAfter, uint256 requiredIdleValue) =
+            _getIdleBufferValuesAfterDeployment(amount0ToDeploy, amount1ToDeploy);
+
+        if (idleValueAfter < requiredIdleValue) {
+            revert IdleBufferViolation(requiredIdleValue, idleValueAfter);
+        }
+    }
+
     /// @notice Sums idle token balances and adapter-reported deployed amounts.
     /// @dev This amount view is intended for strategy planning and reporting, not vault share pricing.
     function _getTotalUnderlying() internal view returns (uint256 total0, uint256 total1) {
@@ -1532,6 +1620,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         if (!venueRegistered[venueId] || address(v.adapter) == address(0)) revert VenueNotSet();
         if (!v.enabled) revert VenueDisabled();
         if (address(venueValuators[venueId]) == address(0)) revert VenueValuatorNotSet(venueId);
+        _validateIdleBufferForDeployment(amount0, amount1);
 
         token0.forceApprove(address(v.adapter), amount0);
         token1.forceApprove(address(v.adapter), amount1);

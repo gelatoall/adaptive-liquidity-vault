@@ -69,6 +69,8 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
     error InvalidTwapWindow();
     error SlippageParamsNotSet();
     error SlippageControllerAdapterMismatch();
+    /// @notice Thrown when the selected bucket would consume the vault's required idle buffer.
+    error IdleBufferWeightExceeded(uint256 targetWeightBps, uint256 maxDeployableWeightBps);
 
     // ============================================
     // Constructor
@@ -89,7 +91,9 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
     // View Functions
     // ============================================
     /// @notice Builds a rebalance plan from total vault underlying and the selected volatility bucket.
-    /// @dev Extra strategy data is currently unused; the last target receives rounding dust.
+    /// @dev Extra strategy data is currently unused. Selected bucket weights cannot exceed the
+    ///      vault's deployable weight after its idle buffer; a fully allocated plan assigns dust
+    ///      to the last target.
     function buildTargets(
         address vault, 
         bytes calldata
@@ -104,13 +108,20 @@ contract VolatilityBucketStrategy is IRebalanceStrategy, Ownable2Step {
 
         uint256 length = configs.length;
         if (length == 0) revert EmptyTargets();
+
+        uint256 totalWeightBps = bucketTotalWeightBps[bucket];
+        uint256 maxDeployableWeightBps = RebalanceTypes.BPS - targetVault.minIdleBufferBps();
+        if (totalWeightBps > maxDeployableWeightBps) {
+            revert IdleBufferWeightExceeded(totalWeightBps, maxDeployableWeightBps);
+        }
+
         targets = new RebalanceTypes.RebalanceTarget[](length);
         
         (uint256 total0, uint256 total1) = targetVault.getTotalUnderlying();
 
         uint256 used0;
         uint256 used1;
-        bool fullyAllocated = bucketTotalWeightBps[bucket] == RebalanceTypes.BPS;
+        bool fullyAllocated = totalWeightBps == RebalanceTypes.BPS;
         for(uint256 i = 0; i < length; i++) {
             uint256 amount0;
             uint256 amount1;

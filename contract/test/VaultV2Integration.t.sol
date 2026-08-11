@@ -147,6 +147,32 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         vault.deployToVenue(1, 1 ether, 1e6, "");
     }
 
+    /// @notice Deployment reverts when it would consume the configured idle buffer.
+    function test_DeployToVenue_RevertsWhenIdleBufferWouldBeViolated() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        // Vault total value:
+        // token0 = 10e18
+        // token1 = 20e6, which is worth 20e18 in base-value precision
+        // totalAssets = 30e18
+        vault.setMinIdleBufferBps(2_000); // 20%
+        (uint256 idleValue, uint256 requiredIdleValue, uint256 availableToDeployValue, uint256 bufferDeficit) = vault.getIdleBufferState();
+        // All assets are idle before deployment.
+        assertEq(idleValue, 30 ether);
+        // A 20% buffer requires 6e18 to remain idle.
+        assertEq(requiredIdleValue, 6 ether);
+        // At most 24e18 of value is currently deployable.
+        assertEq(availableToDeployValue, 24 ether);
+        assertEq(bufferDeficit, 0);
+
+        // Deploying 27e18 of value would leave only 3e18 idle, below the 6e18 requirement.
+        vm.expectRevert(abi.encodeWithSelector(AdaptiveLPVault.IdleBufferViolation.selector, 6 ether, 3 ether));
+        vault.deployToVenue(V2_VENUE_ID, 9 ether, 18e6, "");
+    }
+
     /// @notice Verifies deploying idle funds moves balances from the vault into the  LP position.
     function test_DeployToVenue_MovesIdleTokensIntoAdapterPosition() public {
         uint256 amount0 = 10 ether;

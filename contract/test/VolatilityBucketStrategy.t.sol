@@ -88,8 +88,8 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         );
     }
 
-    /// @notice Low volatility selects the configured low-bucket allocation.
-    function test_BuildTargets_UsesLowBucket() public {
+    /// @notice Low volatility selects its bucket while respecting the vault idle buffer.
+    function test_BuildTargets_UsesLowBucketAndRespectsBuffer() public {
         uint256 amount0 = 10 ether;
         uint256 amount1 = 20e6;
 
@@ -117,6 +117,10 @@ contract VolatilityBucketStrategyTest is Test, VaultTestHelper, VenueTestHelper 
         assertEq(targets[3].venueId, V3_HIGH_VENUE_ID);
         assertEq(targets[3].amount0, 0.5 ether);
         assertEq(targets[3].amount1, 1e6);
+
+        vault.setMinIdleBufferBps(1_000); // 10% in idle
+        vm.expectRevert(abi.encodeWithSelector(VolatilityBucketStrategy.IdleBufferWeightExceeded.selector, 10_000, 9_000));
+        strategy.buildTargets(address(vault), "");
     }
 
     /// @notice Configured V3 venues receive dynamic tick params instead of their static target params.

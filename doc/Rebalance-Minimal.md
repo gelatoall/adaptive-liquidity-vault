@@ -240,8 +240,9 @@ Rules:
 - every target weight must be non-zero
 - venue ids must be unique
 - total weight must not exceed `10_000`; unallocated weight remains idle
+- when building for a vault, total weight must not exceed `10_000 - vault.minIdleBufferBps()`
 
-`buildTargets(vault, data)` reads the vault's current total underlying `token0` and `token1` amounts through `vault.getTotalUnderlying()`, then splits those amounts by the configured weights. Total underlying means idle balances plus adapter-reported deployed position amounts. When weights total `10_000`, the final target receives integer-division dust. With a lower total weight, the unallocated amounts remain idle as a redemption buffer.
+`buildTargets(vault, data)` reads the vault's current total underlying `token0` and `token1` amounts through `vault.getTotalUnderlying()`, then splits those amounts by the configured weights. Total underlying means idle balances plus adapter-reported deployed position amounts. When the vault has no configured idle buffer and weights total `10_000`, the final target receives integer-division dust. With a lower total weight, the unallocated amounts remain idle as a redemption buffer.
 
 Current limitation:
 - the strategy uses adapter-reported deployed amounts, not an independent market quote
@@ -273,7 +274,7 @@ Bucket selection is:
 - `lowThreshold < volatilityBps <= highThreshold`: `MEDIUM`
 - `volatilityBps > highThreshold`: `HIGH`
 
-The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, bucket weights may total less than `10_000` to retain idle liquidity; the last target receives rounding dust only for a fully allocated bucket.
+The selected weights are applied to current total underlying amounts from `vault.getTotalUnderlying()`. As with `FixedWeightStrategy`, selected bucket weight cannot exceed `10_000 - vault.minIdleBufferBps()`. Bucket weights may total less than `10_000` to retain idle liquidity; the last target receives rounding dust only for a fully allocated bucket when no idle buffer is configured.
 
 `getRecommendedTargets()` exposes the current bucket's configured `TargetConfig[]` for keepers, frontends, and monitoring. This is the multi-venue equivalent of a single `getRecommendedVenue()` helper: it reports the selected venue ids and weights, but it does not calculate token amounts or execute a rebalance.
 
@@ -414,7 +415,8 @@ Flow:
 3. Collect claimable venue tokens into idle balances.
 4. Withdraw omitted, zero-target, incompatible, and excess venue liquidity.
 5. Check idle balances can cover each remaining target deficit.
-6. Add only the missing amounts to compatible positions and create replacement positions where required.
+6. Require each deployment to preserve the configured minimum idle value.
+7. Add only the missing amounts to compatible positions and create replacement positions where required.
 
 ## Delta Rebalance
 
@@ -425,6 +427,8 @@ The current implementation treats each `RebalanceTarget` as a final allocation:
 Compatible V2 positions and V3 positions with unchanged tick ranges remain active. A changed V3 tick range requires a full withdrawal and a new NFT because one V3 NFT cannot change its range in place.
 
 Exact raw token comparisons currently have no dust tolerance. Mainnet-fork tests should execute the same V3 plan twice and measure returned dust, repeated increases, NFT continuity, and gas before a tolerance policy is selected.
+
+All deployment paths share the vault's value-based idle-buffer guard. Strategy weight checks reject obviously incompatible plans early, while `_deployToVenue(...)` remains the final enforcement point for manual plans, strategy plans, and fee compounding. Raising the buffer does not automatically withdraw positions; it prevents further deployment until idle liquidity satisfies the new requirement.
 
 ## Failure Cases
 

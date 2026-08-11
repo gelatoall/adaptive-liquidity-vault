@@ -144,6 +144,11 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - note: intended for strategy planning and reporting; it is not used as trusted share-accounting value
   - returns: `uint256 total0, uint256 total1`
 
+- `getIdleBufferState()`
+  - purpose: report current idle value, the configured requirement, deployable excess, and any deficit
+  - behavior: values idle and total vault assets with the same validated valuation prices used by share accounting
+  - returns: `uint256 idleValue, uint256 requiredIdleValue, uint256 availableToDeployValue, uint256 bufferDeficit`
+
 - `deposit(amount0, amount1, receiver, minShares)`
   - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
   - behavior: blocked while the vault is paused
@@ -194,6 +199,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: deploy idle funds into a registered venue adapter
   - behavior: owner-only and blocked while the vault is paused
+  - behavior: reverts when the requested deployment would leave less than the configured minimum idle value
   - returns: `uint256 liquidity`
 
 - `withdrawFromVenue(venueId, liquidity, params)`
@@ -207,7 +213,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: execute an owner-supplied multi-venue target plan
   - behavior: owner-only and blocked while the vault is paused
   - behavior: requires healthy primary/reference valuation oracles before execution
-  - behavior: withdraws all tracked venue liquidity first, then deploys non-zero targets
+  - behavior: withdraws venue excess and deploys only target deficits while preserving compatible positions
   - behavior: forwards matching per-venue withdrawal params during the withdrawal phase; `targets[i].params` controls deployment into the new venue
 
 - `setStrategy(strategy)`
@@ -226,6 +232,11 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: configure the maximum total-value loss allowed during rebalance
   - behavior: `0` disables the guard; non-zero values are interpreted in basis points
   - behavior: only limits downside loss and does not reject value increases
+
+- `setMinIdleBufferBps(minIdleBufferBps)`
+  - purpose: configure the minimum share of total vault value that must remain idle
+  - behavior: accepts values from `0` through `10_000` basis points
+  - behavior: increasing the requirement does not automatically withdraw active positions; it reports a deficit and blocks deployments that would violate the new requirement
 
 - `setOracleHealthCheckEnabled(enabled)`
   - purpose: require a configured volatility oracle before strategy-driven rebalances
@@ -338,10 +349,25 @@ Current valuators:
 1. Require the venue to be registered and configured with an adapter.
 2. Require the venue to be enabled.
 3. Require a trusted valuator configured for the venue's current adapter.
-4. Temporarily approve the adapter to pull the requested token amounts.
-4. Call `adapter.addLiquidity(amount0, amount1, params)`.
-5. Increase `venueLiquidity[venueId]` and `totalLiquidity`.
-6. Reset adapter allowances back to zero.
+4. Value the requested deployment conservatively and require the remaining idle value to satisfy `minIdleBufferBps`.
+5. Temporarily approve the adapter to pull the requested token amounts.
+6. Call `adapter.addLiquidity(amount0, amount1, params)`.
+7. Increase `venueLiquidity[venueId]` and `totalLiquidity`.
+8. Reset adapter allowances back to zero.
+
+### idle liquidity buffer
+
+The vault expresses its minimum idle reserve in basis points of current total value:
+
+```text
+requiredIdleValue = ceil(totalAssets * minIdleBufferBps / 10_000)
+availableToDeployValue = max(idleValue - requiredIdleValue, 0)
+bufferDeficit = max(requiredIdleValue - idleValue, 0)
+```
+
+The deployment guard uses the requested token amounts before calling an adapter. This is intentionally conservative because an adapter may later return unused dust. Manual deployment, manual rebalance, strategy rebalance, and fee compounding all reach the same `_deployToVenue(...)` check.
+
+The buffer reserves liquidity for redemptions; it does not prevent a valid redemption from consuming idle balances. Raising the configured requirement while capital is already deployed does not force an immediate withdrawal. Instead, `getIdleBufferState()` reports the deficit and subsequent deployment attempts remain blocked until the buffer is restored.
 
 ### withdrawFromVenue
 
@@ -360,6 +386,8 @@ Manual rebalances can pass per-venue withdrawal params through `rebalance(target
 `harvestVenueFees(venueId)` lets the owner or keeper collect claimable venue tokens into vault idle balances without removing liquidity. It remains available while paused because it only recovers assets from a venue.
 
 `compoundVenueFees(venueId, params)` collects claimable tokens and redeploys them into the same enabled venue in one transaction. It is paused with other deployment operations. For an active V3 adapter with matching tick params, this uses `increaseLiquidity` on the existing NFT rather than withdrawing and minting a new position. Any unused token dust is returned to vault idle balances by the adapter.
+
+Compounding passes through the same idle-buffer check as every other deployment. If redeploying all collected amounts would violate the configured buffer, the transaction reverts atomically and the venue tokens remain uncollected until a later harvest or compound transaction succeeds.
 
 Uncollected venue fees remain part of trusted venue valuation. `redeem(...)` does not collect them; it pays the redeemed share value from existing idle balances. Harvesting and compounding remain explicit owner/keeper operations.
 
@@ -414,7 +442,7 @@ The current concrete strategies are:
 - `FixedWeightStrategy`, which applies one configured set of venue weights
 - `VolatilityBucketStrategy`, which selects LOW, MEDIUM, or HIGH venue weights from an `IVolatilityOracle` value and can generate dynamic V3 tick-range params for configured V3 venues
 
-Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. The vault treats the returned amounts as final per-venue targets and moves only excesses and deficits. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
+Both strategies operate on total vault underlying amounts reported by `getTotalUnderlying()`, meaning idle balances plus adapter-reported deployed position amounts. A strategy rejects its selected plan when total venue weight exceeds `10_000 - vault.minIdleBufferBps()`. The vault then treats accepted amounts as final per-venue targets, moves only excesses and deficits, and performs the exact value-based idle-buffer check during deployment. `VolatilityBucketStrategy` reads volatility from a configured oracle; `rebalanceWithStrategy(data, withdrawalParams)` still forwards opaque data for other strategy implementations, but the current volatility bucket strategy does not use it.
 
 Delta comparisons currently use exact raw token amounts. Real V3 mint and increase operations may return rounding dust, so repeated identical strategy execution must be checked in mainnet-fork tests before choosing a production dust-tolerance threshold.
 
