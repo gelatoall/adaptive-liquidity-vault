@@ -249,7 +249,7 @@ This means the current implementation already validates:
 - adapter-to-vault withdrawal flow
 - total asset accounting across idle balances and one or more deployed venues
 - idle-buffer redemption while active V2 liquidity remains unchanged
-- asynchronous redemption after V2 and V3 liquidity returns to idle in separate transactions
+- manager-escrowed asynchronous redemption after V2 and V3 liquidity returns to idle in separate transactions
 - preservation of a queued request when one venue withdrawal fails or idle value remains insufficient
 
 It does not yet implement:

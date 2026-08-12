@@ -226,13 +226,14 @@
 - FixedWeight 和 VolatilityBucket strategy 在构建计划时还会要求 venue 总权重不超过 `10_000 - minIdleBufferBps`，Vault 的精确价值检查仍是最终保护。
 
 ### 异步赎回队列
-- 当同步 `redeem` 所需价值大于当前 idle value 时，用户可以调用 `requestRedeem(shares, receiver, owner, minAmount0Out, minAmount1Out, deadline)`。
-- 请求创建后，shares 会从 `owner` 转到 vault 托管，但暂时不会 burn，仍然计入 `totalSupply` 并继续承担 vault NAV 的变化。
-- 请求按双向链表组成 FIFO 队列：`redeemQueueHead` 是最早请求，`redeemQueueTail` 是最新请求。
-- owner 或 keeper 调用 `activateNextRedeemRequest()` 后，队首从 `PENDING` 进入 `PROCESSING`，并记录到 `activeRedeemRequestId`。
+- 异步队列由独立的 `RedemptionManager` 管理；Vault 只负责判断是否需要排队并执行最终资产结算。
+- 当同步 `redeem` 所需价值大于当前 idle value 时，用户先授权 Manager 使用 vault shares，再调用 `requestRedeem(shares, receiver, minAmount0Out, minAmount1Out, deadline)`。
+- 请求创建后，shares 会从调用者转到 `RedemptionManager` 托管，但暂时不会 burn，仍然计入 `totalSupply` 并继续承担 vault NAV 的变化。
+- 请求在 Manager 中按双向链表组成 FIFO 队列：`redeemQueueHead` 是最早请求，`redeemQueueTail` 是最新请求。
+- Vault owner 或 keeper 调用 Manager 的 `activateNextRedeemRequest()` 后，队首从 `PENDING` 进入 `PROCESSING`，并记录到 `activeRedeemRequestId`。
 - 只有进入 `PROCESSING` 后才开始预留未来返回的 idle liquidity：同步 `redeem` 和新的 venue deployment 会被阻止。仅处于 `PENDING` 的请求不会自动预留 idle。
 - owner 可以通过 `withdrawFromVenue(...)` 分多笔交易、按 venue 把资金撤回 idle。某个 venue 调用失败不会删除请求，也不会回滚其他独立交易中已经成功撤回的资金。
-- idle 足够后，任何地址都可以调用 `processNextRedeemRequest()`；token 始终发送给请求记录的 `receiver`，而不是处理交易的 caller。
+- idle 足够后，任何地址都可以调用 Manager 的 `processNextRedeemRequest()`；Manager 调用 Vault 的 `settleQueuedRedeem(...)`，token 始终发送给请求记录的 `receiver`，而不是处理交易的 caller。
 - 结算使用当时的 `totalAssets / totalSupply`，不是请求创建时固定 NAV。`minAmount0Out/minAmount1Out` 用于保护等待期间的最终输出。
 - 最低输出或 idle 检查失败时，请求保持 active，托管 shares 不会被 burn。
 - `PENDING` 请求可以由 request owner 取消；超过 deadline 后，任何人都可以 expire `PENDING` 或 `PROCESSING` 请求并把 shares 退回 owner。

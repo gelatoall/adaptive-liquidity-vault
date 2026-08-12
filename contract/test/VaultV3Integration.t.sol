@@ -13,6 +13,7 @@ import "../src/libraries/v3/LiquidityAmounts.sol";
 import "../test/helpers/VaultTestHelper.sol";
 import "../test/helpers/VenueTestHelper.sol";
 import "../src/valuators/V3TwapPositionValuator.sol";
+import "../src/redemption/RedemptionManager.sol";
 
 /// @title VaultV3IntegrationTest
 /// @notice Integration tests for `AdaptiveLPVault` wired to `UniswapV3Adapter`.
@@ -27,6 +28,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
     MockUniswapV3Pool public pool;
     MockNonfungiblePositionManager public positionManager;
     UniswapV3Adapter public adapter;
+
+    RedemptionManager public redemptionManager;
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
@@ -81,16 +84,19 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         valuator = new V3TwapPositionValuator(address(adapter), twapWindow);
         vault.setVenueValuator(V3_LOW_VENUE_ID, address(valuator));
+
+        redemptionManager = new RedemptionManager(address(vault));
+        vault.setRedemptionManager(address(redemptionManager));
     }
 
     /// @notice Returns only the lifecycle status from the public request getter.
-    function _getRedeemRequestStatus(uint256 requestId) internal view returns (AdaptiveLPVault.RedeemRequestStatus status) {
-        (,,,,,,,, status) = vault.redeemRequests(requestId);
+    function _getRedeemRequestStatus(uint256 requestId) internal view returns (RedemptionManager.RedeemRequestStatus status) {
+        (,,,,,,,, status) = redemptionManager.redeemRequests(requestId);
     }
 
     /// @notice Returns the previous and next queue links for a redemption request.
     function _getRedeemRequestLinks(uint256 requestId) internal view returns (uint256 previousRequestId, uint256 nextRequestId) {
-        (,,,,,, previousRequestId, nextRequestId,) = vault.redeemRequests(requestId);
+        (,,,,,, previousRequestId, nextRequestId,) = redemptionManager.redeemRequests(requestId);
     }
 
     /// @notice Verifies idle vault funds can be deployed into V3.
@@ -378,20 +384,22 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 deadline = block.timestamp + 1 hours;
 
         // With no idle liquidity available, the frontend selects the asynchronous redemption path.
-        vm.prank(alice);
-        uint256 requestId = vault.requestRedeem(aliceShares, alice, alice, minAmount0Out, minAmount1Out, deadline);
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, minAmount0Out, minAmount1Out, deadline);
+        vm.stopPrank();
 
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.balanceOf(address(vault)), aliceShares);
-        assertEq(vault.redeemQueueHead(), requestId);
-        assertEq(vault.redeemQueueTail(), requestId);
-        assertEq(vault.totalPendingRedeemShares(), aliceShares);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PENDING));
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
+        assertEq(redemptionManager.redeemQueueHead(), requestId);
+        assertEq(redemptionManager.redeemQueueTail(), requestId);
+        assertEq(redemptionManager.totalPendingRedeemShares(), aliceShares);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PENDING));
 
         // Activating the queue head reserves future idle liquidity for this request.
-        vault.activateNextRedeemRequest();
-        assertEq(vault.activeRedeemRequestId(), requestId);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PROCESSING));
+        redemptionManager.activateNextRedeemRequest();
+        assertEq(redemptionManager.activeRedeemRequestId(), requestId);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSING));
 
         // Synchronous redemption is blocked while a request is processing.
         vm.prank(bob);
@@ -403,13 +411,13 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         vault.deployToVenue(V3_LOW_VENUE_ID, 0, 0, "");
 
         // The owner can recover from a premature activation.
-        vault.deactivateRedeemRequest();
-        assertEq(vault.activeRedeemRequestId(), 0);
-        assertEq(vault.redeemQueueHead(), requestId);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PENDING));
+        redemptionManager.deactivateRedeemRequest();
+        assertEq(redemptionManager.activeRedeemRequestId(), 0);
+        assertEq(redemptionManager.redeemQueueHead(), requestId);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PENDING));
 
         // Reactivate the same queue-head request.
-        vault.activateNextRedeemRequest();
+        redemptionManager.activateNextRedeemRequest();
         // Configure the mock to return all deployed tokens during withdrawal.
         (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, totalAmount0, totalAmount1);
 
@@ -422,7 +430,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         // Processing is permissionless after activation, so Bob can settle it.
         vm.prank(bob);
-        (uint256 amount0Out, uint256 amount1Out) = vault.processNextRedeemRequest();
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
 
         // Alice's requested output limits are respected.
         assertGe(amount0Out, minAmount0Out);
@@ -431,13 +439,13 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(alice), amount1Out);
 
         // Escrowed shares were burned and the request was removed from the queue.
-        assertEq(vault.balanceOf(address(vault)), 0);
-        assertEq(vault.activeRedeemRequestId(), 0);
-        assertEq(vault.redeemQueueHead(), 0);
-        assertEq(vault.redeemQueueTail(), 0);
-        assertEq(vault.totalPendingRedeemShares(), 0);
+        assertEq(vault.balanceOf(address(redemptionManager)), 0);
+        assertEq(redemptionManager.activeRedeemRequestId(), 0);
+        assertEq(redemptionManager.redeemQueueHead(), 0);
+        assertEq(redemptionManager.redeemQueueTail(), 0);
+        assertEq(redemptionManager.totalPendingRedeemShares(), 0);
 
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PROCESSED));
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
     }
 
     /// @notice Verifies cancelling a middle request preserves the redemption queue links.
@@ -457,29 +465,37 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         uint256 deadline = block.timestamp + 1 hours;
 
-        vm.prank(alice);
-        uint256 requestId1 = vault.requestRedeem(aliceShares, alice, alice, 0, 0, deadline);
-        vm.prank(bob);
-        uint256 requestId2 = vault.requestRedeem(bobShares, bob, bob, 0, 0, deadline);
-        vm.prank(charlie);
-        uint256 requestId3 = vault.requestRedeem(charlieShares, charlie, charlie, 0, 0, deadline);
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId1 = redemptionManager.requestRedeem(aliceShares, alice, 0, 0, deadline);
+        vm.stopPrank();
 
-        // All three users' shares are now held in escrow by the vault.
-        assertEq(vault.balanceOf(address(vault)), aliceShares + bobShares + charlieShares);
-        assertEq(vault.totalPendingRedeemShares(), aliceShares + bobShares + charlieShares);
+        vm.startPrank(bob);
+        vault.approve(address(redemptionManager), bobShares);
+        uint256 requestId2 = redemptionManager.requestRedeem(bobShares, bob, 0, 0, deadline);
+        vm.stopPrank();
 
-        assertEq(vault.redeemQueueHead(), requestId1);
-        assertEq(vault.redeemQueueTail(), requestId3);
+        vm.startPrank(charlie);
+        vault.approve(address(redemptionManager), charlieShares);
+        uint256 requestId3 = redemptionManager.requestRedeem(charlieShares, charlie, 0, 0, deadline);
+        vm.stopPrank();
+
+        // All three users' shares are now held in escrow by the redemption manager.
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares + bobShares + charlieShares);
+        assertEq(redemptionManager.totalPendingRedeemShares(), aliceShares + bobShares + charlieShares);
+
+        assertEq(redemptionManager.redeemQueueHead(), requestId1);
+        assertEq(redemptionManager.redeemQueueTail(), requestId3);
 
         // Bob cancels the middle request.
         vm.prank(bob);
-        vault.cancelRedeemRequest(requestId2);
+        redemptionManager.cancelRedeemRequest(requestId2);
 
         // Bob receives his escrowed shares back.
         assertEq(vault.balanceOf(bob), bobShares);
         // Only Alice and Charlie's shares remain in escrow.
-        assertEq(vault.balanceOf(address(vault)), aliceShares + charlieShares);
-        assertEq(vault.totalPendingRedeemShares(), aliceShares + charlieShares);
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares + charlieShares);
+        assertEq(redemptionManager.totalPendingRedeemShares(), aliceShares + charlieShares);
 
         // The queue remains Alice -> Charlie.
         (uint256 previous1, uint256 next1) = _getRedeemRequestLinks(requestId1);
@@ -491,11 +507,11 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(previous3, requestId1);
         assertEq(next3, 0);
 
-        assertEq(vault.redeemQueueHead(), requestId1);
-        assertEq(vault.redeemQueueTail(), requestId3);
+        assertEq(redemptionManager.redeemQueueHead(), requestId1);
+        assertEq(redemptionManager.redeemQueueTail(), requestId3);
 
         // Bob's request remains as history but is no longer queued.
-        assertEq(uint256(_getRedeemRequestStatus(requestId2)), uint256(AdaptiveLPVault.RedeemRequestStatus.CANCELLED));
+        assertEq(uint256(_getRedeemRequestStatus(requestId2)), uint256(RedemptionManager.RedeemRequestStatus.CANCELLED));
     }
 
     /// @notice Verifies output minimums protect queued shares and an expired active request can be cleared.
@@ -519,17 +535,19 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 deadline = block.timestamp + 1 hours;
 
         // Set an impossible token0 minimum so final settlement must revert.
-        vm.prank(alice);
-        uint256 requestId = vault.requestRedeem(aliceShares, alice, alice, type(uint256).max, 0, deadline);
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, type(uint256).max, 0, deadline);
+        vm.stopPrank();
 
         assertEq(vault.balanceOf(alice), 0);
-        assertEq(vault.balanceOf(address(vault)), aliceShares);
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
 
         // Activate the queue-head request.
-        vault.activateNextRedeemRequest();
+        redemptionManager.activateNextRedeemRequest();
 
-        assertEq(vault.activeRedeemRequestId(), requestId);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PROCESSING));
+        assertEq(redemptionManager.activeRedeemRequestId(), requestId);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSING));
 
         // Configure the V3 mock to return all deployed tokens.
         (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, totalAmount0, totalAmount1);
@@ -543,35 +561,35 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         // Settlement must revert because amount0Out cannot reach type(uint256).max.
         vm.expectRevert(AdaptiveLPVault.InsufficientRedeemOutput.selector);
-        vault.processNextRedeemRequest();
+        redemptionManager.processNextRedeemRequest();
 
         // The failed settlement must not burn shares or remove the request.
-        assertEq(vault.balanceOf(address(vault)), aliceShares);
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
         assertEq(vault.totalSupply(), totalSupplyBefore);
-        assertEq(vault.activeRedeemRequestId(), requestId);
-        assertEq(vault.redeemQueueHead(), requestId);
-        assertEq(vault.redeemQueueTail(), requestId);
-        assertEq(vault.totalPendingRedeemShares(), aliceShares);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.PROCESSING));
+        assertEq(redemptionManager.activeRedeemRequestId(), requestId);
+        assertEq(redemptionManager.redeemQueueHead(), requestId);
+        assertEq(redemptionManager.redeemQueueTail(), requestId);
+        assertEq(redemptionManager.totalPendingRedeemShares(), aliceShares);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSING));
 
         // Move beyond the user-selected deadline.
         vm.warp(deadline + 1);
 
         // Expiration is permissionless, so Charlie can clear Alice's request.
         vm.prank(charlie);
-        vault.expireRedeemRequest(requestId);
+        redemptionManager.expireRedeemRequest(requestId);
 
         // Alice receives her escrowed shares back instead of receiving underlying tokens.
         assertEq(vault.balanceOf(alice), aliceShares);
-        assertEq(vault.balanceOf(address(vault)), 0);
+        assertEq(vault.balanceOf(address(redemptionManager)), 0);
         assertEq(vault.totalSupply(), totalSupplyBefore);
 
         // Expiring the active request exits processing mode and clears the queue.
-        assertEq(vault.activeRedeemRequestId(), 0);
-        assertEq(vault.redeemQueueHead(), 0);
-        assertEq(vault.redeemQueueTail(), 0);
-        assertEq(vault.totalPendingRedeemShares(), 0);
-        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(AdaptiveLPVault.RedeemRequestStatus.EXPIRED));
+        assertEq(redemptionManager.activeRedeemRequestId(), 0);
+        assertEq(redemptionManager.redeemQueueHead(), 0);
+        assertEq(redemptionManager.redeemQueueTail(), 0);
+        assertEq(redemptionManager.totalPendingRedeemShares(), 0);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.EXPIRED));
 
         // Settlement never happened, so Alice received no underlying tokens.
         assertEq(token0.balanceOf(alice), 0);

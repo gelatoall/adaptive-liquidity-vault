@@ -7,6 +7,7 @@ import "../src/adapters/UniswapV2Adapter.sol";
 import "../src/adapters/UniswapV3Adapter.sol";
 import "../src/valuators/V2FairValueValuator.sol";
 import "../src/valuators/V3TwapPositionValuator.sol";
+import "../src/redemption/RedemptionManager.sol";
 import "./mocks/MockERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./mocks/MockUniswapV2Pair.sol";
@@ -31,6 +32,8 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
     MockUniswapV3Pool public poolV3Low;
     MockNonfungiblePositionManager public positionManagerV3Low;
     UniswapV3Adapter public adapterV3Low;
+
+    RedemptionManager public redemptionManager;
 
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
@@ -90,6 +93,9 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         valuatorV3 = new V3TwapPositionValuator(address(adapterV3Low), twapWindow);
         vault.setVenueValuator(V2_VENUE_ID, address(valuatorV2));
         vault.setVenueValuator(V3_LOW_VENUE_ID, address(valuatorV3));
+
+        redemptionManager = new RedemptionManager(address(vault));
+        vault.setRedemptionManager(address(redemptionManager));
     }
 
     /// @notice Verifies the full Uniswap venue set uses one V2 adapter plus one V3 adapter per fee tier.
@@ -317,10 +323,12 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         // Alice queues her shares, and the owner activates the request so future idle funds are reserved for it.
         uint256 deadline = block.timestamp + 1 hours;
 
-        vm.prank(alice);
-        uint256 requestId = vault.requestRedeem(aliceShares, alice, alice, 0, 0, deadline);
-        vault.activateNextRedeemRequest();
-        assertEq(vault.activeRedeemRequestId(), requestId);
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, 0, 0, deadline);
+        vm.stopPrank();
+        redemptionManager.activateNextRedeemRequest();
+        assertEq(redemptionManager.activeRedeemRequestId(), requestId);
 
         // Simulate a temporary V2 failure: attempting to withdraw V2 must revert without changing its position.
         routerV2.setRevertOnRemoveLiquidity(true);
@@ -344,12 +352,12 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         // Only the V3 portion is now idle, so the vault still cannot pay Alice's full share claim.
         vm.expectPartialRevert(AdaptiveLPVault.InsufficientIdleLiquidity.selector);
-        vault.processNextRedeemRequest();
+        redemptionManager.processNextRedeemRequest();
 
         // Failed settlement does not burn Alice's escrowed shares or remove her request from the queue.
-        assertEq(vault.activeRedeemRequestId(), requestId);
-        assertEq(vault.redeemQueueHead(), requestId);
-        assertEq(vault.balanceOf(address(vault)), aliceShares);
+        assertEq(redemptionManager.activeRedeemRequestId(), requestId);
+        assertEq(redemptionManager.redeemQueueHead(), requestId);
+        assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
 
         // Simulate V2 recovery, then withdraw its remaining liquidity in a later transaction.
         routerV2.setRevertOnRemoveLiquidity(false);
@@ -363,7 +371,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         // With both venue positions returned to idle, any caller can now complete Alice's active request.
         vm.prank(bob);
-        (uint256 amount0Out, uint256 amount1Out) = vault.processNextRedeemRequest();
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
 
         assertEq(token0.balanceOf(alice), amount0Out);
         assertEq(token1.balanceOf(alice), amount1Out);
@@ -372,10 +380,10 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         // Successful settlement burns the escrowed shares and clears the active one-item queue.
         assertEq(vault.balanceOf(address(vault)), 0);
-        assertEq(vault.activeRedeemRequestId(), 0);
-        assertEq(vault.redeemQueueHead(), 0);
-        assertEq(vault.redeemQueueTail(), 0);
-        assertEq(vault.totalPendingRedeemShares(), 0);
+        assertEq(redemptionManager.activeRedeemRequestId(), 0);
+        assertEq(redemptionManager.redeemQueueHead(), 0);
+        assertEq(redemptionManager.redeemQueueTail(), 0);
+        assertEq(redemptionManager.totalPendingRedeemShares(), 0);
     }
 
     /// @notice Verifies a batch emergency exit skips a failing venue and withdraws a healthy venue.
