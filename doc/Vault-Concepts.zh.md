@@ -124,14 +124,17 @@
 - `totalAssets()` 表示 vault 当前持有资产的总价值。
 - 当前估值分成两部分：
   - vault 直接持有的 idle `token0/token1`，使用 `IPriceOracle` 的统一 base 价格直接估值
-  - active venue position，通过该 venue 配置的 `IVenueValuator` 估值
+  - active venue position，通过该 venue 配置的 `IVenueValuator` 估值，再乘以该 venue 的确认价值比例
 - venue valuator 与具体 adapter 绑定。部署资金前必须完成配置；更换 adapter 时，旧 valuator 会被清除，避免错误复用。
 
 ### `totalAssets()` 的当前公式
 - 当前实现的心智模型是：
   - `idleValue = valueInBase(idle0, price0) + valueInBase(idle1, price1)`
   - `venueValue[i] = venueValuators[i].getValueInBase(price0, price1)`
-  - `totalAssets = idleValue + sum(venueValue[i])`
+  - `recognizedVenueValue[i] = venueValue[i] * venueValuationBps[i] / 10_000`
+  - `totalAssets = idleValue + sum(recognizedVenueValue[i])`
+- 正常 venue 的 `venueValuationBps` 是 `10_000`，即按 100% 计入。
+- 被完全减记为 `0` 的 venue 不计入 `totalAssets()`，并且估值路径不会再调用该 venue 的 adapter 或 valuator。
 - 这里的 `price0` 和 `price1` 不是 vault 自己存的状态变量，而是通过 `oracle.getPrices()` 读出来的。
 - 两个价格必须使用同一个 base；当前实现统一使用 vault `token0`，所以 `totalAssets()` 的返回值也以 token0 计价。
 
@@ -278,6 +281,17 @@
 它和普通 `rebalance` 的区别是：
 - `rebalance` 是正常运营，用来调整资产分配
 - `emergencyExit` 是自动暂停并逐 venue 隔离失败的应急恢复路径
+
+### Venue Quarantine / Accounting Write-down
+- `quarantineVenue(venueId, valuationBps)` 用于处理可能受损或暂时无法可靠估值的 venue。
+- quarantine 是运营隔离：禁用该 venue 的新部署，并暂停 vault 的正常运营路径。
+- write-down 是会计减记：只改变该 venue 有多少价值被 `totalAssets()` 确认，不会转走、销毁或放弃底层仓位。
+- `10_000 bps` 表示按 100% 计值，`5_000 bps` 表示按 50% 计值，`0 bps` 表示暂时不确认该 venue 的价值。
+- 初始减记比例由 owner 在隔离时设置；隔离期间 owner 可以根据新的恢复信息调用 `setQuarantinedVenueValuationBps(...)` 调整。
+- 当前实现不会根据一次 adapter revert 自动判断损失比例。生产部署应由风险 multisig 或 timelock 治理根据可验证信息决定减记值，keeper 不应拥有该权限。
+- quarantine 不阻止 `withdrawFromVenue(...)` 等恢复操作。成功收回 vault 的 token 会成为 idle balance，并按 100% 重新计入 NAV。
+- `restoreVenue(...)` 会清除隔离状态并把确认比例恢复为 `10_000`，但不会自动 unpause；只要仍有其他隔离 venue，`unpause()` 就会 revert。
+- 该机制不是 side pocket。减记后退出的用户不会保留未来恢复款的单独索取权，未来收回的价值归恢复时仍持有 shares 的用户。
 
 ### Oracle Circuit Breaker
 - `checkSystemHealth()` 是给 keeper / monitoring 看的健康状态接口。

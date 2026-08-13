@@ -247,6 +247,67 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(vault.totalAssets(), expectedTotalAssets);
     }
 
+    function test_QuarantineVenue_WritesDownAndRestoresV3Position() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+
+        // user -> vault
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        // vault -> pool
+        uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager,
+                        V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
+
+        (uint256 price0, uint256 price1) = oracle.getPrices();
+        uint256 venueValue = valuator.getValueInBase(price0, price1);
+        assertEq(vault.totalAssets(), venueValue);
+        assertEq(vault.venueValuationBps(V3_LOW_VENUE_ID), 10000);
+
+        // Recognize only 50% of the impaired venue's reported value.
+        vault.quarantineVenue(V3_LOW_VENUE_ID, 5000);
+
+        assertTrue(vault.paused());
+        assertTrue(vault.venueQuarantined(V3_LOW_VENUE_ID));
+        assertEq(vault.quarantinedVenueCount(), 1);
+        assertEq(vault.venueValuationBps(V3_LOW_VENUE_ID), 5000);
+        (, bool enabled,) = vault.venues(V3_LOW_VENUE_ID);
+        assertFalse(enabled);
+        // The position still exists, but only half its reported value is recognized.
+        assertTrue(adapter.hasPosition());
+        assertEq(vault.totalAssets(), venueValue * 5000 / 10000);
+
+        // A complete write-down excludes the venue from vault NAV.
+        vault.setQuarantinedVenueValuationBps(V3_LOW_VENUE_ID, 0);
+        assertEq(vault.venueValuationBps(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.totalAssets(), 0);
+
+        // Quarantine blocks new deployment, but withdrawal remains available.
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        positionManager.setNextDecreaseResult(poolAmount0, poolAmount1);
+        vault.withdrawFromVenue(V3_LOW_VENUE_ID, liquidity, _v3Params(0, 0, block.timestamp + 1 hours, tickLower, tickUpper));
+        // Recovered tokens are idle and therefore return to NAV at full value.
+        uint256 recoveredIdleValue = VaultMath.getAssetsTotalValue(
+            token0.balanceOf(address(vault)), price0, decimals0,
+            token1.balanceOf(address(vault)), price1, decimals1
+        );
+        assertEq(vault.totalAssets(), recoveredIdleValue);
+        assertFalse(adapter.hasPosition());
+
+        // Restore registry accounting, but keep deployments disabled initially.
+        vault.restoreVenue(V3_LOW_VENUE_ID, false);
+
+        assertFalse(vault.venueQuarantined(V3_LOW_VENUE_ID));
+        assertEq(vault.quarantinedVenueCount(), 0);
+        assertEq(vault.venueValuationBps(V3_LOW_VENUE_ID), 10000);
+
+        (, enabled,) = vault.venues(V3_LOW_VENUE_ID);
+        assertFalse(enabled);
+
+        // With no quarantined venues remaining, normal operation can resume.
+        vault.unpause();
+        assertFalse(vault.paused());
+    }
+
     /// @notice Verifies harvesting transfers V3 fees to vault idle balances without removing the active position.
     function test_HarvestVenueFees_CollectsFeesWithoutRemovingPosition() public {
         uint256 amount0 = 1 ether;

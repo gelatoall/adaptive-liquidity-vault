@@ -152,6 +152,15 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Trusted accounting valuator configured for each venue.
     mapping(uint256 => IVenueValuator) public venueValuators;
 
+    /// @notice Whether a registered venue is isolated because its assets may be impaired.
+    mapping(uint256 => bool) public venueQuarantined;
+
+    /// @notice Percentage of the valuator-reported venue value recognized in vault NAV.
+    mapping(uint256 => uint256) public venueValuationBps;
+
+    /// @notice Number of currently quarantined venues.
+    uint256 public quarantinedVenueCount;
+
     /// @notice List of registered venue ids used for iteration.
     /// @dev Venue removal uses swap-and-pop, so list ordering is not stable.
     uint256[] public venueIds;
@@ -239,6 +248,15 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when one venue cannot be withdrawn during a best-effort emergency exit.
     event EmergencyExitFailed(uint256 indexed venueId);
+
+    /// @notice Emitted when a venue is isolated and its recognized accounting value is updated.
+    event VenueQuarantined(uint256 indexed venueId, uint256 valuationBps);
+
+    /// @notice Emitted when a quarantined venue's recognized value changes.
+    event VenueValuationBpsUpdated(uint256 indexed venueId, uint256 oldValuationBps, uint256 newValuationBps);
+
+    /// @notice Emitted when a venue exits quarantine.
+    event VenueRestored(uint256 indexed venueId, bool deploymentEnabled);
 
     // ============================================
     // Custom Errors
@@ -332,6 +350,15 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Thrown when a requested venue is registered but disabled for new deployments.
     error VenueDisabled();
+
+    /// @notice Thrown when attempting to quarantine an already isolated venue.
+    error VenueAlreadyQuarantined();
+
+    /// @notice Thrown when an operation requires a quarantined venue.
+    error VenueNotQuarantined();
+
+    /// @notice Thrown when unpausing while isolated venues remain.
+    error QuarantinedVenuesRemain();
 
     /// @notice Thrown when an operation is blocked because at least one venue still has an active position.
     error ActivePositionExists();
@@ -689,6 +716,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Resumes deposits and normal rebalance operations.
     /// @dev Only the owner can unpause after validating that the vault is safe to operate again.
     function unpause() external onlyOwner {
+        if (quarantinedVenueCount != 0) revert QuarantinedVenuesRemain();
+
         _unpause();
     }
 
@@ -844,6 +873,58 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         emit SetOracleHealthCheckEnabled(enabled);
     }
 
+    /// @notice Isolates an impaired venue, disables new deployment, and applies an accounting write-down.
+    /// @dev Pauses normal vault operations. A zero valuation excludes the venue from `totalAssets()` without
+    ///      querying its adapter or valuator, while recovery withdrawals remain available.
+    /// @param _venueId Registered venue to quarantine.
+    /// @param _valuationBps Percentage of the venue-reported value recognized in NAV.
+    function quarantineVenue(uint256 _venueId, uint256 _valuationBps) external onlyOwner {
+        if (!venueRegistered[_venueId]) revert VenueNotSet();
+        if (venueQuarantined[_venueId]) revert VenueAlreadyQuarantined();
+        if (_valuationBps > RebalanceTypes.BPS) revert InvalidBps();
+
+        venueQuarantined[_venueId] = true;
+        venueValuationBps[_venueId] = _valuationBps;
+        venues[_venueId].enabled = false;
+        quarantinedVenueCount++;
+
+        if (!paused()) {
+            _pause();
+        }
+
+        emit VenueQuarantined(_venueId, _valuationBps);
+    }
+
+    /// @notice Removes a venue from quarantine and restores its recognized value to 100%.
+    /// @dev Does not unpause the vault; the owner must separately resume operations after all venues are restored.
+    /// @param _venueId Quarantined venue to restore.
+    /// @param deploymentEnabled Whether new deployment to the restored venue should be enabled.
+    function restoreVenue(uint256 _venueId, bool deploymentEnabled) external onlyOwner {
+        if (!venueRegistered[_venueId]) revert VenueNotSet();
+        if (!venueQuarantined[_venueId]) revert VenueNotQuarantined();
+
+        venueQuarantined[_venueId] = false;
+        venueValuationBps[_venueId] = RebalanceTypes.BPS;
+        venues[_venueId].enabled = deploymentEnabled;
+        quarantinedVenueCount--;
+
+        emit VenueRestored(_venueId, deploymentEnabled);
+    }
+
+    /// @notice Updates the accounting value recognized for a quarantined venue.
+    /// @param _venueId Quarantined venue whose write-down is being updated.
+    /// @param newValuationBps New recognized percentage of the venue-reported value.
+    function setQuarantinedVenueValuationBps(uint256 _venueId, uint256 newValuationBps) external onlyOwner {
+        if (!venueRegistered[_venueId]) revert VenueNotSet();
+        if (!venueQuarantined[_venueId]) revert VenueNotQuarantined();
+        if (newValuationBps > RebalanceTypes.BPS) revert InvalidBps();
+
+        uint256 oldValuationBps = venueValuationBps[_venueId];
+        venueValuationBps[_venueId] = newValuationBps;
+
+        emit VenueValuationBpsUpdated(_venueId, oldValuationBps, newValuationBps);
+    }
+
     /// @notice Registers or updates a venue adapter.
     /// @dev Existing venues can only be updated when the venue has no tracked liquidity and no adapter-reported position.
     /// @param _venueId Caller-defined venue id.
@@ -856,6 +937,10 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         }
 
         if (venueRegistered[_venueId]) {
+            if (venueQuarantined[_venueId]) {
+                revert VenueAlreadyQuarantined();
+            }
+
             VenueConfig storage currentVenue = venues[_venueId];
             if (venueLiquidity[_venueId] != 0 || 
                 (address(currentVenue.adapter) != address(0) && currentVenue.adapter.hasPosition())
@@ -870,6 +955,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         } else {
             venueRegistered[_venueId] = true;
             venueIds.push(_venueId);
+            venueValuationBps[_venueId] = RebalanceTypes.BPS;
         }
 
         venues[_venueId] = VenueConfig({
@@ -897,11 +983,17 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
         if (currentVenue.enabled) revert VenueMustBeDisabled();
 
+        if (venueQuarantined[_venueId]) {
+            quarantinedVenueCount--;
+        }
+
         _removeVenueId(_venueId);
         delete venues[_venueId];
         delete venueRegistered[_venueId];
         delete venueLiquidity[_venueId];
         delete venueValuators[_venueId];
+        delete venueQuarantined[_venueId];
+        delete venueValuationBps[_venueId];
 
         emit RemoveVenue(_venueId, adapter);
     }
@@ -1214,7 +1306,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     /// @notice Values idle balances and active venue positions using trusted accounting valuators.
-    /// @dev Every active position must have a valuator bound to its current adapter.
+    /// @dev Every active position with a non-zero recognized value must have a valuator bound to its current adapter.
+    ///      Quarantined venue values are multiplied by their configured recognition percentage.
     function _totalAssetsAtPrices(uint256 price0, uint256 price1) internal view returns (uint256 totalValue) {
         // Idle tokens do not depend on AMM pool state and can be valued directly.
         totalValue = VaultMath.getAssetsTotalValue(
@@ -1228,8 +1321,10 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
         for (uint256 i = 0; i < venueIds.length; i++) {
             uint256 venueId = venueIds[i];
-            IVenueAdapter adapter = venues[venueId].adapter;
+            uint256 valuationBps = venueValuationBps[venueId];
+            if (valuationBps == 0) continue;
 
+            IVenueAdapter adapter = venues[venueId].adapter;
             if (address(adapter) == address(0)) continue;
             if (!adapter.hasPosition()) continue;
 
@@ -1238,7 +1333,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
                 revert VenueValuatorNotSet(venueId);
             }
 
-            totalValue += valuator.getValueInBase(price0, price1);
+            uint256 venueValue = valuator.getValueInBase(price0, price1);
+            totalValue += Math.mulDiv(venueValue, valuationBps, RebalanceTypes.BPS);
         }
     }
 

@@ -37,6 +37,7 @@ This version includes:
 - two-step ownership transfers through OpenZeppelin `Ownable2Step`
 - owner-controlled pause and unpause
 - emergency exit that withdraws all venue liquidity to idle balances and pauses normal operations
+- owner-controlled venue quarantine and accounting write-down for impaired positions
 
 This version does not include:
 - automatic dynamic strategy selection
@@ -82,6 +83,8 @@ The vault stores:
 - registered venue ids for iteration
 - per-venue tracked liquidity
 - total tracked liquidity across all venues
+- per-venue quarantine state and recognized valuation percentage
+- number of venues currently in quarantine
 - ERC20 share supply and balances
 - configured rebalance strategy
 - configured keeper for strategy-driven rebalance execution
@@ -94,6 +97,9 @@ Venue state:
 - `venueIds` is used to iterate all registered venues in `totalAssets()` and withdrawal flows; removal uses swap-and-pop, so ordering is not stable
 - `venueLiquidity[venueId]` tracks liquidity reported by each adapter
 - `venueValuators[venueId]` stores the trusted accounting valuator bound to the venue's current adapter
+- `venueQuarantined[venueId]` marks venues isolated from new deployment after an impairment or operational incident
+- `venueValuationBps[venueId]` is the percentage of valuator-reported value recognized by `totalAssets()`; healthy venues default to `10_000`
+- `quarantinedVenueCount` prevents normal operations from resuming while any venue remains isolated
 - `totalLiquidity` is bookkeeping only; liquidity units can differ across venues and should not be treated as asset value
 
 Current test and example convention:
@@ -136,9 +142,26 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: configure the trusted accounting valuator used by `totalAssets()` for an active venue position
   - behavior: owner-only; the valuator must report the venue's current adapter through `getVenueAdapter()`
 
+- `quarantineVenue(venueId, valuationBps)`
+  - purpose: isolate an impaired venue and reduce the value recognized in vault NAV
+  - behavior: owner-only; disables new deployment to the venue and pauses the vault
+  - behavior: accepts a recognition percentage from `0` through `10_000` basis points
+  - behavior: does not delete the position or prevent recovery withdrawals
+
+- `setQuarantinedVenueValuationBps(venueId, valuationBps)`
+  - purpose: update the recognized value as recovery information changes
+  - behavior: owner-only and restricted to quarantined venues
+
+- `restoreVenue(venueId, deploymentEnabled)`
+  - purpose: remove a venue from quarantine after recovery or risk review
+  - behavior: resets recognized value to `10_000` basis points and optionally re-enables deployment
+  - behavior: does not automatically unpause the vault
+
 - `totalAssets()`
   - purpose: return idle value plus trusted valuator output for every active venue position
   - behavior: rejects unset, future-dated, stale, zero, or excessively divergent oracle data before valuation
+  - behavior: applies each venue's recognized valuation percentage to its valuator-reported value
+  - behavior: skips adapter and valuator calls for a fully written-down venue whose percentage is zero
   - returns: `uint256 assets`
 
 - `getTotalUnderlying()`
@@ -516,7 +539,7 @@ These conditions should always hold:
 - the initial deposit creates gross shares equal to deposit value, locks `MINIMUM_LOCKED_SHARES`, and gives the remainder to the receiver
 - initialized vault supply never falls below `MINIMUM_LOCKED_SHARES`
 - non-zero deposits must not mint zero shares
-- `totalAssets()` reflects idle balances plus trusted valuator output for all active venues
+- `totalAssets()` reflects idle balances plus each active venue's trusted valuator output multiplied by its recognized valuation percentage
 - redeeming shares reduces the user's share balance and total share supply
 - redeeming shares uses idle balances and leaves active venue liquidity unchanged
 - queued shares remain in total supply while held in `RedemptionManager` escrow
