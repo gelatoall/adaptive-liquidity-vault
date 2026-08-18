@@ -191,7 +191,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - behavior: blocked while an asynchronous request is actively processing
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
-- `RedemptionManager.requestRedeem(shares, receiver, minAmount0Out, minAmount1Out, deadline)`
+- `RedemptionManager.requestRedeem(shares, receiver, deadline)`
   - purpose: escrow shares in a FIFO queue when current idle value cannot cover synchronous redemption
   - behavior: shares remain in total supply and exposed to vault NAV until settlement, cancellation, or expiration
   - behavior: the caller owns the request and must first approve the manager to transfer the requested shares
@@ -202,24 +202,28 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 - `RedemptionManager.activateNextRedeemRequest()`
   - purpose: move the FIFO queue head from `PENDING` to `PROCESSING`
   - behavior: owner or keeper only; one request may be active at a time
-  - behavior: activation reserves subsequently returned idle liquidity by blocking synchronous redemption and new venue deployment
+  - behavior: snapshots the request's proportional idle balances and venue liquidity, then blocks state-changing vault operations that would invalidate that snapshot
+
+- `RedemptionManager.fundActiveRedeemRequest(venueId, params)`
+  - purpose: withdraw the active request's snapshotted liquidity from one venue
+  - behavior: owner or keeper only; successful venue funding is accumulated for the active request and failed venues can be retried independently
 
 - `RedemptionManager.deactivateRedeemRequest()`
-  - purpose: return the active request to `PENDING` when activation occurred before sufficient liquidity was recovered
-  - behavior: owner-only; does not remove the request or return its escrowed shares
+  - purpose: return an unfunded active request to `PENDING`
+  - behavior: owner-only; unavailable after any venue funding succeeds and does not return escrowed shares
 
 - `RedemptionManager.processNextRedeemRequest()`
-  - purpose: settle the active queue head from current idle balances
-  - behavior: permissionless after activation and uses settlement-time NAV and idle token composition
-  - behavior: checks the request's minimum token outputs before burning escrowed shares
+  - purpose: settle the active queue head from its accumulated idle and venue funding amounts
+  - behavior: permissionless after every snapshotted venue has funded; burns escrowed shares and transfers the actual accumulated token amounts
+  - behavior: asynchronous requests do not expose user-level final output minimums; venue-specific execution minimums and deadlines are supplied by the owner or keeper through `params`
   - returns: `uint256 amount0Out, uint256 amount1Out`
 
 - `RedemptionManager.cancelRedeemRequest(requestId)`
   - purpose: let the request owner cancel a `PENDING` request and recover its escrowed shares
 
 - `RedemptionManager.expireRedeemRequest(requestId)`
-  - purpose: remove an expired `PENDING` or `PROCESSING` request and return its escrowed shares
-  - behavior: permissionless after the request deadline; expiring the active request also exits processing mode
+  - purpose: remove an expired request that has not begun venue funding and return its escrowed shares
+  - behavior: permissionless after the request deadline; a request with successful venue funding must settle instead
 
 - `deployToVenue(venueId, amount0, amount1, params)`
   - purpose: deploy idle funds into a registered venue adapter
@@ -334,21 +338,21 @@ The permanent initial-share lock prevents a first depositor from owning 100% of 
 12. Burn `owner`'s shares.
 13. Transfer `token0` and `token1` to `receiver`.
 
-Synchronous redemption never harvests fees or removes venue liquidity. Large redemptions that exceed the idle buffer must wait for a management or rebalance transaction to return capital to idle balances.
+Synchronous redemption never harvests fees or removes venue liquidity. Large redemptions use `RedemptionManager`, which funds the active request from each snapshotted venue in separate transactions.
 
 Redemptions remain callable while the vault is paused, but still require valid valuation prices and sufficient idle liquidity.
 
 ### asynchronous redemption
 
-1. After approving `RedemptionManager`, the user calls `requestRedeem(...)`; the manager verifies that idle value is insufficient, appends the request to its FIFO queue, and escrows the caller's shares.
+1. After approving `RedemptionManager`, the user calls `requestRedeem(shares, receiver, deadline)`; the manager verifies that idle value is insufficient, appends the request to its FIFO queue, and escrows the caller's shares.
 2. The vault owner or keeper calls `RedemptionManager.activateNextRedeemRequest()` to mark the queue head as `PROCESSING`.
-3. While that request is active, synchronous redemption and new venue deployment are blocked so returned idle liquidity cannot be consumed by those paths.
-4. Venue withdrawals occur in separate transactions. A failed venue withdrawal does not remove the request or roll back successful withdrawals from other transactions.
-5. Once idle value is sufficient, any caller may call `RedemptionManager.processNextRedeemRequest()`.
-6. The manager calls `AdaptiveLPVault.settleQueuedRedeem(...)`; the vault quotes current NAV, enforces both output minimums, burns the manager's escrowed shares, and transfers tokens to the receiver. The manager then finalizes and unlinks the request.
-7. A request owner may cancel while it is `PENDING`. After its deadline, anyone may expire a `PENDING` or `PROCESSING` request and return its shares.
+3. Activation snapshots the request's proportional idle balances and each active venue's proportional liquidity. While active, operations that can change share supply, idle balances, or venue positions are blocked.
+4. Owner or keeper calls `fundActiveRedeemRequest(venueId, params)` once per snapshotted venue. A failed venue call does not roll back successful funding from other transactions.
+5. After every snapshotted venue has funded, any caller may call `RedemptionManager.processNextRedeemRequest()`.
+6. The manager calls `AdaptiveLPVault.settleQueuedRedeem(...)`; the vault burns the manager's escrowed shares and transfers the request's accumulated actual amounts to the receiver. The manager then finalizes and unlinks the request.
+7. A request owner may cancel while it is `PENDING`. After its deadline, anyone may expire an unfunded `PENDING` or `PROCESSING` request. A partially funded request must finish funding and settle.
 
-Pending requests do not reserve idle liquidity. Reservation begins only when the queue head is activated. Operational keepers should therefore activate an accepted queue head before recovering venue liquidity for it.
+Pending requests do not reserve idle liquidity. Reservation begins only when the queue head is activated. Asynchronous requests intentionally do not use a user-level final output minimum: a multi-transaction, per-venue funding flow cannot safely enforce one without an epoch or batch settlement design. Keepers must apply per-venue execution constraints through the supplied adapter params.
 
 ### totalAssets
 
@@ -501,7 +505,7 @@ Paused state does not block exit-oriented operations:
 - `withdrawFromVenue`
 - `emergencyExit`
 
-For fault-isolated recovery, the owner calls `emergencyExit(withdrawalParams)`. The function pauses the vault before making adapter calls and processes each active venue through an external self-call. `try/catch` keeps a reverting venue deployed, emits `EmergencyExitFailed`, and continues withdrawing healthy venues. Normal delta rebalances remain atomic, so any failed venue operation reverts the complete rebalance.
+For fault-isolated recovery, the owner calls `emergencyExit(withdrawalParams)`. The function pauses the vault before making adapter calls and processes each active venue through an external self-call. `try/catch` keeps a reverting venue deployed, emits `EmergencyExitFailed`, and continues withdrawing healthy venues. An active asynchronous request blocks this operation because emergency withdrawal would invalidate its request-specific funding snapshot. Normal delta rebalances remain atomic, so any failed venue operation reverts the complete rebalance.
 
 ## Failure Cases
 
@@ -529,9 +533,9 @@ The vault should revert when:
 - volatility delta guard is enabled before a volatility oracle is configured
 - redeem output is below `minAmount0Out` or `minAmount1Out`
 - an asynchronous request is submitted when idle liquidity can already cover it
-- an asynchronous request uses an invalid deadline or is activated or processed after expiry
+- an asynchronous request uses an invalid deadline, or an unfunded request is activated or processed after expiry
 - queue activation is attempted without a pending head or while another request is active
-- asynchronous settlement lacks sufficient idle value or violates the request's minimum outputs
+- asynchronous settlement is attempted before every snapshotted venue has funded
 
 ## Invariants
 

@@ -230,23 +230,23 @@
 
 ### 异步赎回队列
 - 异步队列由独立的 `RedemptionManager` 管理；Vault 只负责判断是否需要排队并执行最终资产结算。
-- 当同步 `redeem` 所需价值大于当前 idle value 时，用户先授权 Manager 使用 vault shares，再调用 `requestRedeem(shares, receiver, minAmount0Out, minAmount1Out, deadline)`。
+- 当同步 `redeem` 所需价值大于当前 idle value 时，用户先授权 Manager 使用 vault shares，再调用 `requestRedeem(shares, receiver, deadline)`。
 - 请求创建后，shares 会从调用者转到 `RedemptionManager` 托管，但暂时不会 burn，仍然计入 `totalSupply` 并继续承担 vault NAV 的变化。
 - 请求在 Manager 中按双向链表组成 FIFO 队列：`redeemQueueHead` 是最早请求，`redeemQueueTail` 是最新请求。
 - Vault owner 或 keeper 调用 Manager 的 `activateNextRedeemRequest()` 后，队首从 `PENDING` 进入 `PROCESSING`，并记录到 `activeRedeemRequestId`。
-- 只有进入 `PROCESSING` 后才开始预留未来返回的 idle liquidity：同步 `redeem` 和新的 venue deployment 会被阻止。仅处于 `PENDING` 的请求不会自动预留 idle。
-- owner 可以通过 `withdrawFromVenue(...)` 分多笔交易、按 venue 把资金撤回 idle。某个 venue 调用失败不会删除请求，也不会回滚其他独立交易中已经成功撤回的资金。
-- idle 足够后，任何地址都可以调用 Manager 的 `processNextRedeemRequest()`；Manager 调用 Vault 的 `settleQueuedRedeem(...)`，token 始终发送给请求记录的 `receiver`，而不是处理交易的 caller。
-- 结算使用当时的 `totalAssets / totalSupply`，不是请求创建时固定 NAV。`minAmount0Out/minAmount1Out` 用于保护等待期间的最终输出。
-- 最低输出或 idle 检查失败时，请求保持 active，托管 shares 不会被 burn。
-- `PENDING` 请求可以由 request owner 取消；超过 deadline 后，任何人都可以 expire `PENDING` 或 `PROCESSING` 请求并把 shares 退回 owner。
-- `deactivateRedeemRequest()` 是 owner 的恢复操作：它把 active 请求退回 `PENDING`，但不会取消请求或退回 shares。
+- 进入 `PROCESSING` 时，Manager snapshot 当前 `totalSupply`、请求按比例对应的 idle token，以及每个 active venue 应撤出的 liquidity。同步 `redeem`、deposit、部署、rebalance 和 fee 操作会被阻止，以保持该 snapshot 有效。
+- owner 或 keeper 调用 `fundActiveRedeemRequest(venueId, params)`，按 snapshot 从一个 venue 为请求 funding。每个 venue 是独立交易；失败不会回滚已经成功 funding 的其它 venue。
+- 所有 snapshotted venue 都完成 funding 后，任何地址都可以调用 `processNextRedeemRequest()`；Manager 调用 Vault 的 `settleQueuedRedeem(...)`，把请求实际累计的 token 数量发送给记录的 `receiver`，而不是处理交易的 caller。
+- 异步路径不接受用户级 `minAmount0Out/minAmount1Out`。逐 venue 的执行保护由 owner/keeper 提供的 adapter params 承担，例如 V2/V3 的 minimum amounts 和 deadline。当前合约不会强制这些 params 必须由 `TwapSlippageController` 生成。
+- `PENDING` 请求可以由 request owner 取消；超过 deadline 后，尚未 funding 的 `PENDING` 或 `PROCESSING` 请求可被 permissionless expire 并退回 shares。任何 venue 已成功 funding 后，该请求必须完成 funding 并按实际累计金额结算，不能取消或 expire。
+- `deactivateRedeemRequest()` 是 owner 的恢复操作：它只适用于尚未 funding 的 active 请求，将请求退回 `PENDING`，但不会取消请求或退回 shares。
 
 ### 重要细节
 - `redeem` 必须使用 burn 前的 `totalSupply`。
-- `minAmount0Out/minAmount1Out` 是 redeem 的用户侧保护，可以防止估值变化或 rounding 导致输出低于用户预期。
+- `minAmount0Out/minAmount1Out` 是同步 `redeem` 的用户侧保护，可以防止该单笔原子交易的输出低于用户预期。异步请求不使用这两个参数。
 - `ActivePositionExists` 仍用于保护 `setVenue(...)`：有 active liquidity 时不能替换对应 venue adapter。
 - `redeem` 不受 paused 状态限制，但仍要求估值价格有效且 idle buffer 足够。
+- active 异步请求会优先于 `emergencyExit`，因为 emergency withdrawal 会破坏该请求的 liquidity snapshot。已部分 funding 请求的紧急取消和损失分配属于后续的 emergency-redemption policy，不在当前实现范围内。
 
 ### 两步所有权转移
 - `AdaptiveLPVault`、两个 strategy 和 `TwapSlippageController` 都继承 OpenZeppelin `Ownable2Step`。

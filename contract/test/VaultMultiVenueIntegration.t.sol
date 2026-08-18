@@ -325,33 +325,49 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         vm.startPrank(alice);
         vault.approve(address(redemptionManager), aliceShares);
-        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, 0, 0, deadline);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
         vm.stopPrank();
         redemptionManager.activateNextRedeemRequest();
         assertEq(redemptionManager.activeRedeemRequestId(), requestId);
+
+        (uint256 fundingRequestId, uint256 fundingRoundId, uint256 totalSharesSnapshot, uint256 reservedAmount0,
+            uint256 reservedAmount1, uint256 pendingVenueCount, uint256 fundedVenueCount) = redemptionManager.activeFunding();
+
+        assertEq(fundingRequestId, requestId);
+        assertEq(totalSharesSnapshot, vault.totalSupply());
+        assertEq(reservedAmount0, 0);
+        assertEq(reservedAmount1, 0);
+        assertEq(pendingVenueCount, 2);
+        assertEq(fundedVenueCount, 0);
+
+        // Activation snapshots the proportional liquidity required from each venue.
+        uint256 v2LiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V2_VENUE_ID);
+        uint256 v3LiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
 
         // Simulate a temporary V2 failure: attempting to withdraw V2 must revert without changing its position.
         routerV2.setRevertOnRemoveLiquidity(true);
 
         vm.expectRevert(MockUniswapV2Router.MockRemoveLiquidityFailed.selector);
-        vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity, "");
+        redemptionManager.fundActiveRedeemRequest(V2_VENUE_ID, "");
 
         // V2 remains deployed after its isolated withdrawal call fails.
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertTrue(adapterV2.hasPosition());
 
-        // The V2 failure does not prevent a separate transaction from successfully withdrawing V3.
-        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, v3Amount0, v3Amount1);
+        // V3 can still fund its part of the request in a separate transaction.
+        uint256 expectedV3Amount0 = v3Amount0 * v3LiquidityToWithdraw / v3Liquidity;
+        uint256 expectedV3Amount1 = v3Amount1 * v3LiquidityToWithdraw / v3Liquidity;
+
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedV3Amount0, expectedV3Amount1);
         positionManagerV3Low.setNextDecreaseResult(poolAmount0, poolAmount1);
-        vault.withdrawFromVenue(V3_LOW_VENUE_ID, v3Liquidity, _v3Params(0, 0, deadline, tickLower, tickUpper));
+        redemptionManager.fundActiveRedeemRequest(V3_LOW_VENUE_ID, _v3Params(0, 0, deadline, tickLower, tickUpper));
 
-        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity - v3LiquidityToWithdraw);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
-        assertEq(token0.balanceOf(address(vault)), v3Amount0);
-        assertEq(token1.balanceOf(address(vault)), v3Amount1);
+        assertEq(token0.balanceOf(address(vault)), expectedV3Amount0);
+        assertEq(token1.balanceOf(address(vault)), expectedV3Amount1);
 
-        // Only the V3 portion is now idle, so the vault still cannot pay Alice's full share claim.
-        vm.expectPartialRevert(AdaptiveLPVault.InsufficientIdleLiquidity.selector);
+        vm.expectRevert(RedemptionManager.RedeemFundingIncomplete.selector);
         redemptionManager.processNextRedeemRequest();
 
         // Failed settlement does not burn Alice's escrowed shares or remove her request from the queue.
@@ -359,19 +375,23 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(redemptionManager.redeemQueueHead(), requestId);
         assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
 
-        // Simulate V2 recovery, then withdraw its remaining liquidity in a later transaction.
         routerV2.setRevertOnRemoveLiquidity(false);
-        routerV2.setNextRemoveLiquidityResult(v2Amount0, v2Amount1);
+        uint256 expectedV2Amount0 = v2Amount0 * v2LiquidityToWithdraw / v2Liquidity;
+        uint256 expectedV2Amount1 = v2Amount1 * v2LiquidityToWithdraw / v2Liquidity;
 
-        vault.withdrawFromVenue(V2_VENUE_ID, v2Liquidity, "");
+        routerV2.setNextRemoveLiquidityResult(expectedV2Amount0, expectedV2Amount1);
+        redemptionManager.fundActiveRedeemRequest(V2_VENUE_ID, "");
 
-        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
-        assertEq(token0.balanceOf(address(vault)), amount0);
-        assertEq(token1.balanceOf(address(vault)), amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity - v2LiquidityToWithdraw);
+        assertEq(token0.balanceOf(address(vault)), expectedV2Amount0 + expectedV3Amount0);
+        assertEq(token1.balanceOf(address(vault)), expectedV2Amount1 + expectedV3Amount1);
 
         // With both venue positions returned to idle, any caller can now complete Alice's active request.
         vm.prank(bob);
         (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
+
+        assertEq(amount0Out, expectedV2Amount0 + expectedV3Amount0);
+        assertEq(amount1Out, expectedV2Amount1 + expectedV3Amount1);
 
         assertEq(token0.balanceOf(alice), amount0Out);
         assertEq(token1.balanceOf(alice), amount1Out);
@@ -379,7 +399,7 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertGt(amount1Out, 0);
 
         // Successful settlement burns the escrowed shares and clears the active one-item queue.
-        assertEq(vault.balanceOf(address(vault)), 0);
+        assertEq(vault.balanceOf(address(redemptionManager)), 0);
         assertEq(redemptionManager.activeRedeemRequestId(), 0);
         assertEq(redemptionManager.redeemQueueHead(), 0);
         assertEq(redemptionManager.redeemQueueTail(), 0);

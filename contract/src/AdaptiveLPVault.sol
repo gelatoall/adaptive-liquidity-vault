@@ -417,6 +417,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     error RedeemProcessingActive();
     /// @notice Thrown when a deployment would leave insufficient idle value.
     error IdleBufferViolation(uint256 requiredIdleValue, uint256 idleValueAfter);
+    /// @notice Thrown when vault share supply changes during an active funding round.
+    error RedeemShareSupplyChanged();
 
     // ============================================
     // Modifiers
@@ -431,6 +433,14 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     modifier onlyRedemptionManager() {
         if (msg.sender != redemptionManager) {
             revert OnlyRedemptionManager();
+        }
+        _;
+    }
+
+    /// @dev Prevents operations that could change supply, idle balances, or venue positions during request funding.
+    modifier whenNoRedemptionProcessing() {
+        if (_isRedemptionProcessing()) {
+            revert RedeemProcessingActive();
         }
         _;
     }
@@ -484,7 +494,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 amount1, 
         address receiver, 
         uint256 minShares
-    ) external whenNotPaused nonReentrant returns (uint256 shares) {
+    ) external whenNotPaused nonReentrant whenNoRedemptionProcessing returns (uint256 shares) {
         // Reject if both deposit amounts are zero.
         if (amount0 == 0 && amount1 == 0) {
             revert ZeroAmounts();
@@ -595,23 +605,55 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         return redeemValue > idleValue;
     }
 
-    /// @notice Settles an active asynchronous redemption from idle vault balances.
-    /// @dev Burns shares escrowed by the redemption manager and transfers underlying assets to `receiver`.
+    /// @notice Withdraws one venue's snapshotted liquidity for the active queued redemption.
+    /// @dev Collects claimable venue tokens first and attributes only the request's proportional fee share.
+    /// @param venueId Venue funding the active request.
+    /// @param liquidity Snapshotted venue liquidity allocated to the request.
+    /// @param requestShares Shares escrowed by the active request.
+    /// @param totalSharesSnapshot Total share supply captured when request funding began.
+    /// @param params Venue-specific remove-liquidity constraints.
+    /// @return requestAmount0 Actual token0 amount attributed to the request.
+    /// @return requestAmount1 Actual token1 amount attributed to the request.
+    function fundQueuedRedeemFromVenue(
+        uint256 venueId,
+        uint256 liquidity,
+        uint256 requestShares,
+        uint256 totalSharesSnapshot,
+        bytes calldata params
+    ) external onlyRedemptionManager nonReentrant returns (uint256 requestAmount0, uint256 requestAmount1) {
+        if (!_isRedemptionProcessing()) revert RedemptionNotProcessing();
+        if (totalSupply() != totalSharesSnapshot) revert RedeemShareSupplyChanged();
+
+        (uint256 fees0, uint256 fees1) = _collectVenueFees(venueId);
+        uint256 requestFees0 = Math.mulDiv(fees0, requestShares, totalSharesSnapshot);
+        uint256 requestFees1 = Math.mulDiv(fees1, requestShares, totalSharesSnapshot);
+
+        (uint256 removed0, uint256 removed1) = _withdrawFromVenue(venueId, liquidity, params, false);
+        requestAmount0 = requestFees0 + removed0;
+        requestAmount1 = requestFees1 + removed1;
+    }
+
+    /// @notice Settles an active asynchronous redemption using its request-specific funded amounts.
+    /// @dev Verifies the activation-time supply snapshot, burns manager-escrowed shares, and transfers
+    ///      the exact amounts supplied by the redemption manager to `receiver`.
     function settleQueuedRedeem(
         uint256 shares,
+        uint256 totalSharesSnapshot,
         address receiver,
         address shareOwner,
-        uint256 minAmount0Out,
-        uint256 minAmount1Out
-    ) external onlyRedemptionManager nonReentrant returns (uint256 amount0Out, uint256 amount1Out) {
+        uint256 amount0Out,
+        uint256 amount1Out
+    ) external onlyRedemptionManager nonReentrant {
         if (!_isRedemptionProcessing()) {
             revert RedemptionNotProcessing();
         }
 
-        (amount0Out, amount1Out) = _quoteIdleRedeem(shares, totalSupply());
+        if (totalSupply() != totalSharesSnapshot) {
+            revert RedeemShareSupplyChanged();
+        }
 
-        if (amount0Out < minAmount0Out || amount1Out < minAmount1Out) {
-            revert InsufficientRedeemOutput();
+        if (amount0Out > token0.balanceOf(address(this)) || amount1Out > token1.balanceOf(address(this))) {
+            revert InsufficientBalances();
         }
 
         // RedemptionManager holds the shares while the request is queued.
@@ -736,7 +778,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @dev Each venue executes through an isolated self-call. A failed venue remains deployed and
     ///      emits `EmergencyExitFailed`, while the loop continues withdrawing healthy venues.
     /// @param withdrawalParams Optional venue-specific remove-liquidity constraints.
-    function emergencyExit(VenueWithdrawalParams[] calldata withdrawalParams) external onlyOwner nonReentrant {
+    function emergencyExit(VenueWithdrawalParams[] calldata withdrawalParams) external onlyOwner nonReentrant whenNoRedemptionProcessing {
         if (!paused()) {
             _pause();
         }
@@ -1042,7 +1084,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         uint256 venueId,
         uint256 liquidity, 
         bytes calldata params
-    ) external onlyOwner nonReentrant returns (
+    ) external onlyOwner nonReentrant whenNoRedemptionProcessing returns (
         uint256 amount0Out,
         uint256 amount1Out
     ) {
@@ -1054,7 +1096,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @param venueId Registered venue whose claimable tokens are collected.
     /// @return collected0 Raw token0 amount collected into the vault.
     /// @return collected1 Raw token1 amount collected into the vault.
-    function harvestVenueFees(uint256 venueId) external onlyOwnerOrKeeper nonReentrant returns (uint256 collected0, uint256 collected1) {
+    function harvestVenueFees(uint256 venueId) external onlyOwnerOrKeeper nonReentrant whenNoRedemptionProcessing returns (uint256 collected0, uint256 collected1) {
         return _collectVenueFees(venueId);
     }
 
@@ -1066,7 +1108,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @return collected0 Raw token0 amount collected before redeployment.
     /// @return collected1 Raw token1 amount collected before redeployment.
     /// @return liquidityAdded Additional liquidity reported by the venue adapter.
-    function compoundVenueFees(uint256 venueId, bytes calldata params) external onlyOwnerOrKeeper whenNotPaused nonReentrant returns (
+    function compoundVenueFees(uint256 venueId, bytes calldata params) external onlyOwnerOrKeeper whenNotPaused nonReentrant whenNoRedemptionProcessing returns (
         uint256 collected0,
         uint256 collected1,
         uint256 liquidityAdded
@@ -1091,7 +1133,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     function rebalance(
         RebalanceTypes.RebalanceTarget[] calldata targets,
         VenueWithdrawalParams[] calldata withdrawalParams
-    ) external onlyOwner whenNotPaused nonReentrant {
+    ) external onlyOwner whenNotPaused nonReentrant whenNoRedemptionProcessing {
         _checkValuationOracleGuards();
         _rebalance(targets, withdrawalParams);
         emit Rebalance(msg.sender);
@@ -1104,7 +1146,7 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     function rebalanceWithStrategy(
         bytes calldata data, 
         VenueWithdrawalParams[] calldata withdrawalParams
-    ) external onlyOwnerOrKeeper whenNotPaused nonReentrant {
+    ) external onlyOwnerOrKeeper whenNotPaused nonReentrant whenNoRedemptionProcessing {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
         uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();

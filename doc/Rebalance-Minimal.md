@@ -366,6 +366,10 @@ Emergency recovery uses a best-effort batch:
 5. A reverting venue emits `EmergencyExitFailed` and remains deployed while the loop continues.
 6. Users can still redeem while paused because `redeem` is not gated by `whenNotPaused`.
 
+An active asynchronous redemption blocks `emergencyExit`, because the emergency withdrawal would invalidate
+the active request's snapshotted funding plan. Emergency cancellation of a partially funded request is not
+implemented in the current scope.
+
 The self-call boundary allows `try/catch` to roll back only the failing venue. Normal delta rebalance execution remains atomic, so any failed venue must revert the complete rebalance.
 
 ### rebalance to one venue

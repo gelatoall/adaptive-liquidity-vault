@@ -4,13 +4,14 @@ pragma solidity ^0.8.28;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import "../interfaces/IRedemptionVault.sol";
 import "../interfaces/IRedemptionManager.sol";
 
 /// @title RedemptionManager
 /// @notice Escrows vault shares and coordinates FIFO asynchronous redemptions.
-/// @dev Venue liquidity is returned to the vault separately; this contract settles only after
-///      the vault reports enough idle value for the active request.
+/// @dev Activation snapshots the request's proportional idle balances and venue liquidity. Venues fund
+///      the request independently, and settlement transfers the accumulated request-specific outputs.
 contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -23,13 +24,36 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
     /// @notice ERC20 vault-share token escrowed by queued requests.
     IERC20 public immutable sharesToken;
 
+    /// @notice Vault token0 used to snapshot request-specific idle balances.
+    IERC20 public immutable token0;
+
+    /// @notice Vault token1 used to snapshot request-specific idle balances.
+    IERC20 public immutable token1;
+
+    /// @notice Funding state for the active queue-head request.
+    struct ActiveRedeemFunding {
+        uint256 requestId;
+        uint256 fundingRoundId;
+        uint256 totalSharesSnapshot;
+        uint256 reservedAmount0;
+        uint256 reservedAmount1;
+        uint256 pendingVenueCount;
+        uint256 fundedVenueCount;
+    }
+    /// @notice Id assigned to the next activation funding round.
+    uint256 public nextFundingRoundId = 1;
+
+    /// @notice Request-specific funding accumulated for the active queue head.
+    ActiveRedeemFunding public activeFunding;
+
+    /// @notice Snapshotted venue liquidity still pending for each funding round.
+    mapping(uint256 fundingRoundId => mapping(uint256 venueId => uint256 liquidity)) public fundingLiquidity;
+
     /// @notice A redemption waiting for sufficient idle vault liquidity.
     struct RedeemRequest {
         address owner;
         address receiver;
         uint256 shares;
-        uint256 minAmount0Out;
-        uint256 minAmount1Out;
         uint256 deadline;
         uint256 previousRequestId;
         uint256 nextRequestId;
@@ -70,8 +94,6 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
         address indexed owner,
         address indexed receiver,
         uint256 shares,
-        uint256 minAmount0Out,
-        uint256 minAmount1Out,
         uint256 deadline
     );
 
@@ -89,6 +111,16 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
 
     /// @notice Emitted when an expired request is removed and its escrowed shares are returned.
     event RedeemRequestExpired(uint256 indexed requestId, address indexed owner);
+
+    /// @notice Emitted when one venue funds part of the active redemption request.
+    event RedeemRequestFunded(
+        uint256 indexed requestId,
+        uint256 indexed fundingRoundId,
+        uint256 indexed venueId,
+        uint256 liquidity,
+        uint256 amount0,
+        uint256 amount1
+    );
 
     /// @notice Thrown when a caller is neither the current vault owner nor keeper.
     error NotOwnerOrKeeper();
@@ -125,6 +157,16 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
     /// @notice Thrown when cancellation is attempted outside the pending state.
     error RedeemRequestNotCancellable();
 
+    /// @notice Thrown when a request's proportional venue liquidity rounds down to zero.
+    error RedeemLiquidityTooSmall();
+
+    /// @notice Thrown when the selected venue has no pending liquidity in the active funding round.
+    error VenueFundingNotPending();
+    /// @notice Thrown when settlement is attempted before all snapshotted venues finish funding.
+    error RedeemFundingIncomplete();
+    /// @notice Thrown when cancellation or expiration is attempted after venue funding begins.
+    error RedeemFundingAlreadyStarted();
+
     modifier onlyVaultOwnerOrKeeper() {
         if (msg.sender != vault.owner() && msg.sender != vault.keeper()) {
             revert NotOwnerOrKeeper();
@@ -144,6 +186,8 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
 
         vault = IRedemptionVault(_vault);
         sharesToken = IERC20(_vault);
+        token0 = IERC20(vault.token0());
+        token1 = IERC20(vault.token1());
     }
 
     /// @inheritdoc IRedemptionManager
@@ -156,15 +200,11 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
     ///      The caller must approve this manager to transfer the requested vault shares.
     /// @param shares Amount of vault shares escrowed by the request.
     /// @param receiver Address that receives token0 and token1 when the request is processed.
-    /// @param minAmount0Out Minimum acceptable token0 amount at settlement.
-    /// @param minAmount1Out Minimum acceptable token1 amount at settlement.
     /// @param deadline Latest timestamp at which the request may be activated or processed.
     /// @return requestId Identifier assigned to the queued request.
     function requestRedeem(
         uint256 shares,
         address receiver,
-        uint256 minAmount0Out,
-        uint256 minAmount1Out,
         uint256 deadline
     ) external nonReentrant returns (uint256 requestId) {
         address requestOwner = msg.sender;
@@ -186,8 +226,6 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
             owner: requestOwner,
             receiver: receiver,
             shares: shares,
-            minAmount0Out: minAmount0Out,
-            minAmount1Out: minAmount1Out,
             deadline: deadline,
             previousRequestId: 0,
             nextRequestId: 0,
@@ -199,7 +237,7 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
 
         sharesToken.safeTransferFrom(requestOwner, address(this), shares);
 
-        emit RedeemRequested(requestId, requestOwner, receiver, shares, minAmount0Out, minAmount1Out, deadline);
+        emit RedeemRequested(requestId, requestOwner, receiver, shares, deadline);
     }
 
     /// @notice Activates the queue head so idle liquidity can be reserved for its settlement.
@@ -218,11 +256,51 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
         request.status = RedeemRequestStatus.PROCESSING;
         activeRedeemRequestId = requestId;
 
+        _initializeActiveFunding(requestId, request.shares);
+
         emit RedeemRequestActivated(requestId, msg.sender);
     }
 
-    /// @notice Returns the active queue-head request to the pending state.
-    /// @dev This owner-only recovery action does not remove the request or return its escrowed shares.
+    /// @notice Funds the active request from one venue's snapshotted proportional liquidity.
+    /// @dev Owner or keeper may retry a failed venue independently. Once any venue succeeds, funding
+    ///      may continue after the request deadline so a partially funded request can be completed.
+    /// @param venueId Venue whose pending liquidity should fund the active request.
+    /// @param params Venue-specific remove-liquidity constraints.
+    /// @return amount0 Actual token0 amount reserved for the active request.
+    /// @return amount1 Actual token1 amount reserved for the active request.
+    function fundActiveRedeemRequest(
+        uint256 venueId,
+        bytes calldata params
+    ) external onlyVaultOwnerOrKeeper nonReentrant returns (uint256 amount0, uint256 amount1) {
+        uint256 requestId = activeRedeemRequestId;
+        if (requestId == 0 || requestId != redeemQueueHead || requestId != activeFunding.requestId) {
+            revert RedeemRequestNotActive();
+        }
+
+        RedeemRequest storage request = redeemRequests[requestId];
+        if (request.status != RedeemRequestStatus.PROCESSING) revert RedeemRequestNotActive();
+        if (block.timestamp > request.deadline && activeFunding.fundedVenueCount == 0) {
+            revert RedeemRequestDeadlineExpired();
+        }
+
+        uint256 fundingRoundId = activeFunding.fundingRoundId;
+        uint256 liquidity = fundingLiquidity[fundingRoundId][venueId];
+        if (liquidity == 0) revert VenueFundingNotPending();
+
+        fundingLiquidity[fundingRoundId][venueId] = 0;
+        activeFunding.pendingVenueCount--;
+
+        (amount0, amount1) = vault.fundQueuedRedeemFromVenue(venueId, liquidity, request.shares, activeFunding.totalSharesSnapshot, params);
+        activeFunding.reservedAmount0 += amount0;
+        activeFunding.reservedAmount1 += amount1;
+        activeFunding.fundedVenueCount++;
+
+        emit RedeemRequestFunded(requestId, fundingRoundId, venueId, liquidity, amount0, amount1);
+    }
+
+    /// @notice Returns an unfunded active queue-head request to the pending state.
+    /// @dev This owner-only recovery action is unavailable after any venue funds the request. It does
+    ///      not remove the request or return its escrowed shares.
     function deactivateRedeemRequest() external onlyVaultOwner nonReentrant {
         uint256 requestId = activeRedeemRequestId;
         if (requestId == 0) revert RedeemRequestNotActive();
@@ -232,15 +310,20 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
             revert RedeemRequestNotActive();
         }
 
+        if (activeFunding.fundedVenueCount != 0) {
+            revert RedeemFundingAlreadyStarted();
+        }
+
         request.status = RedeemRequestStatus.PENDING;
         activeRedeemRequestId = 0;
+        _clearActiveFunding();
 
         emit RedeemRequestDeactivated(requestId, msg.sender);
     }
 
-    /// @notice Settles the active queue-head request using current idle balances and vault NAV.
-    /// @dev Permissionless after activation. The vault settles the escrowed shares atomically;
-    ///      queue state is finalized only after vault settlement succeeds.
+    /// @notice Settles the active queue-head request using its accumulated funding amounts.
+    /// @dev Permissionless after every snapshotted venue has funded. Queue state is finalized only after
+    ///      vault settlement succeeds.
     /// @return amount0Out Raw token0 amount transferred to the request receiver.
     /// @return amount1Out Raw token1 amount transferred to the request receiver.
     function processNextRedeemRequest() external nonReentrant returns (uint256 amount0Out, uint256 amount1Out) {
@@ -254,22 +337,36 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
             revert RedeemRequestNotActive();
         }
 
-        if (block.timestamp > request.deadline) {
-            revert RedeemRequestDeadlineExpired();
+        if (activeFunding.requestId != requestId) {
+            revert RedeemRequestNotActive();
         }
 
-        (amount0Out, amount1Out) = vault.settleQueuedRedeem(
+        bool deadlineExpired = block.timestamp > request.deadline;
+        if (deadlineExpired && activeFunding.fundedVenueCount == 0) {
+            revert RedeemRequestDeadlineExpired();
+        }
+        // Every snapshotted venue must finish funding before settlement.
+        if (activeFunding.pendingVenueCount != 0) {
+            revert RedeemFundingIncomplete();
+        }
+
+        amount0Out = activeFunding.reservedAmount0;
+        amount1Out = activeFunding.reservedAmount1;
+
+        vault.settleQueuedRedeem(
             request.shares,
+            activeFunding.totalSharesSnapshot,
             request.receiver,
             request.owner,
-            request.minAmount0Out,
-            request.minAmount1Out
+            amount0Out,
+            amount1Out
         );
 
         // Effects
         request.status = RedeemRequestStatus.PROCESSED;
         activeRedeemRequestId = 0;
         totalPendingRedeemShares -= request.shares;
+        _clearActiveFunding();
 
         _removeRedeemRequestFromQueue(requestId);
 
@@ -297,8 +394,8 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
         emit RedeemRequestCancelled(requestId, request.owner);
     }
 
-    /// @notice Removes an expired queued request and returns its escrowed shares to its owner.
-    /// @dev Permissionless after the deadline. Expiring the active request also exits processing mode.
+    /// @notice Removes an expired request that has not begun venue funding and returns its escrowed shares.
+    /// @dev Permissionless after the deadline. A funded processing request is irreversible and must settle.
     /// @param requestId Pending or processing request to expire.
     function expireRedeemRequest(uint256 requestId) external nonReentrant {
         RedeemRequest storage request = redeemRequests[requestId];
@@ -310,10 +407,19 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
             revert RedeemRequestNotExpired();
         }
 
-        request.status = RedeemRequestStatus.EXPIRED;
-        if (activeRedeemRequestId == requestId) {
+        if (request.status == RedeemRequestStatus.PROCESSING) {
+            if (activeRedeemRequestId != requestId) revert RedeemRequestNotActive();
+
+            // Once venue funding succeeds, the redemption becomes irreversible.
+            if (activeFunding.fundedVenueCount != 0) {
+                revert RedeemFundingAlreadyStarted();
+            }
+
             activeRedeemRequestId = 0;
+            _clearActiveFunding();
         }
+
+        request.status = RedeemRequestStatus.EXPIRED;
         totalPendingRedeemShares -= request.shares;
         _removeRedeemRequestFromQueue(requestId);
 
@@ -358,5 +464,53 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
 
         request.previousRequestId = 0;
         request.nextRequestId = 0;
+    }
+
+    /// @notice Snapshots idle balances and proportional venue liquidity for a newly active request.
+    function _initializeActiveFunding(uint256 requestId, uint256 shares) internal {
+        uint256 totalSharesSnapshot = sharesToken.totalSupply();
+
+        uint256 fundingRoundId = nextFundingRoundId++;
+
+        uint256 reservedAmount0 = Math.mulDiv(token0.balanceOf(address(vault)), shares, totalSharesSnapshot);
+        uint256 reservedAmount1 = Math.mulDiv(token1.balanceOf(address(vault)), shares, totalSharesSnapshot);
+
+        uint256 pendingVenueCount;
+        uint256 count = vault.venueCount();
+
+        for (uint256 i = 0; i < count; i++) {
+            uint256 venueId = vault.venueIds(i);
+            uint256 currentLiquidity = vault.venueLiquidity(venueId);
+            if (currentLiquidity == 0) continue;
+
+            uint256 liquidityToWithdraw = Math.mulDiv(currentLiquidity, shares, totalSharesSnapshot);
+            if (liquidityToWithdraw == 0) revert RedeemLiquidityTooSmall();
+
+            fundingLiquidity[fundingRoundId][venueId] = liquidityToWithdraw;
+            pendingVenueCount++;
+        }
+
+        activeFunding = ActiveRedeemFunding({
+            requestId: requestId,
+            fundingRoundId: fundingRoundId,
+            totalSharesSnapshot: totalSharesSnapshot,
+            reservedAmount0: reservedAmount0,
+            reservedAmount1: reservedAmount1,
+            pendingVenueCount: pendingVenueCount,
+            fundedVenueCount: 0
+        });
+    }
+
+    /// @notice Clears active funding state and any unprocessed per-venue liquidity records.
+    function _clearActiveFunding() internal {
+        uint256 fundingRoundId = activeFunding.fundingRoundId;
+        if (fundingRoundId != 0) {
+            uint256 count = vault.venueCount();
+            for (uint256 i = 0; i < count; i++) {
+                uint256 venueId = vault.venueIds(i);
+                delete fundingLiquidity[fundingRoundId][venueId];
+            }
+        }
+        delete activeFunding;
     }
 }

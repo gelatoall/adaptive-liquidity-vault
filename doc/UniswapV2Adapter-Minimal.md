@@ -249,8 +249,8 @@ This means the current implementation already validates:
 - adapter-to-vault withdrawal flow
 - total asset accounting across idle balances and one or more deployed venues
 - idle-buffer redemption while active V2 liquidity remains unchanged
-- manager-escrowed asynchronous redemption after V2 and V3 liquidity returns to idle in separate transactions
-- preservation of a queued request when one venue withdrawal fails or idle value remains insufficient
+- manager-escrowed asynchronous redemption funded from snapshotted V2 and V3 liquidity in separate transactions
+- preservation of a queued request when one venue funding call fails while healthy venues fund independently
 
 It does not yet implement:
 - oracle-driven deployment decisions
