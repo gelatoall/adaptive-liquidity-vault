@@ -440,13 +440,23 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
 
-        uint256 deadline = block.timestamp + 1 hours;
+        uint256 annualFeeBps = 200;
+        vault.setManagementFeeConfig(bob, annualFeeBps);
+        // Let one day of management fees accrue before Alice queues her request.
+        vm.warp(block.timestamp + 1 days);
+        // Keep the valuation oracle fresh for requestRedeem's liquidity check.
+        oracle.setPrices(1e18, 1e18);
+
+        uint256 deadline = block.timestamp + 7 days;
 
         // With no idle liquidity available, the frontend selects the asynchronous redemption path.
         vm.startPrank(alice);
         vault.approve(address(redemptionManager), aliceShares);
         uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
         vm.stopPrank();
+
+        uint256 bobSharesAfterRequest = vault.balanceOf(bob);
+        assertGt(bobSharesAfterRequest, bobShares);
 
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(address(redemptionManager)), aliceShares);
@@ -455,8 +465,12 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(redemptionManager.totalPendingRedeemShares(), aliceShares);
         assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PENDING));
 
+        // Let additional fees accrue before activation takes the funding-round supply snapshot.
+        vm.warp(block.timestamp + 2 days);
+        uint256 bobSharesBeforeActivation = vault.balanceOf(bob);
         // Activating the queue head reserves future idle liquidity for this request.
         redemptionManager.activateNextRedeemRequest();
+        assertGt(vault.balanceOf(bob), bobSharesBeforeActivation);
         assertEq(redemptionManager.activeRedeemRequestId(), requestId);
         assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSING));
 

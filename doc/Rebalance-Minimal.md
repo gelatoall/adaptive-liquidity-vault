@@ -54,6 +54,7 @@ Notes:
 - manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.
 - `rebalanceWithStrategy(data, withdrawalParams)` can be called by the owner or configured keeper; the keeper cannot configure strategy, venues, or manual target plans.
 - normal `rebalance(...)` and `rebalanceWithStrategy(...)` are blocked while the vault is paused.
+- both rebalance paths accrue elapsed management fees before executing allocation changes.
 - `emergencyExit(withdrawalParams)` pauses the vault and attempts each active venue independently, skipping venues that revert.
 
 ## Data Model
@@ -179,9 +180,9 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 
 ## Manual vs Strategy Rebalance
 
-`rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault validates valuation-oracle health and executes that plan. This path is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
+`rebalance(targets, withdrawalParams)` is the manual owner-supplied execution path. The owner provides the target plan directly, so the vault validates valuation-oracle health, accrues elapsed management fees, and executes that plan. This path is owner-only, blocked while paused, and still uses withdrawal params plus the value-loss guard.
 
-`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault first validates valuation-oracle health, asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies cooldown, gas price, volatility delta, and optional volatility-oracle checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
+`rebalanceWithStrategy(data, withdrawalParams)` is the strategy-driven path. The owner or configured keeper calls the vault, the vault first validates valuation-oracle health and strategy guards, accrues elapsed management fees, asks the configured strategy to build targets, then executes those targets through the same internal rebalance flow. This path additionally applies cooldown, gas price, volatility delta, and optional volatility-oracle checks. The keeper is execution-only and cannot alter strategy, venue, oracle, pause, or emergency settings.
 
 Both paths ultimately reuse the same internal delta execution logic.
 

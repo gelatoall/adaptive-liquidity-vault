@@ -33,6 +33,15 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Address holding permanently locked initial shares.
     address public constant LOCKED_SHARES_RECEIVER = address(0xdead);
 
+    /// @dev Maximum annual management fee rate accepted by the vault.
+    uint16 internal constant MAX_MANAGEMENT_FEE_BPS = 1000;
+
+    /// @dev Seconds used to convert an annual fee rate into an elapsed-period fee.
+    uint256 internal constant MANAGEMENT_FEE_YEAR = 365 days;
+
+    /// @dev Fixed-point precision used for fractional fee calculations.
+    uint256 internal constant WAD = 1e18;
+
     // ============================================
     // Types
     // ============================================
@@ -53,12 +62,20 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     struct RebalanceConfig {
         /// @notice Minimum time between successful strategy-driven rebalances. Zero disables the guard.
         uint256 minCooldown;
-
         /// @notice Minimum volatility change since the last successful strategy rebalance. Zero disables the guard.
         uint256 minVolatilityDelta;
-
         /// @notice Maximum allowed transaction gas price for strategy-driven rebalances. Zero disables the guard.
         uint256 maxGasPrice;
+    }
+
+    /// @notice Configuration for capped annual management fees charged through vault-share dilution.
+    struct ManagementFeeConfig {
+        /// @notice Address receiving newly minted management-fee shares.
+        address recipient;
+        /// @notice Annual fee rate in basis points, capped by `MAX_MANAGEMENT_FEE_BPS`.
+        uint16 annualFeeBps;
+        /// @notice Timestamp through which management fees were last accounted.
+        uint64 lastAccrual;
     }
 
     /// @notice Coarse operational health status exposed for keepers and monitoring.
@@ -139,6 +156,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Whether strategy rebalances require a configured volatility oracle.
     bool public oracleHealthCheckEnabled;
+
+    /// @notice Current configuration for capped annual management-fee accrual.
+    ManagementFeeConfig public managementFeeConfig;
 
     /// @notice Venue configuration by caller-defined venue id.
     mapping(uint256 => VenueConfig) public venues;
@@ -223,6 +243,12 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Emitted when strategy rebalance oracle health checks are toggled.
     event SetOracleHealthCheckEnabled(bool enabled);
+
+    /// @notice Emitted when the management-fee recipient or annual rate is updated.
+    event SetManagementFeeConfig(address indexed recipient, uint256 annualFeeBps);
+
+    /// @notice Emitted when elapsed management fees are minted as vault shares.
+    event ManagementFeeAccrued(address indexed recipient, uint256 sharesMinted, uint256 accrualPeriod);
 
     /// @notice Emitted when the vault deploys idle funds into a venue.
     event DeployToVenue(uint256 indexed venueId, uint256 amount0, uint256 amount1, uint256 liquidity);
@@ -503,6 +529,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         // Reject if receiver is zero.
         if (receiver == address(0)) revert ZeroAddress();
 
+        // Settle elapsed fee dilution before using total supply for share pricing.
+        _accrueManagementFee();
+
         (uint256 price0, uint256 price1) = _getValidatedPrices();
 
         // Read totalAssets() before the deposit.
@@ -581,6 +610,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
             _spendAllowance(owner, msg.sender, shareToRedeem);
         }
 
+        // Settle elapsed fee dilution before snapshotting the redeemed share ratio.
+        _accrueManagementFee();
+
         // Snapshot total supply before quoting and burning the redeemed shares.
         uint256 totalSharesBefore = totalSupply();
 
@@ -597,6 +629,14 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         token1.safeTransfer(receiver, amount1Out);
 
         emit Redeem(msg.sender, receiver, owner, shareToRedeem, amount0Out, amount1Out);
+    }
+
+    /// @notice Accrues elapsed management fees by minting vault shares to the configured recipient.
+    /// @dev Permissionless. A call charges at most one year since the prior accrual and waives any
+    ///      older elapsed time. It is blocked while queued redemption funding has frozen share supply.
+    /// @return feeShares Vault shares minted to the configured fee recipient.
+    function accrueManagementFee() external nonReentrant whenNoRedemptionProcessing returns (uint256 feeShares) {
+        return _accrueManagementFee();
     }
 
     /// @notice Returns whether current idle value is insufficient to redeem `shares` synchronously.
@@ -915,6 +955,21 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         emit SetOracleHealthCheckEnabled(enabled);
     }
 
+    /// @notice Updates the recipient and annual rate used for future management-fee accrual.
+    /// @dev Accrues the prior configuration first, so elapsed fees cannot be redirected to a new recipient.
+    /// @param recipient Address receiving newly minted fee shares; required when the rate is nonzero.
+    /// @param annualFeeBps Annual fee rate in basis points, capped by `MAX_MANAGEMENT_FEE_BPS`.
+    function setManagementFeeConfig(address recipient, uint256 annualFeeBps) external onlyOwner whenNoRedemptionProcessing {
+        if (annualFeeBps > MAX_MANAGEMENT_FEE_BPS) revert InvalidBps();
+        if (annualFeeBps != 0 && recipient == address(0)) revert ZeroAddress();
+
+        // Settle the prior recipient and rate before replacing this configuration.
+        _accrueManagementFee();
+        managementFeeConfig.recipient = recipient;
+        managementFeeConfig.annualFeeBps = uint16(annualFeeBps);
+        emit SetManagementFeeConfig(recipient, annualFeeBps);
+    }
+
     /// @notice Isolates an impaired venue, disables new deployment, and applies an accounting write-down.
     /// @dev Pauses normal vault operations. A zero valuation excludes the venue from `totalAssets()` without
     ///      querying its adapter or valuator, while recovery withdrawals remain available.
@@ -1135,6 +1190,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         VenueWithdrawalParams[] calldata withdrawalParams
     ) external onlyOwner whenNotPaused nonReentrant whenNoRedemptionProcessing {
         _checkValuationOracleGuards();
+        // Settle elapsed fees before the rebalance snapshots share-supply-sensitive accounting.
+        _accrueManagementFee();
         _rebalance(targets, withdrawalParams);
         emit Rebalance(msg.sender);
     }
@@ -1144,12 +1201,15 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @param data Opaque strategy-specific data forwarded to `buildTargets`.
     /// @param withdrawalParams Venue-specific remove-liquidity params used when strategy rebalance withdraws active positions.
     function rebalanceWithStrategy(
-        bytes calldata data, 
+        bytes calldata data,
         VenueWithdrawalParams[] calldata withdrawalParams
     ) external onlyOwnerOrKeeper whenNotPaused nonReentrant whenNoRedemptionProcessing {
         if (address(strategy) == address(0)) revert StrategyNotSet();
 
         uint256 currentVolatilityBps = _checkStrategyRebalanceGuards();
+
+        // Settle elapsed fees before strategy planning and rebalance execution.
+        _accrueManagementFee();
 
         RebalanceTypes.RebalanceTarget[] memory targets = strategy.buildTargets(address(this), data);
 
@@ -1502,6 +1562,43 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
             }
         }
         return false;
+    }
+
+    /// @notice Accrues a capped interval of management fees through share dilution.
+    /// @dev The first call only establishes a timestamp. Later calls charge at most
+    ///      `MANAGEMENT_FEE_YEAR`; elapsed time older than that cap is waived.
+    /// @return feeShares Vault shares minted to the configured recipient.
+    function _accrueManagementFee() internal returns (uint256 feeShares) {
+        uint256 lastAccrual = managementFeeConfig.lastAccrual;
+        if (lastAccrual == 0) {
+            managementFeeConfig.lastAccrual = uint64(block.timestamp);
+            return 0;
+        }
+
+        uint256 elapsed = block.timestamp - lastAccrual;
+        if (elapsed == 0) return 0;
+
+        uint256 accrualPeriod = Math.min(elapsed, MANAGEMENT_FEE_YEAR);
+        // A single accrual charges no more than one year; any older elapsed time is waived.
+        managementFeeConfig.lastAccrual = uint64(block.timestamp);
+
+        uint256 supply = totalSupply();
+        if (supply == 0 || managementFeeConfig.annualFeeBps == 0 || managementFeeConfig.recipient == address(0)) {
+            return 0;
+        }
+
+        uint256 feeFractionWad = Math.mulDiv(
+            uint256(managementFeeConfig.annualFeeBps),
+            accrualPeriod * WAD,
+            RebalanceTypes.BPS * MANAGEMENT_FEE_YEAR
+        );
+
+        feeShares = Math.mulDiv(supply, feeFractionWad, WAD - feeFractionWad);
+        if (feeShares == 0) return 0;
+
+        _mint(managementFeeConfig.recipient, feeShares);
+
+        emit ManagementFeeAccrued(managementFeeConfig.recipient, feeShares, accrualPeriod);
     }
 
     /// @notice Shared internal deploy flow for manual deploys and rebalance.

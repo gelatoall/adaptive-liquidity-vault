@@ -120,6 +120,17 @@
 - 它不等于 `totalAssets()`。
 - vault 首次存款后，`totalSupply()` 同时包含用户 shares 和永久锁定的 `MINIMUM_LOCKED_SHARES`。
 
+### Management fee
+- 管理费不直接从 vault 转出底层 token，而是给配置的 `recipient` 增发 vault shares。
+- 这会稀释现有 shares 的比例，但不会在收取时改变 vault 的底层资产余额。
+- `annualFeeBps` 是年化管理费率，单位是 bps；当前上限为 `1_000`，即 10%。
+- 第一次 accrual 只记录 `lastAccrual`，不会增发 shares。
+- 后续 accrual 按实际经过时间计算，但单次最多收取 365 天；超过一年的更早时间会被放弃，`lastAccrual` 直接更新到当前时间。
+- `deposit`、同步 `redeem`、`rebalance`、`rebalanceWithStrategy` 都会在依赖 `totalSupply()` 的份额计算前先 accrual。
+- 异步赎回没有 active request 时，`requestRedeem` 会先 accrual；`activateNextRedeemRequest` 也会在建立 funding snapshot 前再 accrual。
+- request 进入 `PROCESSING` 后，管理费 accrual 和费率配置会被阻止，因为该 funding round 依赖固定的 `totalSharesSnapshot`。
+- `accrueManagementFee()` 是 permissionless：任何人都可以在没有 active redemption processing 时触发。实际项目可由 keeper 定期调用，但当前代码不包含链上定时调度。
+
 ### totalAssets
 - `totalAssets()` 表示 vault 当前持有资产的总价值。
 - 当前估值分成两部分：

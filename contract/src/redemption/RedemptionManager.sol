@@ -217,9 +217,12 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
             revert InvalidRedeemRequestDeadline();
         }
 
-        if (!vault.requiresQueuedRedeem(shares)) {
-            revert IdleLiquidityAvailable();
+        if (activeRedeemRequestId == 0) {
+            // No active request has frozen supply, so settle fees before checking the queue condition.
+            vault.accrueManagementFee();
         }
+
+        if (!vault.requiresQueuedRedeem(shares)) revert IdleLiquidityAvailable();
 
         requestId = nextRedeemRequestId++;
         redeemRequests[requestId] = RedeemRequest({
@@ -252,6 +255,9 @@ contract RedemptionManager is IRedemptionManager, ReentrancyGuard {
         RedeemRequest storage request = redeemRequests[requestId];
         if (request.status != RedeemRequestStatus.PENDING) revert RedeemRequestNotPending();
         if (block.timestamp > request.deadline) revert RedeemRequestDeadlineExpired();
+
+        // Settle fees before PROCESSING freezes the supply used for this funding round.
+        vault.accrueManagementFee();
 
         request.status = RedeemRequestStatus.PROCESSING;
         activeRedeemRequestId = requestId;

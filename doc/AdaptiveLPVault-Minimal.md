@@ -26,6 +26,7 @@ This version includes:
 - manual venue deployment and withdrawal through `deployToVenue(...)` and `withdrawFromVenue(...)`
 - owner- or keeper-triggered fee harvesting through `harvestVenueFees(...)`
 - in-place fee compounding through `compoundVenueFees(...)` for venues that support explicit claims
+- capped time-based management-fee accrual through vault-share dilution
 - multi-venue asset accounting
 - an owner-only delta rebalance executor that withdraws venue excess and deploys target deficits
 - optional rebalance value-loss guard using `maxRebalanceValueLossBps`
@@ -42,7 +43,7 @@ This version includes:
 This version does not include:
 - automatic dynamic strategy selection
 - autonomous keeper resolver integration or keeper rewards
-- an on-chain timer or threshold policy that decides when fees should be harvested or compounded
+- an on-chain timer or threshold policy that decides when venue fees should be harvested or compounded, or when management fees should be accrued
 - threshold-based rebalance conditions
 - deposit ratio optimization
 - full single-underlying-asset ERC4626 compliance
@@ -88,6 +89,7 @@ The vault stores:
 - ERC20 share supply and balances
 - configured rebalance strategy
 - configured keeper for strategy-driven rebalance execution
+- management-fee recipient, annual rate, and last accrual timestamp
 - strategy rebalance cooldown and gas price guard config
 - paused/unpaused state inherited from OpenZeppelin `Pausable`
 
@@ -173,6 +175,17 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: report current idle value, the configured requirement, deployable excess, and any deficit
   - behavior: values idle and total vault assets with the same validated valuation prices used by share accounting
   - returns: `uint256 idleValue, uint256 requiredIdleValue, uint256 availableToDeployValue, uint256 bufferDeficit`
+
+- `accrueManagementFee()`
+  - purpose: mint elapsed management-fee shares to the configured recipient
+  - behavior: permissionless and blocked while an asynchronous redemption request is processing
+  - behavior: charges at most 365 days since the previous accrual; older elapsed time is waived
+  - returns: `uint256 feeShares`
+
+- `setManagementFeeConfig(recipient, annualFeeBps)`
+  - purpose: configure the fee recipient and annual management-fee rate
+  - behavior: owner-only; accepts at most `1,000` bps and requires a nonzero recipient when the rate is nonzero
+  - behavior: accrues the prior configuration before replacing it, so elapsed fees cannot be redirected
 
 - `deposit(amount0, amount1, receiver, minShares)`
   - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
@@ -308,15 +321,16 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 1. Reject if both deposit amounts are zero.
 2. Require an oracle.
-3. Read `totalAssets()` before the deposit.
-4. Read `totalSupply()` before the deposit.
-5. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
-6. Calculate gross shares using `VaultMath.calculateShares`.
-7. On the initial deposit, require gross shares to exceed `MINIMUM_LOCKED_SHARES`, reserve that amount for the permanent lock, and return the remainder as user shares.
-8. Revert if user shares are below `minShares`.
-9. Transfer `token0` and `token1` from the caller into the vault.
-10. On the initial deposit, mint `MINIMUM_LOCKED_SHARES` to `LOCKED_SHARES_RECEIVER`.
-11. Mint the remaining shares to `receiver`.
+3. Accrue elapsed management fees before reading share supply or calculating deposit shares.
+4. Read `totalAssets()` before the deposit.
+5. Read `totalSupply()` before the deposit.
+6. Convert the deposit amounts into a single base-denominated value using `VaultMath`.
+7. Calculate gross shares using `VaultMath.calculateShares`.
+8. On the initial deposit, require gross shares to exceed `MINIMUM_LOCKED_SHARES`, reserve that amount for the permanent lock, and return the remainder as user shares.
+9. Revert if user shares are below `minShares`.
+10. Transfer `token0` and `token1` from the caller into the vault.
+11. On the initial deposit, mint `MINIMUM_LOCKED_SHARES` to `LOCKED_SHARES_RECEIVER`.
+12. Mint the remaining shares to `receiver`.
 
 Deposits are disabled while the vault is paused.
 
@@ -328,15 +342,16 @@ The permanent initial-share lock prevents a first depositor from owning 100% of 
 2. Reject if `receiver` or `owner` is the zero address.
 3. Revert if `shareToRedeem` exceeds `owner`'s share balance.
 4. If the caller is not `owner`, spend the caller's ERC20 share allowance from `owner`.
-5. Read `totalSupply()` before burning.
-6. Read validated primary/reference valuation prices and compute total vault value.
-7. Convert the redeemed shares into a base-denominated `redeemValue`.
-8. Value current idle balances and revert with `InsufficientIdleLiquidity` if they cannot cover `redeemValue`.
-9. Preserve the idle token ratio while converting `redeemValue` into `amount0Out` and `amount1Out`.
-10. Revert with `RedeemAmountTooSmall` if both token outputs round down to zero.
-11. Revert if final token outputs are below `minAmount0Out` or `minAmount1Out`.
-12. Burn `owner`'s shares.
-13. Transfer `token0` and `token1` to `receiver`.
+5. Accrue elapsed management fees before snapshotting the redeemed share ratio.
+6. Read `totalSupply()` before burning.
+7. Read validated primary/reference valuation prices and compute total vault value.
+8. Convert the redeemed shares into a base-denominated `redeemValue`.
+9. Value current idle balances and revert with `InsufficientIdleLiquidity` if they cannot cover `redeemValue`.
+10. Preserve the idle token ratio while converting `redeemValue` into `amount0Out` and `amount1Out`.
+11. Revert with `RedeemAmountTooSmall` if both token outputs round down to zero.
+12. Revert if final token outputs are below `minAmount0Out` or `minAmount1Out`.
+13. Burn `owner`'s shares.
+14. Transfer `token0` and `token1` to `receiver`.
 
 Synchronous redemption never harvests fees or removes venue liquidity. Large redemptions use `RedemptionManager`, which funds the active request from each snapshotted venue in separate transactions.
 
@@ -344,8 +359,8 @@ Redemptions remain callable while the vault is paused, but still require valid v
 
 ### asynchronous redemption
 
-1. After approving `RedemptionManager`, the user calls `requestRedeem(shares, receiver, deadline)`; the manager verifies that idle value is insufficient, appends the request to its FIFO queue, and escrows the caller's shares.
-2. The vault owner or keeper calls `RedemptionManager.activateNextRedeemRequest()` to mark the queue head as `PROCESSING`.
+1. After approving `RedemptionManager`, the user calls `requestRedeem(shares, receiver, deadline)`; when no request is active, the manager first accrues management fees, then verifies that idle value is insufficient, appends the request to its FIFO queue, and escrows the caller's shares.
+2. The vault owner or keeper calls `RedemptionManager.activateNextRedeemRequest()`; the manager accrues management fees before marking the queue head as `PROCESSING`.
 3. Activation snapshots the request's proportional idle balances and each active venue's proportional liquidity. While active, operations that can change share supply, idle balances, or venue positions are blocked.
 4. Owner or keeper calls `fundActiveRedeemRequest(venueId, params)` once per snapshotted venue. A failed venue call does not roll back successful funding from other transactions.
 5. After every snapshotted venue has funded, any caller may call `RedemptionManager.processNextRedeemRequest()`.
@@ -353,6 +368,14 @@ Redemptions remain callable while the vault is paused, but still require valid v
 7. A request owner may cancel while it is `PENDING`. After its deadline, anyone may expire an unfunded `PENDING` or `PROCESSING` request. A partially funded request must finish funding and settle.
 
 Pending requests do not reserve idle liquidity. Reservation begins only when the queue head is activated. Asynchronous requests intentionally do not use a user-level final output minimum: a multi-transaction, per-venue funding flow cannot safely enforce one without an epoch or batch settlement design. Keepers must apply per-venue execution constraints through the supplied adapter params.
+
+### Management fee
+
+Management fees are charged by minting new vault shares to the configured recipient rather than withdrawing underlying tokens. The annual rate is stored in basis points and capped at `1,000` bps. This dilutes existing shares proportionally while leaving the underlying asset balances unchanged.
+
+`deposit`, synchronous `redeem`, manual `rebalance`, and strategy-driven `rebalanceWithStrategy` accrue fees before share-sensitive accounting. `RedemptionManager` also accrues before queue admission when no request is active and before it activates the queue head. Once a request is `PROCESSING`, accrual and fee-configuration changes are blocked because that funding round relies on a fixed total-share snapshot.
+
+The first accrual only records `lastAccrual`. Each later accrual charges no more than 365 days of elapsed time and advances `lastAccrual` to the current block timestamp. If more than one year elapsed, the older time is intentionally waived rather than accumulated as historical fee debt. Anyone may call `accrueManagementFee()` when no redemption request is processing; off-chain automation may call it periodically, but this version does not include an on-chain scheduler.
 
 ### totalAssets
 
@@ -439,15 +462,16 @@ Harvesting and compounding are permissioned execution operations, not self-execu
 
 ### rebalance
 
-1. Reject duplicate venue targets.
-2. Validate every non-zero target points to a registered and enabled venue.
-3. Collect claimable venue tokens into idle balances.
-4. Fully withdraw venues omitted from the plan, assigned a zero target, or incompatible with target structure.
-5. Proportionally withdraw only excess liquidity from compatible venues.
-6. Deploy only the token deficits needed to approach each non-zero target.
-7. Revert `NoRebalanceNeeded` if neither withdrawal nor deployment moved funds.
-8. Verify share supply did not change.
-9. If `maxRebalanceValueLossBps` is non-zero, verify post-rebalance `totalAssets()` did not fall below the configured loss threshold.
+1. Accrue elapsed management fees before rebalance accounting.
+2. Reject duplicate venue targets.
+3. Validate every non-zero target points to a registered and enabled venue.
+4. Collect claimable venue tokens into idle balances.
+5. Fully withdraw venues omitted from the plan, assigned a zero target, or incompatible with target structure.
+6. Proportionally withdraw only excess liquidity from compatible venues.
+7. Deploy only the token deficits needed to approach each non-zero target.
+8. Revert `NoRebalanceNeeded` if neither withdrawal nor deployment moved funds.
+9. Verify share supply did not change.
+10. If `maxRebalanceValueLossBps` is non-zero, verify post-rebalance `totalAssets()` did not fall below the configured loss threshold.
 
 An empty target array means "withdraw all venues to idle". It only succeeds if there is tracked liquidity to withdraw.
 

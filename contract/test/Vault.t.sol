@@ -173,6 +173,70 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vault.totalAssets();
     }
 
+    // management fee
+    function test_AccrueManagementFee_MintsSharesForElapsedPeriod() public {
+        uint256 annualFeeBps = 200;
+        uint256 amount0 = 100 ether;
+
+        // Create an initial share supply before charging a time-based fee.
+        oracle.setPrices(1e18, 1e18);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, 0);
+
+        // Start management-fee accounting with Bob as the fee recipient.
+        vault.setManagementFeeConfig(bob, annualFeeBps);
+
+        uint256 totalSupplyBefore = vault.totalSupply();
+        uint256 bobSharesBefore = vault.balanceOf(bob);
+
+        // Accrue one full year at the configured annual rate.
+        vm.warp(block.timestamp + 365 days);
+
+        // Mint enough shares for the fee shares to represent the annual fee rate after dilution.
+        uint256 expectedManagementFeeShares = totalSupplyBefore * annualFeeBps / (10000 - annualFeeBps);
+
+        // Anyone may trigger accrual, but shares are minted only to the configured recipient.
+        uint256 managementFeeShares = vault.accrueManagementFee();
+
+        // Verify share issuance and the new accounting checkpoint.
+        assertEq(managementFeeShares, expectedManagementFeeShares);
+        assertEq(vault.balanceOf(bob), bobSharesBefore + managementFeeShares);
+        assertEq(vault.totalSupply(), totalSupplyBefore + managementFeeShares);
+
+        (,, uint64 lastAccrual) = vault.managementFeeConfig();
+        assertEq(uint256(lastAccrual), block.timestamp);
+    }
+
+    function test_AccrueManagementFee_CapsChargeAtOneYear() public {
+        uint256 annualFeeBps = 200;
+        uint256 amount0 = 100 ether;
+
+        // Create an initial share supply before charging a time-based fee.
+        oracle.setPrices(1e18, 1e18);
+        _mintAndDeposit(token0, token1, vault, alice, amount0, 0);
+
+        // Start management-fee accounting with Bob as the fee recipient.
+        vault.setManagementFeeConfig(bob, annualFeeBps);
+
+        uint256 totalSupplyBefore = vault.totalSupply();
+        uint256 bobSharesBefore = vault.balanceOf(bob);
+
+        // Let two years elapse; a single accrual remains capped to one year.
+        vm.warp(block.timestamp + 2 * 365 days);
+
+        // Mint enough shares for the fee shares to represent the annual fee rate after dilution.
+        uint256 expectedManagementFeeShares = totalSupplyBefore * annualFeeBps / (10000 - annualFeeBps);
+
+        // Anyone may trigger accrual, but shares are minted only to the configured recipient.
+        uint256 managementFeeShares = vault.accrueManagementFee();
+
+        // Verify share issuance and the new accounting checkpoint.
+        assertEq(managementFeeShares, expectedManagementFeeShares);
+        assertEq(vault.balanceOf(bob), bobSharesBefore + managementFeeShares);
+
+        (,, uint64 lastAccrual) = vault.managementFeeConfig();
+        assertEq(uint256(lastAccrual), block.timestamp);
+    }
+
     // deposit
     function test_Deposit_RevertsWhenBothAmountsAreZero() public {
         vm.prank(alice);

@@ -24,6 +24,10 @@ interface IRedemptionVault {
     /// @notice Returns the vault's tracked liquidity for `venueId`.
     function venueLiquidity(uint256 venueId) external view returns (uint256);
 
+    /// @notice Accrues elapsed management fees before share-based redemption accounting.
+    /// @return feeShares Vault shares minted to the configured fee recipient.
+    function accrueManagementFee() external returns (uint256 feeShares);
+
     /// @notice Returns whether the requested shares require asynchronous settlement.
     function requiresQueuedRedeem(uint256 shares) external view returns (bool);
 
