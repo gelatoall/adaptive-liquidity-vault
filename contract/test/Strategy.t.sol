@@ -194,10 +194,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         vault.setStrategy(address(strategy));
         // The keeper-facing view reports that rebalance is unavailable.
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+        (bool allowed, AdaptiveLPVault.RebalanceGuardFailure failure) = vault.canRebalanceWithStrategy();
 
         assertFalse(allowed);
-        assertEq(reason, "Valuation oracle deviation");
+        assertEq(uint256(failure), uint256(AdaptiveLPVault.RebalanceGuardFailure.VALUATION_ORACLE_DEVIATION));
 
         // Actual strategy execution is blocked by the same guard.
         vm.expectRevert(AdaptiveLPVault.ValuationOracleDeviation.selector);
@@ -224,20 +224,20 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
     /// @notice canRebalanceWithStrategy reports a missing strategy before execution.
     function test_CanRebalanceWithStrategy_ReturnsFalseWhenStrategyNotSet() public {
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+        (bool allowed, AdaptiveLPVault.RebalanceGuardFailure failure) = vault.canRebalanceWithStrategy();
 
         assertFalse(allowed);
-        assertEq(reason, "Rebalance strategy not set");
+        assertEq(uint256(failure), uint256(AdaptiveLPVault.RebalanceGuardFailure.STRATEGY_NOT_SET));
     }
 
     /// @notice canRebalanceWithStrategy reports true when vault-level guards pass.
     function test_CanRebalanceWithStrategy_ReturnsTrueWhenGuardsPass() public {
         vault.setStrategy(address(strategy));
 
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+        (bool allowed, AdaptiveLPVault.RebalanceGuardFailure failure) = vault.canRebalanceWithStrategy();
 
         assertTrue(allowed);
-        assertEq(reason, "");
+        assertEq(uint256(failure), uint256(AdaptiveLPVault.RebalanceGuardFailure.NONE));
     }
 
     /// @notice canRebalanceWithStrategy mirrors the oracle health requirement.
@@ -245,10 +245,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.setStrategy(address(strategy));
         vault.setOracleHealthCheckEnabled(true);
 
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+        (bool allowed, AdaptiveLPVault.RebalanceGuardFailure failure) = vault.canRebalanceWithStrategy();
 
         assertFalse(allowed);
-        assertEq(reason, "Volatility oracle not set");
+        assertEq(uint256(failure), uint256(AdaptiveLPVault.RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET));
     }
 
     /// @notice rebalanceWithStrategy reverts before a strategy is configured.
@@ -791,11 +791,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         // No previous baseline exists, so 50 bps must not block the first rebalance.
         volatilityOracle.setVolatilityBps(50);
 
-        (bool firstAllowed, string memory firstReason) =
-            vault.canRebalanceWithStrategy();
+        (bool firstAllowed, AdaptiveLPVault.RebalanceGuardFailure firstFailure) = vault.canRebalanceWithStrategy();
 
         assertTrue(firstAllowed);
-        assertEq(firstReason, "");
+        assertEq(uint256(firstFailure), uint256(AdaptiveLPVault.RebalanceGuardFailure.NONE));
 
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
@@ -806,11 +805,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         // below the configured 100 bps minimum.
         volatilityOracle.setVolatilityBps(80);
 
-        (bool secondAllowed, string memory secondReason) =
-            vault.canRebalanceWithStrategy();
+        (bool secondAllowed, AdaptiveLPVault.RebalanceGuardFailure secondFailure) = vault.canRebalanceWithStrategy();
 
         assertFalse(secondAllowed);
-        assertEq(secondReason, "Volatility delta too small");
+        assertEq(uint256(secondFailure), uint256(AdaptiveLPVault.RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL));
 
         vm.expectRevert(AdaptiveLPVault.VolatilityDeltaTooSmall.selector);
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
@@ -841,10 +839,10 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.setRebalanceConfig(0, 100, 0);
 
         // No valid baseline exists yet, so 50 must not be compared with zero.
-        (bool allowed, string memory reason) = vault.canRebalanceWithStrategy();
+        (bool allowed, AdaptiveLPVault.RebalanceGuardFailure failure) = vault.canRebalanceWithStrategy();
 
         assertTrue(allowed);
-        assertEq(reason, "");
+        assertEq(uint256(failure), uint256(AdaptiveLPVault.RebalanceGuardFailure.NONE));
         assertFalse(vault.volatilityBaselineInitialized());
         assertEq(vault.lastRebalanceVolatilityBps(), 0);
     }

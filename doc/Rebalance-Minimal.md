@@ -145,7 +145,8 @@ Each V3 fee tier is registered as a separate venue with a separate adapter insta
 
 - `canRebalanceWithStrategy()`
   - purpose: expose whether strategy-driven rebalance currently passes vault-level guards
-  - behavior: returns a boolean and human-readable reason for keeper and frontend checks
+  - behavior: returns a boolean and `RebalanceGuardFailure` code for keeper and frontend checks; `NONE` means the vault-level checks pass
+  - behavior: frontends and keepers map the machine-readable code to user-facing text offchain
   - behavior: checks only vault-owned preconditions and does not call `strategy.buildTargets(...)`
 
 - `rebalanceWithStrategy(data, withdrawalParams)`

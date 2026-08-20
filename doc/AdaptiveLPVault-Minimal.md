@@ -292,7 +292,9 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 
 - `canRebalanceWithStrategy()`
   - purpose: expose whether strategy-driven rebalance currently passes vault-level guards
+  - returns: `bool allowed` and a `RebalanceGuardFailure` code; `NONE` means `allowed` is true
   - behavior: checks strategy configuration, pause state, cooldown, gas price, oracle health, and volatility delta guards
+  - behavior: returns machine-readable guard codes rather than onchain human-readable strings; keepers and frontends map codes to local text
   - behavior: does not call `strategy.buildTargets(...)` and does not guarantee the strategy plan can be built or executed
 
 - `rebalanceWithStrategy(data, withdrawalParams)`

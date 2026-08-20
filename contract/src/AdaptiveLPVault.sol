@@ -86,9 +86,11 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         PAUSED
     }
 
-    /// @notice Internal strategy rebalance guard status used by execution and view helpers.
+    /// @notice Strategy rebalance guard status used by execution and keeper-facing view helpers.
     enum RebalanceGuardFailure {
         NONE,
+        STRATEGY_NOT_SET,
+        PAUSED,
         COOLDOWN_NOT_ELAPSED,
         GAS_PRICE_TOO_HIGH,
         VALUATION_ORACLE_STALE,
@@ -766,24 +768,19 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
     /// @notice Returns whether strategy-driven rebalance currently passes vault-level guards.
     /// @dev This does not call `strategy.buildTargets(...)`; it only checks vault-owned preconditions.
-    function canRebalanceWithStrategy() external view returns (bool allowed, string memory reason) {
+    /// @return allowed Whether vault-level checks currently permit strategy rebalance execution.
+    /// @return failure The first blocking condition, or `NONE` when `allowed` is true.
+    function canRebalanceWithStrategy() external view returns (bool allowed, RebalanceGuardFailure failure) {
         if (address(strategy) == address(0)) {
-            return (false, "Rebalance strategy not set");
+            return (false, RebalanceGuardFailure.STRATEGY_NOT_SET);
         }
 
         if (paused()) {
-            return (false, "Paused");
+            return (false, RebalanceGuardFailure.PAUSED);
         }
 
-        (RebalanceGuardFailure failure, ) = _getStrategyRebalanceGuardStatus();
-
-        if (failure == RebalanceGuardFailure.COOLDOWN_NOT_ELAPSED) return (false, "Cooldown not elapsed");
-        if (failure == RebalanceGuardFailure.GAS_PRICE_TOO_HIGH) return (false, "Gas price too high");
-        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_STALE) return (false, "Valuation oracle stale");
-        if (failure == RebalanceGuardFailure.VALUATION_ORACLE_DEVIATION) return (false, "Valuation oracle deviation");
-        if (failure == RebalanceGuardFailure.VOLATILITY_ORACLE_NOT_SET) return (false, "Volatility oracle not set");
-        if (failure == RebalanceGuardFailure.VOLATILITY_DELTA_TOO_SMALL) return (false, "Volatility delta too small");
-        return (true, "");
+        (failure, ) = _getStrategyRebalanceGuardStatus();
+        return (failure == RebalanceGuardFailure.NONE, failure);
     }
 
     // ============================================

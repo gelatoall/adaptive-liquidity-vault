@@ -341,6 +341,10 @@
 ### canRebalance / Recommended Targets
 - `canRebalanceWithStrategy()` 是 vault 层的只读预检查。
 - 它回答的是：“现在调用 `rebalanceWithStrategy(...)` 会不会被 vault 自己的 guard 拦住？”
+- 它返回 `(allowed, failure)`：
+  - `allowed == true` 时，`failure == RebalanceGuardFailure.NONE`
+  - `allowed == false` 时，`failure` 返回第一个阻止执行的机器可读 code，例如 `STRATEGY_NOT_SET`、`PAUSED`、`COOLDOWN_NOT_ELAPSED` 或 `VALUATION_ORACLE_DEVIATION`
+- 合约不再返回 onchain 字符串；keeper 和前端在链下把 `failure` code 映射成中文或英文提示。
 - 它会检查：
   - strategy 是否配置
   - vault 是否 paused
