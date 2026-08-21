@@ -264,8 +264,19 @@
 - 当前 owner 调用 `transferOwnership(newOwner)` 时，只会设置 `pendingOwner`，不会立即交出权限。
 - `pendingOwner` 必须主动调用 `acceptOwnership()`，所有权才会正式转移。
 - 接管完成后，原 owner 会失去所有 `onlyOwner` 权限。
-- 这可以防止把所有权误转给错误地址或无法调用合约的地址，但不会延迟当前 owner 发起的管理操作。
-- 当前版本尚未接入 timelock、multisig 治理策略或独立 guardian。生产部署仍应使用 timelock 延迟敏感配置，并为紧急暂停设计可即时响应的权限。
+- 两步转移可以防止把所有权误转给错误地址或无法调用合约的地址；它本身不会延迟当前 owner 发起的管理操作。
+
+### Timelock 治理交接
+- Vault 不在状态中保存 timelock 地址，也不需要新增 `onlyTimelock` modifier。生产部署时，把 `AdaptiveLPVault`、两个 strategy 和 `TwapSlippageController` 的 `owner` 交接给 OpenZeppelin `TimelockController` 即可。
+- 原有的 `onlyOwner` 会要求 `msg.sender == owner`。owner 变成 Timelock 后，敏感配置和资金管理调用只能从 `TimelockController.execute(...)` 发出，因此必须先排队并等待最短延迟。
+- 推荐的角色配置：治理 Safe/multisig 拥有 proposer 与 canceller 权限；executor 配置为 `address(0)`，表示任何人都可以执行已经排队且已到期的操作。
+- `address(0)` executor 不能创建、修改或加速提案；它只能执行 Safe 已排队、延迟已结束、且 calldata 完全一致的操作。
+- 每个受治理合约的交接流程：
+  1. 当前 owner 调用 `transferOwnership(timelock)`。
+  2. Safe 通过 Timelock 排队该合约的 `acceptOwnership()`。
+  3. 等待最短延迟后，任意 executor 调用 `execute(...)`，Timelock 才成为正式 owner。
+- `TimelockGovernance.t.sol` 验证了延迟执行、Timelock 接管 Vault 所有权，以及原 owner 失去直接配置权限这三件事。
+- 当前版本没有独立 guardian。owner 交接给 Timelock 后，`pause()` 和 `emergencyExit()` 也必须等待治理延迟；如果生产环境需要即时暂停，应在后续版本加入只允许暂停、不能修改配置或转移资金的 guardian 权限。
 
 ### Pause / Emergency Exit
 - `pause()` 是 owner 控制的安全开关。

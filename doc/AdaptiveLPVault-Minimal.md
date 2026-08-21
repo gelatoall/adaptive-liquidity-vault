@@ -36,6 +36,7 @@ This version includes:
 - fixed-weight and volatility-bucket total-underlying allocation strategies
 - reentrancy protection on user and capital-moving entrypoints
 - two-step ownership transfers through OpenZeppelin `Ownable2Step`
+- a tested TimelockController ownership-handover flow for delayed governance
 - owner-controlled pause and unpause
 - emergency exit that withdraws all venue liquidity to idle balances and pauses normal operations
 - owner-controlled venue quarantine and accounting write-down for impaired positions
@@ -47,7 +48,7 @@ This version does not include:
 - threshold-based rebalance conditions
 - deposit ratio optimization
 - full single-underlying-asset ERC4626 compliance
-- a governance timelock, multisig policy, or separate emergency guardian role
+- a separate emergency guardian role
 
 Notes:
 - the vault depends on `IPriceOracle` for prices
@@ -67,7 +68,21 @@ Notes:
 
 The vault, fixed-weight strategy, volatility-bucket strategy, and TWAP slippage controller use OpenZeppelin `Ownable2Step`. Calling `transferOwnership(newOwner)` only records `newOwner` as the pending owner. Control changes only after that address calls `acceptOwnership()`, at which point the previous owner loses access to `onlyOwner` functions.
 
-This protects against an accidental ownership transfer to an address that cannot operate the contracts. It does not delay actions initiated by the current owner. Sensitive configuration and capital-management calls remain immediately executable until ownership is transferred to a separately deployed timelock governed by an appropriate multisig. A production deployment should also separate delayed governance from any role that must pause the vault immediately.
+The vault does not store a timelock address or add a separate timelock modifier. Instead, production governance transfers ownership of each of those contracts to an OpenZeppelin `TimelockController`. Existing `onlyOwner` checks then require the Timelock to make the call, so sensitive configuration and capital-management actions must be scheduled and wait for the configured delay before execution.
+
+The intended deployment roles are:
+- the governance Safe/multisig has proposer and canceller roles
+- the executor role is open through `address(0)`, allowing any address to execute an already scheduled and elapsed operation
+- the Timelock itself is the final `owner` of the vault, strategies, and slippage controller
+
+Ownership handover is a two-stage governance operation for each owned contract:
+1. The current owner calls `transferOwnership(timelock)`.
+2. The governance Safe schedules that contract's `acceptOwnership()` call through the Timelock.
+3. After the minimum delay, an executor calls `execute(...)`; the Timelock becomes the owner.
+
+Open execution does not grant configuration authority: an executor cannot schedule, alter, or accelerate an operation. `TimelockGovernance.t.sol` verifies that an operation cannot execute early, that the Timelock can accept ownership after the delay, and that the previous owner loses direct configuration access.
+
+This version has no separate emergency guardian. Once ownership has moved to the Timelock, `pause()` and `emergencyExit()` also require the governance delay. A production deployment that needs immediate pausing should add a narrowly scoped guardian role in a later revision.
 
 ## State
 
