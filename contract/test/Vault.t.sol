@@ -63,6 +63,15 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         );
     }
 
+    function test_Constructor_RevertsWhenTokensAreIdentical() public {
+        vm.expectRevert(AdaptiveLPVault.IdenticalTokens.selector);
+        new AdaptiveLPVault(
+            "Adaptive LP Vault", "ALPV",
+            address(token0), address(token0),
+            decimals0, decimals0
+        );
+    }
+
     function test_Constructor_RevertsWhenDecimals0IsZero() public {
         vm.expectRevert(AdaptiveLPVault.ZeroDecimals.selector);
         new AdaptiveLPVault(
@@ -740,7 +749,7 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vm.stopPrank();
     }
 
-    function test_Integration_Deposit_WorksAfterTwapUpdate() public {
+    function test_Integration_Deposit_MintsFairSharesAfterTwapUpdate() public {
         uint32 interval = 300;
         uint256 q112 = 2 ** 112;
         uint256 reserve0 = 1 ether;
@@ -770,6 +779,21 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         assertEq(mintShares, expectedUserShares);
         assertEq(vault.balanceOf(alice), expectedUserShares, "shares minted from twap-priced assets");
         assertEq(vault.totalSupply(), expectedAssets);
+
+        // Bob deposits after Alice. His quote must use the pre-deposit TWAP NAV and supply.
+        uint256 bobAmount0 = 2 ether;
+        uint256 bobAmount1 = 2e6;
+
+        uint256 totalAssetsBeforeBob = vault.totalAssets();
+        uint256 totalSharesBeforeBob = vault.totalSupply();
+
+        uint256 bobDepositValue = VaultMath.getAssetsTotalValue(bobAmount0, price0, decimals0, bobAmount1, price1, decimals1);
+        uint256 expectedBobShares = VaultMath.calculateShares(bobDepositValue, totalAssetsBeforeBob, totalSharesBeforeBob);
+
+        uint256 bobShares = _mintAndDeposit(token0, token1, vault, bob, bobAmount0, bobAmount1);
+        assertEq(bobShares, expectedBobShares, "second deposit shares from TWAP NAV");
+        assertEq(vault.balanceOf(alice), expectedUserShares, "Alice shares unchanged");
+        assertEq(vault.totalSupply(), totalSharesBeforeBob + expectedBobShares);
     }
 
     function test_Integration_TotalAssets_WorksWithTwapOracleAfterUpdate() public {

@@ -32,6 +32,29 @@ contract PriceChangeVolatilityOracleTest is Test {
         assertEq(volatilityOracle.volatilityBps(), 0);
     }
 
+    /// @notice Rejects a second update before the configured sampling interval elapses.
+    function test_Update_RevertsWhenCalledBeforeMinInterval() public {
+        // The first update creates the initial price snapshot.
+        priceOracle.setPrices(100e18, 200e18);
+        volatilityOracle.update();
+
+        uint256 lastPrice0Before = volatilityOracle.lastPrice0();
+        uint256 lastPrice1Before = volatilityOracle.lastPrice1();
+        uint256 lastTimestampBefore = volatilityOracle.lastUpdateTimestamp();
+
+        // Simulate a caller trying to refresh the baseline one second too early.
+        vm.warp(block.timestamp + minUpdateInterval - 1);
+        priceOracle.setPrices(110e18, 220e18);
+
+        vm.expectRevert(PriceChangeVolatilityOracle.IntervalTooShort.selector);
+        volatilityOracle.update();
+
+        // A rejected update must not replace the prior volatility baseline.
+        assertEq(volatilityOracle.lastPrice0(), lastPrice0Before);
+        assertEq(volatilityOracle.lastPrice1(), lastPrice1Before);
+        assertEq(volatilityOracle.lastUpdateTimestamp(), lastTimestampBefore);
+    }
+
     /// @notice Price increases produce the larger two-token change.
     function test_Update_ComputesVolatilityWhenPricesIncrease() public {
         priceOracle.setPrices(100e18, 200e18);
