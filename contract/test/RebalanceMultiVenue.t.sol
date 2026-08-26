@@ -37,7 +37,7 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
     uint8 public decimals0 = 18;
     uint8 public decimals1 = 6;
-    uint24 public fee = 3000;
+    uint24 public fee = 500;
     int24 public tickLower = -600;
     int24 public tickUpper = 600;
 
@@ -189,6 +189,91 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         assertEq(adapterV3.tokenId(), v3TokenIdBefore);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(initialV3Liquidity) + uint256(addedV3Liquidity));
         assertEq(positionManagerV3.nextTokenId(), 2);
+    }
+
+    /// @notice Verifies rebalance migrates a V3 position into an independent V3 venue.
+    function test_Rebalance_MigratesV3PositionAcrossVenues() public {
+        uint256 amount0 = 10 ether;
+        uint256 amount1 = 20e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        uint256 totalSharesBefore = vault.totalSupply();
+
+        // First deploy the entire vault into the existing V3_LOW venue.
+        uint128 lowLiquidity = _primeV3Mint(token0, token1, poolV3, positionManagerV3,
+                                        tickLower, tickUpper, amount0, amount1);
+
+        bytes memory lowParams = _defaultV3Params(tickLower, tickUpper);
+        vault.rebalance(
+            _buildSingleTarget(
+                V3_LOW_VENUE_ID,
+                amount0,
+                amount1,
+                lowParams
+            ),
+            _emptyWithdrawalParams()
+        );
+
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), lowLiquidity);
+        assertTrue(adapterV3.hasPosition());
+        assertEq(adapterV3.tokenId(), 1);
+
+        // Register an independent V3_MID adapter with its own pool and position manager.
+        MockUniswapV3Pool poolV3Mid = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        poolV3Mid.setSlot0FromTick(0);
+        poolV3Mid.setTwapTick(0);
+        MockNonfungiblePositionManager positionManagerV3Mid = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterV3Mid = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManagerV3Mid),
+            address(poolV3Mid),
+            tickLower,
+            tickUpper
+        );
+
+        V3TwapPositionValuator valuatorV3Mid = new V3TwapPositionValuator(address(adapterV3Mid), 1800);
+        vault.setVenue(V3_MID_VENUE_ID, address(adapterV3Mid), V3_MID_LABEL, true);
+        vault.setVenueValuator(V3_MID_VENUE_ID, address(valuatorV3Mid));
+
+        // Configure LOW withdrawal and MID mint before executing the migration.
+        (uint256 lowPoolAmount0, uint256 lowPoolAmount1) = _mapPoolAmounts(token0, token1, amount0, amount1);
+        positionManagerV3.setNextDecreaseResult(lowPoolAmount0, lowPoolAmount1);
+
+        uint128 midLiquidity = _primeV3Mint(token0, token1, poolV3Mid, positionManagerV3Mid,
+                                    tickLower, tickUpper, amount0, amount1);
+
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: _v3Params(0, 0, block.timestamp + 1, tickLower, tickUpper)
+        });
+
+        // LOW is absent from the final target, so it is fully withdrawn and MID receives the tokens.
+        vault.rebalance(
+            _buildSingleTarget(
+                V3_MID_VENUE_ID,
+                amount0,
+                amount1,
+                _defaultV3Params(tickLower, tickUpper)
+            ),
+            withdrawalParams
+        );
+
+        // The original NFT is closed.
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertFalse(adapterV3.hasPosition());
+        assertEq(adapterV3.tokenId(), 0);
+
+        // A distinct NFT position was minted in V3_MID.
+        assertEq(vault.venueLiquidity(V3_MID_VENUE_ID), uint256(midLiquidity));
+        assertTrue(adapterV3Mid.hasPosition());
+        assertEq(adapterV3Mid.tokenId(), 1);
+
+        assertEq(vault.totalSupply(), totalSharesBefore);
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
     }
 
     function test_Rebalance_WithdrawsMultipleVenuesToIdle() public {

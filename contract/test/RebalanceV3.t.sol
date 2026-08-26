@@ -206,4 +206,52 @@ contract RebalanceV3Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(positionManager.lastDecreaseAmount1Min(), poolAmount1Min);
         assertEq(positionManager.lastDecreaseDeadline(), deadline);
     }
+
+    /// @notice Verifies rebalance reverts when a V3 withdrawal exceeds the configured value-loss limit.
+    function test_Rebalance_RevertsWhenV3ValueLossExceedsLimit() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint128 liquidity = _primeV3Mint(token0, token1, pool, positionManager,
+                                    tickLower, tickUpper, amount0, amount1);
+
+        _rebalanceToVenue(vault, V3_LOW_VENUE_ID, amount0, amount1, _defaultV3Params(tickLower, tickUpper));
+
+        // totalAssets() will value the position through the V3 TWAP valuator.
+        pool.setTwapTick(0);
+        vm.warp(block.timestamp + 1800);
+
+        // At most 1% value loss is permitted.
+        vault.setMaxRebalanceValueLossBps(100);
+
+        // Simulate a bad V3 withdrawal that returns only half the expected underlying.
+        (uint256 poolAmount0Out, uint256 poolAmount1Out) = _mapPoolAmounts(token0, token1, amount0 / 2, amount1 / 2);
+        positionManager.setNextDecreaseResult(poolAmount0Out, poolAmount1Out);
+
+        AdaptiveLPVault.VenueWithdrawalParams[] memory withdrawalParams = new AdaptiveLPVault.VenueWithdrawalParams[](1);
+        withdrawalParams[0] = AdaptiveLPVault.VenueWithdrawalParams({
+            venueId: V3_LOW_VENUE_ID,
+            params: _v3Params(
+                0,
+                0,
+                block.timestamp + 1 hours,
+                tickLower,
+                tickUpper
+            )
+        });
+
+        RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
+
+        vm.expectRevert(AdaptiveLPVault.ExcessiveRebalanceValueLoss.selector);
+        vault.rebalance(targets, withdrawalParams);
+
+        // The reverted transaction leaves the original V3 position intact.
+        assertTrue(adapter.hasPosition());
+        assertEq(adapter.tokenId(), 1);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(liquidity));
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+    }
 }
