@@ -674,8 +674,8 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         vault.redeem(shares, alice, alice, amount0 + 1, amount1);
     }
 
-    /// @notice Verifies an approved operator can burn owner shares and send underlying tokens to a separate receiver.
-    function test_Redeem_AllowsApprovedOperatorToRedeemOwnerSharesToReceiver() public {
+    /// @notice Verifies an approved operator can redeem owner shares to a separate receiver while paused.
+    function test_Redeem_AllowsApprovedOperatorWhilePaused() public {
         uint256 price0 = 1e18;
         uint256 price1 = 5e14;
         uint256 amount0 = 1e18;
@@ -694,9 +694,12 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         uint256 expectedAmount0Out = amount0 * shares / totalSharesBefore;
         uint256 expectedAmount1Out = amount1 * shares / totalSharesBefore;
 
+        // Pausing blocks deposits and rebalances, but preserves approved exit paths.
+        vault.pause();
+        assertTrue(vault.paused());
+
         vm.prank(operator);
-        (uint256 amount0Out, uint256 amount1Out) =
-            vault.redeem(shares, bob, alice, 0, 0);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, bob, alice, 0, 0);
 
         assertEq(amount0Out, expectedAmount0Out);
         assertEq(amount1Out, expectedAmount1Out);

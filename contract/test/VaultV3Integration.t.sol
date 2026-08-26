@@ -393,18 +393,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        _deployVaultToV3(
-            vault,
-            token0,
-            token1,
-            pool,
-            positionManager,
-            V3_LOW_VENUE_ID,
-            tickLower,
-            tickUpper,
-            amount0,
-            amount1
-        );
+        _deployVaultToV3(vault, token0, token1, pool, positionManager,
+                V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
 
         pool.setSlot0FromTick(0);
         uint256 assetsBefore = vault.totalAssets();
@@ -423,8 +413,8 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(bobShares, expectedBobShares);
     }
 
-    /// @notice Verifies a queued redemption can be activated, funded from V3, and settled.
-    function test_AsyncRedeem_ProcessesQueuedRequest() public {
+    /// @notice Verifies a queued partial redemption receives its pro-rata share of V3 owed tokens.
+    function test_AsyncRedeem_PartiallyDistributesV3FeesProRata() public {
         uint256 amount0 = 1 ether;
         uint256 amount1 = 2000e6;
 
@@ -439,6 +429,12 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager, V3_LOW_VENUE_ID, tickLower, tickUpper, totalAmount0, totalAmount1);
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
+
+        uint256 fee0 = 0.1 ether;
+        uint256 fee1 = 200e6;
+
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
 
         uint256 annualFeeBps = 200;
         vault.setManagementFeeConfig(bob, annualFeeBps);
@@ -504,15 +500,19 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         // Manager has snapshotted the proportional V3 liquidity owed to Alice.
         uint256 liquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
 
-        uint256 expectedAmount0Out = totalAmount0 * liquidityToWithdraw / liquidity;
-        uint256 expectedAmount1Out = totalAmount1 * liquidityToWithdraw / liquidity;
+        uint256 expectedPrincipal0Out = totalAmount0 * liquidityToWithdraw / liquidity;
+        uint256 expectedPrincipal1Out = totalAmount1 * liquidityToWithdraw / liquidity;
+        uint256 expectedFee0Out = fee0 * aliceShares / totalSharesSnapshot;
+        uint256 expectedFee1Out = fee1 * aliceShares / totalSharesSnapshot;
+        uint256 expectedRequestAmount0Out = expectedPrincipal0Out + expectedFee0Out;
+        uint256 expectedRequestAmount1Out = expectedPrincipal1Out + expectedFee1Out;
 
-        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedAmount0Out, expectedAmount1Out);
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedPrincipal0Out, expectedPrincipal1Out);
         positionManager.setNextDecreaseResult(poolAmount0, poolAmount1);
 
         redemptionManager.fundActiveRedeemRequest(V3_LOW_VENUE_ID, _v3Params(0, 0, deadline, tickLower, tickUpper));
-        assertEq(token0.balanceOf(address(vault)), expectedAmount0Out);
-        assertEq(token1.balanceOf(address(vault)), expectedAmount1Out);
+        assertEq(token0.balanceOf(address(vault)), expectedPrincipal0Out + fee0);
+        assertEq(token1.balanceOf(address(vault)), expectedPrincipal1Out + fee1);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), liquidity - liquidityToWithdraw);
 
         // Processing is permissionless after activation, so Bob can settle it.
@@ -520,12 +520,15 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
 
         // Settlement uses exactly the amounts reserved during request funding.
-        assertEq(amount0Out, expectedAmount0Out);
-        assertEq(amount1Out, expectedAmount1Out);
+        assertEq(amount0Out, expectedRequestAmount0Out);
+        assertEq(amount1Out, expectedRequestAmount1Out);
 
         // Alice receives the exact amounts accumulated for her request.
         assertEq(token0.balanceOf(alice), amount0Out);
         assertEq(token1.balanceOf(alice), amount1Out);
+
+        assertEq(token0.balanceOf(address(vault)), fee0 - expectedFee0Out);
+        assertEq(token1.balanceOf(address(vault)), fee1 - expectedFee1Out);
 
         // Escrowed shares were burned and the request was removed from the queue.
         assertEq(vault.balanceOf(address(redemptionManager)), 0);
@@ -534,6 +537,123 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(redemptionManager.redeemQueueTail(), 0);
         assertEq(redemptionManager.totalPendingRedeemShares(), 0);
 
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
+    }
+
+    /// @notice Verifies redeeming all user-held shares distributes V3 owed tokens pro rata.
+    function test_AsyncRedeem_AllUserSharesReceivesProRataV3Fees() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+
+        // Alice is the only user; initial locked shares remain in the vault share supply.
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager,
+                                V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        uint256 fee0 = 0.1 ether;
+        uint256 fee1 = 200e6;
+        (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
+        positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
+
+        uint256 deadline = block.timestamp + 7 days;
+
+        // With no idle liquidity available, the frontend selects the asynchronous redemption path.
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
+        vm.stopPrank();
+
+        redemptionManager.activateNextRedeemRequest();
+
+        (, uint256 fundingRoundId, uint256 totalSharesSnapshot,,,,) = redemptionManager.activeFunding();
+        uint256 liquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
+        assertLt(liquidityToWithdraw, liquidity);
+
+        uint256 expectedPrincipal0Out = amount0 * liquidityToWithdraw / liquidity;
+        uint256 expectedPrincipal1Out = amount1 * liquidityToWithdraw / liquidity;
+
+        // Locked shares retain their small proportional share of the owed fees.
+        uint256 expectedFee0Out = fee0 * aliceShares / totalSharesSnapshot;
+        uint256 expectedFee1Out = fee1 * aliceShares / totalSharesSnapshot;
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedPrincipal0Out, expectedPrincipal1Out);
+        positionManager.setNextDecreaseResult(poolAmount0, poolAmount1);
+
+        redemptionManager.fundActiveRedeemRequest(V3_LOW_VENUE_ID, _v3Params(0, 0, deadline, tickLower, tickUpper));
+
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
+
+        assertEq(amount0Out, expectedPrincipal0Out + expectedFee0Out);
+        assertEq(amount1Out, expectedPrincipal1Out + expectedFee1Out);
+
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.totalSupply(), vault.MINIMUM_LOCKED_SHARES());
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), liquidity - liquidityToWithdraw);
+        assertTrue(adapter.hasPosition());
+
+        // Locked shares retain their proportional fee share, plus any rounding remainder.
+        assertEq(token0.balanceOf(address(vault)), fee0 - expectedFee0Out);
+        assertEq(token1.balanceOf(address(vault)), fee1 - expectedFee1Out);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
+    }
+
+    /// @notice Verifies a small redemption settles through the queue when all assets are deployed to V3.
+    function test_AsyncRedeem_SettlesSmallV3RedemptionFromFullyDeployedVault() public {
+        uint256 aliceAmount0 = 1 ether;
+        uint256 aliceAmount1 = 2000e6;
+        uint256 bobAmount0 = 999 ether;
+        uint256 bobAmount1 = 1_998_000e6;
+
+        // Alice owns a small share of the vault after Bob's much larger deposit.
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, aliceAmount0, aliceAmount1);
+        _mintAndDeposit(token0, token1, vault, bob, bobAmount0, bobAmount1);
+
+        uint256 totalAmount0 = aliceAmount0 + bobAmount0;
+        uint256 totalAmount1 = aliceAmount1 + bobAmount1;
+
+        uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager,
+                                V3_LOW_VENUE_ID, tickLower, tickUpper, totalAmount0, totalAmount1);
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        uint256 deadline = block.timestamp + 7 days;
+
+        // No idle balance exists, so Alice must use the asynchronous redemption path.
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
+        vm.stopPrank();
+
+        redemptionManager.activateNextRedeemRequest();
+
+        (, uint256 fundingRoundId, uint256 totalSharesSnapshot,,,,) = redemptionManager.activeFunding();
+        // Alice owns less than 1% of the active supply, but her venue liquidity is nonzero.
+        assertLt(aliceShares * 100, totalSharesSnapshot);
+
+        uint256 liquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
+        assertGt(liquidityToWithdraw, 0);
+        assertLt(liquidityToWithdraw, liquidity);
+
+        uint256 expectedAmount0Out = totalAmount0 * liquidityToWithdraw / liquidity;
+        uint256 expectedAmount1Out = totalAmount1 * liquidityToWithdraw / liquidity;
+
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedAmount0Out, expectedAmount1Out);
+        positionManager.setNextDecreaseResult(poolAmount0, poolAmount1);
+        redemptionManager.fundActiveRedeemRequest(V3_LOW_VENUE_ID, _v3Params(0, 0, deadline, tickLower, tickUpper));
+
+        // Anyone may settle once funding is complete.
+        vm.prank(bob);
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
+
+        assertEq(amount0Out, expectedAmount0Out);
+        assertEq(amount1Out, expectedAmount1Out);
+        assertEq(token0.balanceOf(alice), amount0Out);
+        assertEq(token1.balanceOf(alice), amount1Out);
+
+        assertEq(vault.balanceOf(alice), 0);
+        assertTrue(adapter.hasPosition());
         assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
     }
 

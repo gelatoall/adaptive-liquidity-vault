@@ -98,6 +98,11 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         vault.setRedemptionManager(address(redemptionManager));
     }
 
+    /// @notice Returns only the lifecycle status from the public request getter.
+    function _getRedeemRequestStatus(uint256 requestId) internal view returns (RedemptionManager.RedeemRequestStatus status) {
+        (,,,,,, status) = redemptionManager.redeemRequests(requestId);
+    }
+
     /// @notice Verifies the full Uniswap venue set uses one V2 adapter plus one V3 adapter per fee tier.
     function test_SetVenue_RegistersFullUniswapVenueSet() public {
         // deploy V3 mid venue
@@ -404,6 +409,180 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         assertEq(redemptionManager.redeemQueueHead(), 0);
         assertEq(redemptionManager.redeemQueueTail(), 0);
         assertEq(redemptionManager.totalPendingRedeemShares(), 0);
+    }
+
+    /// @notice Verifies a partial queued redemption sums independently rounded funding from V2 and V3 venues.
+    function test_AsyncRedeem_AccumulatesMultiVenueFundingWithRoundingDust() public {
+        uint256 userAmount0 = 10 ether;
+        uint256 userAmount1 = 20e6;
+
+        uint256 v2Amount0 = 12 ether;
+        uint256 v2Amount1 = 24e6;
+        uint256 v2Liquidity = 7;
+
+        uint256 v3Amount0 = 8 ether;
+        uint256 v3Amount1 = 16e6;
+
+        // Alice and Bob own nearly equal portions; locked initial shares make Alice's ratio slightly below 50%.
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, userAmount0, userAmount1);
+        _mintAndDeposit(token0, token1, vault, bob, userAmount0, userAmount1);
+
+        _deployVaultToV2(vault, routerV2, V2_VENUE_ID, v2Amount0, v2Amount1, v2Amount0, v2Amount1, v2Liquidity);
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low,
+                            V3_LOW_VENUE_ID, tickLower, tickUpper, v3Amount0, v3Amount1);
+        pairV2.setReserves(uint112(v2Amount0), uint112(v2Amount1));
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
+        vm.stopPrank();
+
+        redemptionManager.activateNextRedeemRequest();
+
+        (, uint256 fundingRoundId,,,,,) = redemptionManager.activeFunding();
+
+        uint256 v2LiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V2_VENUE_ID);
+        uint256 v3LiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
+
+        // 7 multiplied by Alice's slightly-less-than-half share ratio rounds down to 3.
+        assertEq(v2LiquidityToWithdraw, 3);
+        assertEq(v2Liquidity - v2LiquidityToWithdraw, 4);
+        assertGt(v3LiquidityToWithdraw, 0);
+
+        uint256 expectedV2Amount0 = v2Amount0 * v2LiquidityToWithdraw / v2Liquidity;
+        uint256 expectedV2Amount1 = v2Amount1 * v2LiquidityToWithdraw / v2Liquidity;
+        uint256 expectedV3Amount0 = v3Amount0 * v3LiquidityToWithdraw / v3Liquidity;
+        uint256 expectedV3Amount1 = v3Amount1 * v3LiquidityToWithdraw / v3Liquidity;
+
+        routerV2.setNextRemoveLiquidityResult(expectedV2Amount0, expectedV2Amount1);
+        redemptionManager.fundActiveRedeemRequest(V2_VENUE_ID, "");
+
+        (uint256 poolAmount0, uint256 poolAmount1) = _mapPoolAmounts(token0, token1, expectedV3Amount0, expectedV3Amount1);
+        positionManagerV3Low.setNextDecreaseResult(poolAmount0, poolAmount1);
+        redemptionManager.fundActiveRedeemRequest(
+            V3_LOW_VENUE_ID,
+            _v3Params(0, 0, deadline, tickLower, tickUpper)
+        );
+
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
+
+        // Settlement uses the sum of each venue's actual rounded funding amount.
+        assertEq(amount0Out, expectedV2Amount0 + expectedV3Amount0);
+        assertEq(amount1Out, expectedV2Amount1 + expectedV3Amount1);
+
+        assertEq(token0.balanceOf(alice), amount0Out);
+        assertEq(token1.balanceOf(alice), amount1Out);
+        assertEq(vault.balanceOf(alice), 0);
+
+        // The V2 dust stays in the active V2 position rather than being overpaid.
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity - v2LiquidityToWithdraw);
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity - v3LiquidityToWithdraw);
+        assertTrue(adapterV2.hasPosition());
+        assertTrue(adapterV3Low.hasPosition());
+
+        assertEq(redemptionManager.activeRedeemRequestId(), 0);
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
+    }
+
+    /// @notice Verifies a partial queued redemption settles funding from two active V3 venues.
+    function test_AsyncRedeem_SettlesAcrossMultipleV3Venues() public {
+        uint256 userAmount0 = 10 ether;
+        uint256 userAmount1 = 20e6;
+
+        uint256 v3LowAmount0 = 8 ether;
+        uint256 v3LowAmount1 = 16e6;
+        uint256 v3MidAmount0 = 12 ether;
+        uint256 v3MidAmount1 = 24e6;
+
+        // Add an independent V3 0.30% venue for this test only.
+        MockUniswapV3Pool poolV3Mid = new MockUniswapV3Pool(address(token0), address(token1), 3000);
+        MockNonfungiblePositionManager positionManagerV3Mid = new MockNonfungiblePositionManager();
+        UniswapV3Adapter adapterV3Mid = new UniswapV3Adapter(
+            address(vault),
+            address(token0),
+            address(token1),
+            address(positionManagerV3Mid),
+            address(poolV3Mid),
+            tickLower,
+            tickUpper
+        );
+        poolV3Mid.setSlot0FromTick(0);
+        poolV3Mid.setTwapTick(0);
+
+        V3TwapPositionValuator valuatorV3Mid = new V3TwapPositionValuator(address(adapterV3Mid), twapWindow);
+        vault.setVenue(V3_MID_VENUE_ID, address(adapterV3Mid), V3_MID_LABEL, true);
+        vault.setVenueValuator(V3_MID_VENUE_ID, address(valuatorV3Mid));
+
+        // Alice owns a partial vault share after Bob makes an equal deposit.
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, userAmount0, userAmount1);
+        _mintAndDeposit(token0, token1, vault, bob, userAmount0, userAmount1);
+
+        uint256 lowLiquidity = _deployVaultToV3(vault, token0, token1, poolV3Low, positionManagerV3Low,
+                            V3_LOW_VENUE_ID, tickLower, tickUpper, v3LowAmount0, v3LowAmount1);
+        uint256 midLiquidity = _deployVaultToV3(vault, token0, token1, poolV3Mid, positionManagerV3Mid,
+                            V3_MID_VENUE_ID, tickLower, tickUpper, v3MidAmount0, v3MidAmount1);
+
+        assertEq(token0.balanceOf(address(vault)), 0);
+        assertEq(token1.balanceOf(address(vault)), 0);
+
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.startPrank(alice);
+        vault.approve(address(redemptionManager), aliceShares);
+        uint256 requestId = redemptionManager.requestRedeem(aliceShares, alice, deadline);
+        vm.stopPrank();
+
+        redemptionManager.activateNextRedeemRequest();
+
+        (, uint256 fundingRoundId,,,,,) = redemptionManager.activeFunding();
+
+        uint256 lowLiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_LOW_VENUE_ID);
+        uint256 midLiquidityToWithdraw = redemptionManager.fundingLiquidity(fundingRoundId, V3_MID_VENUE_ID);
+
+        // Both V3 positions must supply a nonzero proportional amount.
+        assertGt(lowLiquidityToWithdraw, 0);
+        assertGt(midLiquidityToWithdraw, 0);
+
+        uint256 expectedLowAmount0 = v3LowAmount0 * lowLiquidityToWithdraw / lowLiquidity;
+        uint256 expectedLowAmount1 = v3LowAmount1 * lowLiquidityToWithdraw / lowLiquidity;
+
+        uint256 expectedMidAmount0 = v3MidAmount0 * midLiquidityToWithdraw / midLiquidity;
+        uint256 expectedMidAmount1 = v3MidAmount1 * midLiquidityToWithdraw / midLiquidity;
+
+        (uint256 lowPoolAmount0, uint256 lowPoolAmount1) = _mapPoolAmounts(token0, token1, expectedLowAmount0, expectedLowAmount1);
+        positionManagerV3Low.setNextDecreaseResult(lowPoolAmount0, lowPoolAmount1);
+        redemptionManager.fundActiveRedeemRequest(
+            V3_LOW_VENUE_ID,
+            _v3Params(0, 0, deadline, tickLower, tickUpper)
+        );
+
+        (uint256 midPoolAmount0, uint256 midPoolAmount1) = _mapPoolAmounts(token0, token1, expectedMidAmount0, expectedMidAmount1);
+        positionManagerV3Mid.setNextDecreaseResult(midPoolAmount0, midPoolAmount1);
+        redemptionManager.fundActiveRedeemRequest(
+            V3_MID_VENUE_ID,
+            _v3Params(0, 0, deadline, tickLower, tickUpper)
+        );
+
+        (uint256 amount0Out, uint256 amount1Out) = redemptionManager.processNextRedeemRequest();
+
+        // Settlement combines the actual funding from both V3 positions.
+        assertEq(amount0Out, expectedLowAmount0 + expectedMidAmount0);
+        assertEq(amount1Out, expectedLowAmount1 + expectedMidAmount1);
+
+        assertEq(token0.balanceOf(alice), amount0Out);
+        assertEq(token1.balanceOf(alice), amount1Out);
+        assertEq(vault.balanceOf(alice), 0);
+
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), lowLiquidity - lowLiquidityToWithdraw);
+        assertEq(vault.venueLiquidity(V3_MID_VENUE_ID), midLiquidity - midLiquidityToWithdraw);
+        assertTrue(adapterV3Low.hasPosition());
+        assertTrue(adapterV3Mid.hasPosition());
+
+        assertEq(uint256(_getRedeemRequestStatus(requestId)), uint256(RedemptionManager.RedeemRequestStatus.PROCESSED));
     }
 
     /// @notice Verifies a batch emergency exit skips a failing venue and withdraws a healthy venue.

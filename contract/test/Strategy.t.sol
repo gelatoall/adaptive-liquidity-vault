@@ -668,18 +668,8 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        uint256 v3Liquidity = _deployVaultToV3(
-            vault,
-            token0,
-            token1,
-            pool,
-            positionManager,
-            V3_LOW_VENUE_ID,
-            tickLower,
-            tickUpper,
-            amount0,
-            amount1
-        );
+        uint256 v3Liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager,
+                            V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
