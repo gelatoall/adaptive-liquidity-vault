@@ -756,6 +756,63 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         assertEq(vault.allowance(alice, operator), 0);
     }
 
+    // ============================================
+    // Fuzz Tests
+    // ============================================
+    function testFuzz_Deposit_MintsSharesFromPreDepositNav(uint256 amount0, uint256 amount1, uint256 price1) public {
+        amount0 = bound(amount0, 1e18, 10000e18);
+        amount1 = bound(amount1, 1e6, 10000e6);
+        price1 = bound(price1, 1e14, 1e18);
+
+        oracle.setPrices(1e18, price1);
+
+        // Establish initialized supply and NAV first.
+        _mintAndDeposit(token0, token1, vault, alice, 10 ether, 10e6);
+
+        uint256 totalAssetsBefore = vault.totalAssets();
+        uint256 totalSharesBefore = vault.totalSupply();
+
+        uint256 depositValue = VaultMath.getAssetsTotalValue(amount0, 1e18, decimals0, amount1, price1, decimals1);
+        uint256 expectedShares = VaultMath.calculateShares(depositValue, totalAssetsBefore, totalSharesBefore);
+
+        uint256 actualShares = _mintAndDeposit(token0, token1, vault, bob, amount0, amount1);
+        assertEq(actualShares, expectedShares);
+        assertEq(vault.balanceOf(bob), expectedShares);
+    }
+
+    function testFuzz_Redeem_PaysProRataIdleBalances(uint256 amount0, uint256 amount1, uint256 price1, uint256 sharesSeed) public {
+        amount0 = bound(amount0, 1e18, 10000e18);
+        amount1 = bound(amount1, 1e6, 10000e6);
+        price1 = bound(price1, 1e14, 1e18);
+
+        oracle.setPrices(1e18, price1);
+
+        // Establish initialized supply and NAV first.
+        _mintAndDeposit(token0, token1, vault, bob, 10 ether, 10e6);
+
+        uint256 aliceShares = _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        uint256 totalSharesBefore = vault.totalSupply();
+        uint256 shares = bound(sharesSeed, aliceShares / 100, aliceShares);
+
+        uint256 totalValue = vault.totalAssets();
+        uint256 redeemValue = totalValue * shares / totalSharesBefore;
+
+        uint256 idle0Before = token0.balanceOf(address(vault));
+        uint256 idle1Before = token1.balanceOf(address(vault));
+        uint256 idleValue = VaultMath.getAssetsTotalValue(idle0Before, 1e18, decimals0, idle1Before, price1, decimals1);
+
+        uint256 expectedAmount0 = idle0Before * redeemValue / idleValue;
+        uint256 expectedAmount1 = idle1Before * redeemValue / idleValue;
+
+        vm.prank(alice);
+        (uint256 amount0Out, uint256 amount1Out) = vault.redeem(shares, alice, alice, 0, 0);
+
+        assertEq(amount0Out, expectedAmount0);
+        assertEq(amount1Out, expectedAmount1);
+        assertEq(vault.balanceOf(alice), aliceShares - shares);
+        assertEq(vault.totalSupply(), totalSharesBefore - shares);
+    }
 
     // ============================================
     // Integration Tests

@@ -146,6 +146,28 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(router.lastRemoveDeadline(), deadline);
     }
 
+    function testFuzz_Rebalance_V2RoundTripPreservesSupply(uint256 amount0, uint256 amount1, uint256 liquidityMinted) public {
+        amount0 = bound(amount0, 1e18, 10000e18);
+        amount1 = bound(amount1, 1e6, 10000e6);
+        liquidityMinted = bound(liquidityMinted, 1, 10000e18);
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+        uint256 totalSharesBefore = vault.totalSupply();
+
+        router.setNextAddLiquidityResult(amount0, amount1, liquidityMinted);
+        _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
+
+        pair.setReserves(uint112(amount0), uint112(amount1));
+
+        router.setNextRemoveLiquidityResult(amount0, amount1);
+        _rebalanceToIdle(vault);
+
+        assertEq(vault.totalSupply(), totalSharesBefore);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+    }
+
     /// @notice Verifies rebalance to IDLE reverts when there is no DEPLOYED_V2 liquidity to withdraw.
     function test_Rebalance_Idle_RevertsWhenNoLiquidity() public {
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);
