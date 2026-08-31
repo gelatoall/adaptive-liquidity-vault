@@ -123,6 +123,34 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         // Note：真实情况token是在pool里面，这里只是简化了Mock
         assertEq(token0.balanceOf(address(positionManager)), amount0);
     }
+
+    /// @notice Verifies a position-manager callback cannot reenter the vault during V3 deployment.
+    function test_DeployToVenue_RevertsWhenPositionManagerReentersVault() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2000e6;
+        uint128 liquidity = 1234;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        positionManager.setReentryVault(vault);
+        positionManager.setNextMintResult(liquidity, amount0, amount1);
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        vault.deployToVenue(
+            V3_LOW_VENUE_ID,
+            amount0,
+            amount1,
+            _defaultV3Params(tickLower, tickUpper)
+        );
+
+        // The callback reverted the complete outer deployment.
+        assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
+        assertFalse(adapter.hasPosition());
+        assertEq(adapter.tokenId(), 0);
+        assertEq(positionManager.nextTokenId(), 1);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+    }
     
     /// @notice Verifies deployed V3 funds and explicit fees can be withdrawn back to the vault.
     function test_WithdrawFromVenue_ReturnsFundsAndCollectsFeesFromV3() public {

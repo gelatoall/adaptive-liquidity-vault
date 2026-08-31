@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "../../src/interfaces/IUniswapV2Router.sol";
+import "../../src/AdaptiveLPVault.sol";
 import "./MockERC20.sol";
 import "./MockUniswapV2Pair.sol";
 
@@ -9,6 +10,8 @@ import "./MockUniswapV2Pair.sol";
 /// @notice Configurable router mock used to script add/remove liquidity results.
 contract MockUniswapV2Router is IUniswapV2Router {
     MockUniswapV2Pair private immutable pair;
+
+    AdaptiveLPVault private reentryVault;
 
     uint256 public nextAmountAUsed;
     uint256 public nextAmountBUsed;
@@ -34,6 +37,11 @@ contract MockUniswapV2Router is IUniswapV2Router {
     /// @param _pair LP token contract minted and burned by the router mock.
     constructor(MockUniswapV2Pair _pair) {
         pair = _pair;
+    }
+
+    /// @notice Configures the vault callback attempted during addLiquidity.
+    function setReentryVault(AdaptiveLPVault _vault) external {
+        reentryVault = _vault;
     }
 
     /// @notice Configures whether removeLiquidity should revert.
@@ -77,6 +85,8 @@ contract MockUniswapV2Router is IUniswapV2Router {
         address to,
         uint256 deadline
     ) external override returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
+        _attemptVaultReentry();
+
         lastAddAmountAMin = amountAMin;
         lastAddAmountBMin = amountBMin;
         lastAddDeadline = deadline;
@@ -127,5 +137,12 @@ contract MockUniswapV2Router is IUniswapV2Router {
         if (amountB > 0) {
             MockERC20(tokenB).mint(to, amountB);
         }
+    }
+
+    /// @dev Invokes the configured callback to simulate a malicious router reentry.
+    function _attemptVaultReentry() internal {
+        if (address(reentryVault) == address(0)) return;
+
+        reentryVault.accrueManagementFee();
     }
 }

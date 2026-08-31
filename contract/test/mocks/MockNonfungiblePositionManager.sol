@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "../../src/interfaces/INonfungiblePositionManager.sol";
+import "../../src/AdaptiveLPVault.sol";
 import "./MockERC20.sol";
 
 /// @title MockNonfungiblePositionManager
@@ -25,6 +26,8 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
     }
 
     uint256 public nextTokenId = 1;
+
+    AdaptiveLPVault private reentryVault;
 
     mapping(uint256 => Position) internal _positions;
     
@@ -54,6 +57,11 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
 
     int24 public lastMintTickLower;
     int24 public lastMintTickUpper;
+
+    /// @notice Configures the vault callback attempted during mint.
+    function setReentryVault(AdaptiveLPVault _vault) external {
+        reentryVault = _vault;
+    }
     
     /// @notice Sets the next mint result returned by the mock.
     function setNextMintResult(
@@ -134,6 +142,8 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
     function mint(INonfungiblePositionManager.MintParams calldata params) 
         external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)
     {
+        _attemptVaultReentry();
+                
         tokenId = nextTokenId++;
         lastMintAmount0Min = params.amount0Min;
         lastMintAmount1Min = params.amount1Min;
@@ -268,5 +278,12 @@ contract MockNonfungiblePositionManager is INonfungiblePositionManager {
     function _resetDecreaseState() internal {
         nextDecreaseAmount0 = 0;
         nextDecreaseAmount1 = 0;
+    }
+
+    /// @dev Invokes the configured callback to simulate a malicious position-manager reentry.
+    function _attemptVaultReentry() internal {
+        if (address(reentryVault) == address(0)) return;
+
+        reentryVault.accrueManagementFee();
     }
 }

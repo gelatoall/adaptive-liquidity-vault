@@ -203,6 +203,25 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         // Fair-value calculation rounds down through integer square roots.
         assertApproxEqAbs(totalAssetsAfter, totalAssetsBefore, 1e10);
     }
+
+    /// @notice Verifies a router callback cannot reenter the vault during V2 deployment.
+    function test_DeployToVenue_RevertsWhenRouterReentersVault() public {
+        uint256 amount0 = 1 ether;
+        uint256 amount1 = 2e6;
+
+        _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
+
+        router.setReentryVault(vault);
+        router.setNextAddLiquidityResult(amount0, amount1, 1 ether);
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        vault.deployToVenue(V2_VENUE_ID, amount0, amount1, "");
+
+        // The complete outer transaction was rolled back.
+        assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
+        assertEq(token0.balanceOf(address(vault)), amount0);
+        assertEq(token1.balanceOf(address(vault)), amount1);
+    }
     
     /// @notice Verifies withdrawal from a venue fails when no venue has been configured.
     function test_WithdrawFromVenue_RevertsWhenVenueNotSet() public {
