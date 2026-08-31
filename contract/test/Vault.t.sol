@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../src/AdaptiveLPVault.sol";
 import "./mocks/MockERC20.sol";
+import "./mocks/MockFeeOnTransferERC20.sol";
 import "./mocks/MockPriceOracle.sol";
 import "./helpers/TwapTestHelper.sol";
 import "./helpers/VaultTestHelper.sol";
@@ -522,6 +523,39 @@ contract VaultTest is Test, TwapTestHelper, VaultTestHelper {
         // Bob receives the minted shares.
         assertEq(vault.balanceOf(alice), 0);
         assertEq(vault.balanceOf(bob), shares);
+    }
+
+    /// @notice Verifies deposits reject an underlying token that transfers less than requested.
+    function test_Deposit_RevertsWhenTokenTransferReceivesLessThanRequested() public {
+        MockFeeOnTransferERC20 feeToken0 = new MockFeeOnTransferERC20(
+            "Fee token0", "FT0",
+            18, 100, // 1%
+            makeAddr("feeRecipient")
+        );
+
+        AdaptiveLPVault feeVault = new AdaptiveLPVault(
+            "Fee Vault", "FVAULT",
+            address(feeToken0), address(token1),
+            decimals0, decimals1
+        );
+
+        MockPriceOracle feeOracle = new MockPriceOracle();
+        _configureMirroredPriceOracles(feeVault, feeOracle);
+        feeOracle.setPrices(1e18, 1e18);
+
+        uint256 amount0 = 100 ether;
+        feeToken0.mint(alice, amount0);
+
+        vm.startPrank(alice);
+        feeToken0.approve(address(feeVault), amount0);
+
+        vm.expectRevert(AdaptiveLPVault.FeeOnTransferTokenUnsupported.selector);
+        feeVault.deposit(amount0, 0, alice, 0);
+        vm.stopPrank();
+
+        // The revert rolls back both the transfer and share mint.
+        assertEq(feeToken0.balanceOf(address(feeVault)), 0);
+        assertEq(feeVault.totalSupply(), 0);
     }
 
     // redeem

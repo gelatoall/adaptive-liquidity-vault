@@ -174,6 +174,7 @@
 - 当前签名是 `deposit(amount0, amount1, receiver, minShares)`。
 - `msg.sender` 提供 `token0/token1`，`receiver` 接收新 mint 出来的 vault shares。
 - `minShares` 是用户愿意接受的最少 shares。如果实际 mint 出来的 shares 小于这个值，交易会 revert `InsufficientSharesOut`。
+- 当前 vault 要求两种 underlying token 精确到账；fee-on-transfer、rebasing 等可能使实际到账数量不同于 `amount0/amount1` 的 token 不受支持，deposit 会 revert。
 - 所以 caller 和 receiver 可以不同：
   - Alice 可以出 token
   - Bob 可以收到 shares

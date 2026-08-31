@@ -206,6 +206,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: transfer tokens from the caller into the vault and mint shares to `receiver`
   - behavior: blocked while the vault is paused
   - behavior: validates primary/reference freshness and deviation before calculating shares
+  - behavior: rejects underlying tokens that do not transfer the exact requested amounts, including fee-on-transfer tokens
   - behavior: reverts if minted shares are below `minShares`
   - returns: `uint256 shares`
 
@@ -345,7 +346,7 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
 7. Calculate gross shares using `VaultMath.calculateShares`.
 8. On the initial deposit, require gross shares to exceed `MINIMUM_LOCKED_SHARES`, reserve that amount for the permanent lock, and return the remainder as user shares.
 9. Revert if user shares are below `minShares`.
-10. Transfer `token0` and `token1` from the caller into the vault.
+10. Transfer `token0` and `token1` from the caller into the vault, then require each received balance increase to equal its requested amount.
 11. On the initial deposit, mint `MINIMUM_LOCKED_SHARES` to `LOCKED_SHARES_RECEIVER`.
 12. Mint the remaining shares to `receiver`.
 

@@ -334,6 +334,9 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @notice Thrown when idle balances cannot cover a synchronous redemption.
     error InsufficientIdleLiquidity(uint256 requiredValue, uint256 idleValue);
 
+    /// @notice Thrown when an underlying token does not deliver the exact requested deposit amount.
+    error FeeOnTransferTokenUnsupported();
+
     /// @notice Thrown when the primary valuation oracle is not configured.
     error PriceOracleNotSet();
 
@@ -559,9 +562,18 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
         if (shares < minShares) revert InsufficientSharesOut();
 
+        uint256 token0BalanceBefore = token0.balanceOf(address(this));
+        uint256 token1BalanceBefore = token1.balanceOf(address(this));
+
         // Transfer token0 and token1 from the sender into the vault.
         token0.safeTransferFrom(msg.sender, address(this), amount0);
         token1.safeTransferFrom(msg.sender, address(this), amount1);
+
+        if (token0.balanceOf(address(this)) != token0BalanceBefore + amount0 ||
+            token1.balanceOf(address(this)) != token1BalanceBefore + amount1)
+        {
+            revert FeeOnTransferTokenUnsupported();
+        }
 
         // Permanently lock part of the shares minted by the initial deposit.
         if (isInitialDeposit) {
