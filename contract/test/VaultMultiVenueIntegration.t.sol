@@ -241,7 +241,6 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
-        assertEq(vault.totalLiquidity(), v2Liquidity + v3Liquidity);
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -292,7 +291,6 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
-        assertEq(vault.totalLiquidity(), v3Liquidity);
 
         assertEq(token0.balanceOf(address(vault)), v2Amount0);
         assertEq(token1.balanceOf(address(vault)), v2Amount1);
@@ -617,7 +615,6 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         // Failed V2 remains deployed while healthy V3 returns to idle.
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), v2Liquidity);
 
         assertTrue(adapterV2.hasPosition());
         assertFalse(adapterV3Low.hasPosition());
@@ -714,7 +711,6 @@ contract VaultMultiVenueIntegrationTest is Test, VaultTestHelper, VenueTestHelpe
         // Neither venue position was withdrawn.
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), v3Liquidity);
-        assertEq(vault.totalLiquidity(), v2Liquidity + v3Liquidity);
 
         assertTrue(adapterV2.hasPosition());
         assertEq(pairV2.balanceOf(address(adapterV2)), v2Liquidity);

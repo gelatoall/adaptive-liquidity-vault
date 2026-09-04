@@ -100,7 +100,6 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         assertEq(token1.balanceOf(address(pair)), amount1);
 
         assertEq(pair.balanceOf(address(adapter)), liquidityMinted);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
 
         assertTrue(adapter.hasPosition());
     }
@@ -117,7 +116,6 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
 
         assertEq(token0.balanceOf(address(vault)), 0);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
 
         uint256 amount0Min = amount0 / 2;
         uint256 amount1Min = amount1 / 2;
@@ -138,7 +136,6 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
 
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
-        assertEq(vault.totalLiquidity(), 0);
         assertFalse(adapter.hasPosition());
 
         assertEq(router.lastRemoveAmountAMin(), amount0Min);
@@ -186,7 +183,6 @@ contract RebalanceV2Test is Test, VaultTestHelper, VenueTestHelper, RebalanceTes
         _rebalanceToVenue(vault, V2_VENUE_ID, amount0, amount1, "");
 
         assertEq(token0.balanceOf(address(vault)), 0);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
 
         // Mock router mints LP but reserves are scripted separately for getPositionValue().
         pair.setReserves(uint112(amount0), uint112(amount1));

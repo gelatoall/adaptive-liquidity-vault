@@ -125,7 +125,6 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(v3Liquidity));
-        assertEq(vault.totalLiquidity(), v2Liquidity + uint256(v3Liquidity));
     }
 
     /// @notice Verifies rebalance moves only the required delta from V2 into an existing V3 position.
@@ -304,7 +303,6 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
         assertTrue(adapterV3.hasPosition());
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), uint256(v3Liquidity));
-        assertEq(vault.totalLiquidity(), v2Liquidity + uint256(v3Liquidity));
 
         // set V2 Venue
         routerV2.setNextRemoveLiquidityResult(v2Amount0, v2Amount1);
@@ -316,7 +314,6 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), 0);
 
         assertEq(token0.balanceOf(address(vault)), amount0);
         assertEq(token1.balanceOf(address(vault)), amount1);
@@ -370,7 +367,6 @@ contract RebalanceMultiVenue is Test, VaultTestHelper, VenueTestHelper, Rebalanc
 
     function test_Rebalance_RevertsWhenNoRebalanceNeeded() public {
         _mintAndDeposit(token0, token1, vault, alice, 10 ether, 20e6);
-        assertEq(vault.totalLiquidity(), 0);
 
         RebalanceTypes.RebalanceTarget[] memory targets = new RebalanceTypes.RebalanceTarget[](0);
         vm.expectRevert(AdaptiveLPVault.NoRebalanceNeeded.selector);

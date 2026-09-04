@@ -187,10 +187,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     /// @dev Venue removal uses swap-and-pop, so list ordering is not stable.
     uint256[] public venueIds;
 
-    /// @notice Sum of adapter-reported liquidity across all venues.
-    /// @dev This is bookkeeping only. Liquidity units may differ across venues and should not be treated as asset value.
-    uint256 public totalLiquidity;
-
     /// @notice One-time configured manager responsible for asynchronous redemption requests.
     address public redemptionManager;
 
@@ -741,20 +737,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         (total0, total1) = _getTotalUnderlying();
     }
 
-    /// @notice Returns the vault's current idle-buffer state in the base denomination.
-    /// @return idleValue Current value held directly by the vault.
-    /// @return requiredIdleValue Minimum idle value required by `minIdleBufferBps`.
-    /// @return availableToDeployValue Idle value available above the required buffer.
-    /// @return bufferDeficit Value required to restore the buffer, or zero when satisfied.
-    function getIdleBufferState() external view returns (
-        uint256 idleValue,
-        uint256 requiredIdleValue,
-        uint256 availableToDeployValue,
-        uint256 bufferDeficit
-    ) {
-        return _getIdleBufferState();
-    }
-
     /// @notice Returns the number of currently registered venues.
     function venueCount() external view returns (uint256) {
         return venueIds.length;
@@ -947,8 +929,8 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
     }
 
     /// @notice Sets the minimum vault value that must remain idle.
-    /// @dev Increasing the requirement does not withdraw active positions; it reports any resulting
-    ///      deficit through `getIdleBufferState()` and blocks deployments that would violate the buffer.
+    /// @dev Increasing the requirement does not withdraw active positions and blocks deployments
+    ///      that would violate the new buffer requirement.
     /// @param newBufferBps Minimum idle allocation in basis points.
     function setMinIdleBufferBps(uint256 newBufferBps) external onlyOwner {
         if (newBufferBps > RebalanceTypes.BPS) revert InvalidBps();
@@ -1514,22 +1496,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         );
     }
 
-    /// @dev Splits current idle value into deployable excess or a buffer deficit.
-    function _getIdleBufferState() internal view returns (
-        uint256 idleValue,
-        uint256 requiredIdleValue,
-        uint256 availableToDeployValue,
-        uint256 bufferDeficit
-    ) {
-        (idleValue, requiredIdleValue) = _getIdleBufferValuesAfterDeployment(0, 0);
-
-        if (idleValue >= requiredIdleValue) {
-            availableToDeployValue = idleValue - requiredIdleValue;
-        } else {
-            bufferDeficit = requiredIdleValue - idleValue;
-        }
-    }
-
     /// @dev Reverts when a proposed deployment would consume the required idle buffer.
     function _validateIdleBufferForDeployment(
         uint256 amount0ToDeploy,
@@ -1632,7 +1598,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
 
         liquidity = v.adapter.addLiquidity(amount0, amount1, params);
         venueLiquidity[venueId] += liquidity;
-        totalLiquidity += liquidity;
 
         token0.forceApprove(address(v.adapter), 0);
         token1.forceApprove(address(v.adapter), 0);
@@ -1696,7 +1661,6 @@ contract AdaptiveLPVault is ERC20, Ownable2Step, ReentrancyGuard, Pausable {
         amount1Out = fee1 + removed1;
 
         venueLiquidity[venueId] -= liquidity;
-        totalLiquidity -= liquidity;
 
         emit WithdrawFromVenue(venueId, liquidity, amount0Out, amount1Out);
     }

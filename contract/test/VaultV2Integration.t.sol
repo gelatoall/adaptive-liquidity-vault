@@ -154,19 +154,8 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
-        // Vault total value:
-        // token0 = 10e18
-        // token1 = 20e6, which is worth 20e18 in base-value precision
-        // totalAssets = 30e18
-        vault.setMinIdleBufferBps(2_000); // 20%
-        (uint256 idleValue, uint256 requiredIdleValue, uint256 availableToDeployValue, uint256 bufferDeficit) = vault.getIdleBufferState();
-        // All assets are idle before deployment.
-        assertEq(idleValue, 30 ether);
-        // A 20% buffer requires 6e18 to remain idle.
-        assertEq(requiredIdleValue, 6 ether);
-        // At most 24e18 of value is currently deployable.
-        assertEq(availableToDeployValue, 24 ether);
-        assertEq(bufferDeficit, 0);
+        // The 30e18 total value requires a 6e18 idle buffer at 20%.
+        vault.setMinIdleBufferBps(2000);
 
         // Deploying 27e18 of value would leave only 3e18 idle, below the 6e18 requirement.
         vm.expectRevert(abi.encodeWithSelector(AdaptiveLPVault.IdleBufferViolation.selector, 6 ether, 3 ether));
@@ -299,7 +288,6 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         assertFalse(vault.paused());
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
         assertTrue(adapter.hasPosition());
 
@@ -307,7 +295,6 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
         vault.emergencyExit(_emptyWithdrawalParams());
 
         assertTrue(vault.paused());
-        assertEq(vault.totalLiquidity(), 0);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertFalse(adapter.hasPosition());
         assertEq(token0.balanceOf(address(vault)), amount0);
@@ -361,7 +348,6 @@ contract VaultV2IntegrationTest is Test, TwapTestHelper, VaultTestHelper, VenueT
 
         // Redeem did not remove any V2 liquidity.
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidityMinted);
-        assertEq(vault.totalLiquidity(), liquidityMinted);
         assertEq(pair.balanceOf(address(adapter)), liquidityMinted);
         assertTrue(adapter.hasPosition());
     }

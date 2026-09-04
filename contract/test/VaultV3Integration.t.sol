@@ -110,10 +110,9 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(vault)), amount1);
 
         // vault -> pool
-        uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager, 
-                                V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
-        
-        assertEq(vault.totalLiquidity(), liquidity);
+        _deployVaultToV3(
+            vault, token0, token1, pool, positionManager, V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1
+        );
 
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
@@ -158,7 +157,7 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 amount1 = 2000e6;
         uint256 fee0 = 0.1 ether;
         uint256 fee1 = 200e6;
-        
+
         // user -> vault
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
@@ -166,7 +165,6 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         uint256 deployedLiquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager, 
                                 V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
 
-        assertEq(vault.totalLiquidity(), deployedLiquidity);
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), 1);
 
@@ -242,7 +240,6 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertTrue(adapter.hasPosition());
         assertEq(adapter.tokenId(), tokenIdBefore);
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), deployedLiquidity);
-        assertEq(vault.totalLiquidity(), deployedLiquidity);
 
         (,,,,,,, uint128 positionLiquidity,,,,) = positionManager.positions(tokenIdBefore);
         assertEq(uint256(positionLiquidity), deployedLiquidity);
@@ -347,8 +344,9 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         _mintAndDeposit(token0, token1, vault, alice, amount0, amount1);
 
         // vault -> pool
-        uint256 liquidity = _deployVaultToV3(vault, token0, token1, pool, positionManager, 
-                                V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1);
+        _deployVaultToV3(
+            vault, token0, token1, pool, positionManager, V3_LOW_VENUE_ID, tickLower, tickUpper, amount0, amount1
+        );
 
         (uint256 feePool0, uint256 feePool1) = _mapPoolAmounts(token0, token1, fee0, fee1);
         positionManager.addFees(adapter.tokenId(), uint128(feePool0), uint128(feePool1));
@@ -363,7 +361,6 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token0.balanceOf(address(vault)), vault0Before + fee0);
         assertEq(token1.balanceOf(address(vault)), vault1Before + fee1);
         
-        assertEq(vault.totalLiquidity(), liquidity);
         assertTrue(adapter.hasPosition());
     }
 
@@ -400,7 +397,6 @@ contract VaultV3IntegrationTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(actualLiquidityAdded, liquidityAdded);
 
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), venueLiquidityBefore + liquidityAdded);
-        assertEq(vault.totalLiquidity(), venueLiquidityBefore + liquidityAdded);
         assertEq(vault.totalSupply(), totalSupplyBefore);
 
         assertEq(token0.balanceOf(address(vault)), 0);

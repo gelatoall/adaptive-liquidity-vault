@@ -233,11 +233,10 @@
   - `requiredIdleValue = ceil(totalAssets * minIdleBufferBps / 10_000)`
   - `availableToDeployValue = max(idleValue - requiredIdleValue, 0)`
   - `bufferDeficit = max(requiredIdleValue - idleValue, 0)`
-- `getIdleBufferState()` 返回当前 idle value、最低要求、可部署余额和缺口。
 - manual deploy、manual rebalance、strategy rebalance 和 fee compound 最终都会经过 `_deployToVenue(...)`，因此共享同一个 value-based buffer 检查。
 - 检查使用调用方请求部署的 token amounts，在 adapter 返回未使用 dust 之前进行，因此是保守检查。
 - buffer 是为同步赎回预留的流动性，不会禁止合法 redeem 消耗 idle 资金。
-- 提高 `minIdleBufferBps` 不会自动撤回 active position；如果当前已经低于要求，view 会报告 deficit，新的部署会被阻止，直到 idle 被补足。
+- 提高 `minIdleBufferBps` 不会自动撤回 active position；如果当前已经低于要求，新的部署会被阻止，直到 idle 被补足。
 - FixedWeight 和 VolatilityBucket strategy 在构建计划时还会要求 venue 总权重不超过 `10_000 - minIdleBufferBps`，Vault 的精确价值检查仍是最终保护。
 
 ### 异步赎回队列
@@ -1236,12 +1235,7 @@
   - `venueRegistered[venueId]`
   - `venueIds`
   - `venueLiquidity[venueId]`
-  - `totalLiquidity`
 - `venueIds` 删除使用 swap-and-pop，因此数组顺序不稳定；前端应通过 `venueCount()` 获取当前长度后按索引读取，不能依赖固定顺序。
-- `totalLiquidity` 只是 bookkeeping：
-  - 它说明当前是否有 tracked liquidity
-  - 但不同 venue 的 liquidity 单位不一定可比
-  - 所以不能把 `totalLiquidity` 当成资产价值
 
 ### RebalanceTarget
 - 当前 `rebalance` 和 strategy 返回值都使用同一个 target 类型：
@@ -1512,7 +1506,7 @@ uint256 volatilityBps = volatilityOracle.getVolatilityBps();
 - 如果想把所有 venue 撤回 idle：
   1. 传入空数组 `targets`
   2. 如果需要 withdrawal slippage/deadline 保护，传入对应的 `withdrawalParams`
-  3. 如果 `totalLiquidity == 0`，就 `revert NoRebalanceNeeded()`
+  3. 如果所有 venue 的 `venueLiquidity[id]` 都是 `0`，就 `revert NoRebalanceNeeded()`
   4. vault 遍历 `venueIds`
   5. 对每个 `venueLiquidity[id] > 0` 的 venue 调 `_withdrawFromVenue(id, liquidity, params)`
   6. 检查 rebalance 前后 share supply 没有变化

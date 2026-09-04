@@ -283,7 +283,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         vault.rebalanceWithStrategy("", _emptyWithdrawalParams());
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
-        assertEq(vault.totalLiquidity(), liquidity);
     }
 
     /// @notice Non-owner, non-keeper callers cannot trigger strategy rebalances.
@@ -316,7 +315,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(pairV2)), amount1);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
-        assertEq(vault.totalLiquidity(), liquidity);
     }
 
     /// @notice rebalanceWithStrategy records the timestamp after success.
@@ -537,7 +535,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertEq(token1.balanceOf(address(pairV2)), amount1);
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), liquidity);
-        assertEq(vault.totalLiquidity(), liquidity);
     }
 
     /// @notice rebalanceWithStrategy reverts when volatility guard is enabled without an oracle.
@@ -606,7 +603,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
-        assertEq(vault.totalLiquidity(), secondLiquidity);
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -651,7 +647,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         assertEq(vault.venueLiquidity(V2_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(SECOND_V2_VENUE_ID), secondLiquidity);
-        assertEq(vault.totalLiquidity(), secondLiquidity);
 
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
@@ -700,7 +695,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
 
         assertEq(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
         assertEq(vault.venueLiquidity(V2_VENUE_ID), v2Liquidity);
-        assertEq(vault.totalLiquidity(), v2Liquidity);
     }
 
     /// @notice rebalanceWithStrategy can deploy strategy-built targets into V3.
@@ -745,7 +739,6 @@ contract StrategyTest is Test, VaultTestHelper, VenueTestHelper {
         assertTrue(adapterV3.hasPosition());
         assertEq(adapterV3.tokenId(), 1);
         assertGt(vault.venueLiquidity(V3_LOW_VENUE_ID), 0);
-        assertEq(vault.totalLiquidity(), vault.venueLiquidity(V3_LOW_VENUE_ID));
         assertEq(token0.balanceOf(address(vault)), 0);
         assertEq(token1.balanceOf(address(vault)), 0);
 

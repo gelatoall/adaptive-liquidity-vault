@@ -48,7 +48,6 @@ This version does not include:
 
 Notes:
 - rebalance is built on top of `_withdrawFromVenue(...)` and `_deployToVenue(...)`.
-- `totalLiquidity` is used only as bookkeeping to know whether any tracked liquidity exists.
 - per-venue liquidity is tracked in `venueLiquidity[venueId]`.
 - strategy logic should live outside the vault. The vault only asks the configured strategy for a target plan and then validates and executes it.
 - manual `rebalance(targets, withdrawalParams)` remains an owner emergency/manual override and is not gated by strategy cooldown or gas price guards.

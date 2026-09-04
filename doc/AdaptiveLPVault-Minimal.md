@@ -117,7 +117,6 @@ Venue state:
 - `venueQuarantined[venueId]` marks venues isolated from new deployment after an impairment or operational incident
 - `venueValuationBps[venueId]` is the percentage of valuator-reported value recognized by `totalAssets()`; healthy venues default to `10_000`
 - `quarantinedVenueCount` prevents normal operations from resuming while any venue remains isolated
-- `totalLiquidity` is bookkeeping only; liquidity units can differ across venues and should not be treated as asset value
 
 Current test and example convention:
 - `1`: Uniswap V2
@@ -185,11 +184,6 @@ Each V3 fee tier is represented by its own adapter instance. A full Uniswap venu
   - purpose: return raw `token0` and `token1` amounts across idle balances and adapter-reported venue positions
   - note: intended for strategy planning and reporting; it is not used as trusted share-accounting value
   - returns: `uint256 total0, uint256 total1`
-
-- `getIdleBufferState()`
-  - purpose: report current idle value, the configured requirement, deployable excess, and any deficit
-  - behavior: values idle and total vault assets with the same validated valuation prices used by share accounting
-  - returns: `uint256 idleValue, uint256 requiredIdleValue, uint256 availableToDeployValue, uint256 bufferDeficit`
 
 - `accrueManagementFee()`
   - purpose: mint elapsed management-fee shares to the configured recipient
@@ -422,7 +416,7 @@ Current valuators:
 4. Value the requested deployment conservatively and require the remaining idle value to satisfy `minIdleBufferBps`.
 5. Temporarily approve the adapter to pull the requested token amounts.
 6. Call `adapter.addLiquidity(amount0, amount1, params)`.
-7. Increase `venueLiquidity[venueId]` and `totalLiquidity`.
+7. Increase `venueLiquidity[venueId]`.
 8. Reset adapter allowances back to zero.
 
 ### idle liquidity buffer
@@ -437,7 +431,7 @@ bufferDeficit = max(requiredIdleValue - idleValue, 0)
 
 The deployment guard uses the requested token amounts before calling an adapter. This is intentionally conservative because an adapter may later return unused dust. Manual deployment, manual rebalance, strategy rebalance, and fee compounding all reach the same `_deployToVenue(...)` check.
 
-The buffer reserves liquidity for redemptions; it does not prevent a valid redemption from consuming idle balances. Raising the configured requirement while capital is already deployed does not force an immediate withdrawal. Instead, `getIdleBufferState()` reports the deficit and subsequent deployment attempts remain blocked until the buffer is restored.
+The buffer reserves liquidity for redemptions; it does not prevent a valid redemption from consuming idle balances. Raising the configured requirement while capital is already deployed does not force an immediate withdrawal. Subsequent deployment attempts remain blocked until the buffer is restored.
 
 ### withdrawFromVenue
 
@@ -447,7 +441,7 @@ The buffer reserves liquidity for redemptions; it does not prevent a valid redem
 4. Collect claimable venue tokens before removing liquidity.
 5. Call `adapter.removeLiquidity(liquidity, params)`.
 6. Return the sum of collected tokens and removed liquidity proceeds.
-7. Decrease `venueLiquidity[venueId]` and `totalLiquidity`.
+7. Decrease `venueLiquidity[venueId]`.
 
 Manual rebalances can pass per-venue withdrawal params through `rebalance(targets, withdrawalParams)`. Strategy-driven rebalances can pass caller-supplied per-venue withdrawal params through `rebalanceWithStrategy(data, withdrawalParams)`. Synchronous user redemption does not remove venue liquidity and therefore does not accept withdrawal params. Automatic strategy-side generation of remove-liquidity minimums remains a separate interface design task.
 
@@ -615,7 +609,7 @@ Venue integration:
 - `setVenue(...)` registers V2 and V3 adapters
 - deployment reverts when venue is unset or disabled
 - deployment tracks per-venue liquidity
-- withdrawal reduces per-venue liquidity and total liquidity
+- withdrawal reduces per-venue liquidity
 - `totalAssets()` includes directly valued idle balances and trusted V2/V3 venue valuations
 - idle-buffer redemption leaves V2, V3, and multi-venue positions unchanged
 - redemption reverts without burning shares when idle value is insufficient
