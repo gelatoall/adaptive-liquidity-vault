@@ -2034,4 +2034,5 @@ tick range 有两个基本约束：
 
 ### V3 集成测试边界
 - 当前 mock 版本里，token 余额最终会落在 `MockNonfungiblePositionManager`，这是简化实现，不是链上真实 V3 的最终托管位置
-- 如果后面要做真实 V3 对照，再补 fork test 或更贴近真实池子资金流的 mock
+- `Fork.t.sol` 已基于 Ethereum mainnet fork 接入真实 Uniswap V2 router/pair、V3 `NonfungiblePositionManager` 以及 WETH/USDC 0.05% 和 0.30% pools
+- 当前 fork 测试覆盖 V2/V3 存取闭环、V2 到 V3 迁移、V3 跨费率 venue 迁移、V2 + V3 紧急退出，以及由真实 V3 仓位提供资金的异步赎回

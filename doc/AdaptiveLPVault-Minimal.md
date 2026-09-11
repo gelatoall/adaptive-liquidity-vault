@@ -644,4 +644,12 @@ Rebalance coverage:
 - unauthorized callers cannot execute strategy-driven rebalance
 - strategy-driven rebalance enforces cooldown and max gas price guards
 
+Mainnet-fork coverage:
+- the V2 lifecycle covers vault deposit, deployment through the real Uniswap V2 router and WETH/USDC pair, withdrawal, and subsequent idle redemption
+- the V3 lifecycle covers vault deposit, deployment through the real NonfungiblePositionManager and WETH/USDC pool, withdrawal, and subsequent idle redemption
+- liquidity can migrate from V2 to V3 through rebalance
+- liquidity can migrate between the V3 0.05% and 0.30% venues
+- emergency exit withdraws active V2 and V3 positions back to vault idle balances
+- asynchronous redemption can be funded and settled from a real V3 position
+
 This list is intentionally high-level. Concrete unit tests may expand each topic into symmetric branches, invalid-input paths, and edge cases.
